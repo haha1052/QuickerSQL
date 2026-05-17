@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tv_sc",
-  "version": "0.1.0",
-  "identifier": "com.administrator.tv_sc",
+  "productName": "LA-DUCK",
+  "version": "1.0.0",
+  "identifier": "com.laduck.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,10 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "tv_sc",
+        "title": "LA-DUCK - CSV Viewer",
         "label": "main",
-        "width": 800,
-        "height": 600
+        "width": 1200,
+        "height": 800,
+        "center": true
       }
     ],
     "security": {
@@ -27,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
