@@ -20,3 +20,11 @@ tauri-plugin-dialog = "2.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 specta = { version = "2.0.0-rc.25", features = ["derive"] }
 encoding_rs = "0.8.34"
+dirs = "5.0"
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+tempfile = "3.8"
+duckdb = { version = "1.106", features = ["bundled", "vtab-full"] }
+regex = "1.10"
+log = "0.4"

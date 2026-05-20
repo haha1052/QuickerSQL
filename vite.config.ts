@@ -29,9 +29,4 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
-
-  // 排除 duckdb-wasm 避免 Vite 处理
-  optimizeDeps: {
-    exclude: ['@duckdb/duckdb-wasm'],
-  },
 }));

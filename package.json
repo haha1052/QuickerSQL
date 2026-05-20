@@ -10,15 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@duckdb/duckdb-wasm": "^1.28.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
     "ag-grid-community": "^35.2.1",
     "ag-grid-react": "^35.2.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "vite-plugin-wasm": "^3.6.0"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
