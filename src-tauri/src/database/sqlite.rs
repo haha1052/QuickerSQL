@@ -105,10 +105,22 @@ impl DatabaseConnection for SqliteConnection {
         while let Ok(Some(row)) = query_result.next() {
             let mut row_data = Vec::new();
             for i in 0..column_names.len() {
-                match row.get(i) {
-                    Ok(val) => row_data.push(val),
-                    Err(_) => row_data.push(String::from("NULL")),
-                }
+                let value: String = match row.get_ref(i) {
+                    Ok(val) => {
+                        match val {
+                            rusqlite::types::ValueRef::Null => String::from("NULL"),
+                            rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                            rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                            rusqlite::types::ValueRef::Text(s) => String::from_utf8_lossy(s).to_string(),
+                            rusqlite::types::ValueRef::Blob(b) => format!("[BLOB: {} bytes]", b.len()),
+                        }
+                    }
+                    Err(_) => {
+                        log::warn!("Failed to get value at column index {}", i);
+                        String::from("NULL")
+                    }
+                };
+                row_data.push(value);
             }
             rows.push(row_data);
         }
@@ -144,14 +156,10 @@ impl DatabaseConnection for SqliteConnection {
     fn close(&self) {
     }
     
-    fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
+    fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], _batch_size: usize) -> Result<u64> {
         let conn = self.conn.lock().map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
         
-        conn.execute("BEGIN TRANSACTION", [])
-            .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-        
         let mut total_count = 0u64;
-        let mut current_batch = 0usize;
         
         let placeholders: Vec<String> = (0..columns.len()).map(|_| "?".to_string()).collect();
         let insert_sql = format!(
@@ -164,26 +172,13 @@ impl DatabaseConnection for SqliteConnection {
         let mut stmt = conn.prepare(&insert_sql)
             .map_err(|e| DatabaseError::PrepareFailed(e.to_string()))?;
         
+        // 不使用事务，或者使用单个事务
         for row in rows {
             let params: Vec<&dyn rusqlite::ToSql> = row.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
             stmt.execute(rusqlite::params_from_iter(params))
                 .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
             
             total_count += 1;
-            current_batch += 1;
-            
-            if current_batch >= batch_size {
-                conn.execute("COMMIT", [])
-                    .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-                conn.execute("BEGIN TRANSACTION", [])
-                    .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-                current_batch = 0;
-            }
-        }
-        
-        if current_batch > 0 {
-            conn.execute("COMMIT", [])
-                .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         }
         
         Ok(total_count)

@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Mutex, Arc};
+use std::panic::catch_unwind;
 use tauri::State;
 
 pub mod project;
@@ -174,9 +175,171 @@ impl CsvRow {
 }
 
 #[derive(serde::Serialize, specta::Type)]
-struct CsvPreview {
+pub struct SheetInfo {
+    name: String,
+    row_count: usize,
+    column_count: usize,
+}
+
+#[derive(serde::Serialize, specta::Type)]
+pub struct ExcelPreview {
+    sheets: Vec<SheetInfo>,
+    active_sheet_preview: Option<CsvPreview>,
+}
+
+#[derive(serde::Serialize, specta::Type)]
+pub struct CsvPreview {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
+}
+
+const MAX_EXCEL_FILE_SIZE: u64 = 50 * 1024 * 1024;
+const MAX_PREVIEW_ROWS: usize = 100;
+
+pub fn get_excel_sheets_impl(file_path: &str) -> Result<ExcelPreview, String> {
+    use calamine::{open_workbook_auto, Reader};
+    
+    log::info!("开始读取Excel文件: {}", file_path);
+    
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        log::warn!("Excel文件不存在: {}", file_path);
+        return Err(format!("文件不存在: {}", file_path));
+    }
+    
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            if metadata.len() > MAX_EXCEL_FILE_SIZE {
+                log::warn!("Excel文件过大: {} bytes", metadata.len());
+                return Err(format!("文件大小超过限制（最大{}MB）", MAX_EXCEL_FILE_SIZE / 1024 / 1024));
+            }
+        }
+        Err(e) => {
+            log::warn!("无法获取文件元数据: {}", e);
+            return Err(format!("无法访问文件: {}", e));
+        }
+    }
+    
+    let mut workbook = open_workbook_auto(file_path)
+        .map_err(|e| {
+            let error_msg = e.to_string();
+            log::error!("打开Excel文件失败: {}", error_msg);
+            if error_msg.to_lowercase().contains("password") || 
+               error_msg.to_lowercase().contains("encrypted") {
+                "Excel文件已加密，请先解密".to_string()
+            } else {
+                format!("无法打开Excel文件: {}", e)
+            }
+        })?;
+    
+    let mut sheets = Vec::new();
+    let mut active_sheet_preview = None;
+    
+    let sheet_names = workbook.sheet_names().to_vec();
+    
+    if sheet_names.is_empty() {
+        log::warn!("Excel文件为空，没有工作表: {}", file_path);
+        return Err("Excel文件为空，没有工作表".to_string());
+    }
+    
+    for sheet_name in sheet_names {
+        match workbook.worksheet_range(&sheet_name) {
+            Ok(range) => {
+                let row_count = range.rows().len();
+                
+                if let (Some((_start_row, start_col)), Some((_end_row, end_col))) = (range.start(), range.end()) {
+                    let column_count = (end_col - start_col + 1) as usize;
+                
+                    sheets.push(SheetInfo {
+                        name: sheet_name.clone(),
+                        row_count,
+                        column_count,
+                    });
+                    
+                    if active_sheet_preview.is_none() {
+                        active_sheet_preview = Some(extract_excel_preview(&range));
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("无法读取Sheet '{}': {}", sheet_name, e);
+            }
+        }
+    }
+    
+    if sheets.is_empty() {
+        log::error!("无法读取任何工作表: {}", file_path);
+        return Err("无法读取任何工作表，请检查文件是否损坏".to_string());
+    }
+    
+    log::info!("成功读取Excel文件，共 {} 个Sheet", sheets.len());
+    Ok(ExcelPreview { sheets, active_sheet_preview })
+}
+
+pub fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview, String> {
+    use calamine::{open_workbook_auto, Reader};
+    
+    log::info!("开始加载Excel Sheet: {} from {}", sheet_name, file_path);
+    
+    let path = std::path::Path::new(file_path);
+    if !path.exists() {
+        log::warn!("Excel文件不存在: {}", file_path);
+        return Err(format!("文件不存在: {}", file_path));
+    }
+    
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            if metadata.len() > MAX_EXCEL_FILE_SIZE {
+                log::warn!("Excel文件过大: {} bytes", metadata.len());
+                return Err(format!("文件大小超过限制（最大{}MB）", MAX_EXCEL_FILE_SIZE / 1024 / 1024));
+            }
+        }
+        Err(e) => {
+            log::warn!("无法获取文件元数据: {}", e);
+            return Err(format!("无法访问文件: {}", e));
+        }
+    }
+    
+    let mut workbook = open_workbook_auto(file_path)
+        .map_err(|e| {
+            let error_msg = e.to_string();
+            log::error!("打开Excel文件失败: {}", error_msg);
+            if error_msg.to_lowercase().contains("password") || 
+               error_msg.to_lowercase().contains("encrypted") {
+                "Excel文件已加密，请先解密".to_string()
+            } else {
+                format!("无法打开Excel文件: {}", e)
+            }
+        })?;
+    
+    let range = workbook.worksheet_range(sheet_name)
+        .map_err(|e| {
+            log::error!("无法读取Sheet '{}': {}", sheet_name, e);
+            format!("无法读取Sheet '{}': {}", sheet_name, e)
+        })?;
+    
+    log::info!("成功加载Sheet '{}'", sheet_name);
+    Ok(extract_excel_preview(&range))
+}
+
+fn extract_excel_preview(range: &calamine::Range<calamine::Data>) -> CsvPreview {
+    let mut headers = Vec::new();
+    let mut rows = Vec::new();
+    
+    for (i, row) in range.rows().enumerate() {
+        let fields: Vec<String> = row
+            .iter()
+            .map(|cell| cell.to_string())
+            .collect();
+        
+        if i == 0 {
+            headers = fields;
+        } else if i <= MAX_PREVIEW_ROWS {
+            rows.push(fields);
+        }
+    }
+    
+    CsvPreview { headers, rows }
 }
 
 #[derive(serde::Deserialize)]
@@ -296,6 +459,16 @@ fn load_csv(_state: State<AppState>, file_path: String) -> Result<CsvPreview, St
 }
 
 #[tauri::command]
+fn get_excel_sheets(file_path: String) -> Result<ExcelPreview, String> {
+    get_excel_sheets_impl(&file_path)
+}
+
+#[tauri::command]
+fn load_excel_sheet(file_path: String, sheet_name: String) -> Result<CsvPreview, String> {
+    load_excel_sheet_impl(&file_path, &sheet_name)
+}
+
+#[tauri::command]
 fn import_data(state: State<AppState>, request: ImportRequest) -> Result<String, String> {
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
@@ -304,17 +477,27 @@ fn import_data(state: State<AppState>, request: ImportRequest) -> Result<String,
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
     let safe_table_name = request.table_name.replace(' ', "_");
 
-    // 1. 删除旧表
     conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", safe_table_name), &[])
         .map_err(|e| e.to_string())?;
 
-    // 2. 创建新表
     let mut create_sql = format!("CREATE TABLE \"{}\" (", safe_table_name);
     let mut column_defs = Vec::new();
     let mut column_names = Vec::new();
 
     for field in &request.fields {
-        let safe_field_name = field.name.replace(' ', "_");
+        let safe_field_name: String = field.name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' || ('\u{4e00}' <= c && c <= '\u{9fff}') { c } else { '_' })
+            .collect();
+        let safe_field_name = if safe_field_name.trim().is_empty() || safe_field_name.chars().all(|c| c == '_') {
+            format!("column_{}", column_names.len() + 1)
+        } else {
+            safe_field_name
+        };
+        let safe_field_name = if safe_field_name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            format!("col_{}", safe_field_name)
+        } else {
+            safe_field_name
+        };
         column_defs.push(format!("\"{}\" TEXT", safe_field_name));
         column_names.push(safe_field_name);
     }
@@ -324,13 +507,12 @@ fn import_data(state: State<AppState>, request: ImportRequest) -> Result<String,
 
     conn.execute(&create_sql, &[]).map_err(|e| e.to_string())?;
 
-    // 3. 批量插入数据
     let col_refs: Vec<&str> = column_names.iter().map(|s| s.as_str()).collect();
     let count = conn.batch_insert(
         &safe_table_name,
         &col_refs,
         &request.rows,
-        1000 // 每批 1000 行
+        1000
     ).map_err(|e| e.to_string())?;
 
     Ok(format!("成功导入 {} 行到 {} 表 '{}'", count, conn.get_database_type(), safe_table_name))
@@ -519,20 +701,28 @@ fn execute_sql(state: State<AppState>, sql: String) -> Result<BatchExecuteResult
                         &table_names_ref
                     );
                     
-                    match duckdb_conn.query(&routed_sql, &[]) {
-                        Ok(result) => {
+                    let result = catch_unwind(|| {
+                        duckdb_conn.query(&routed_sql, &[])
+                    });
+                    
+                    match result {
+                        Ok(Ok(query_result)) => {
                             results.push(SqlStatementResult {
                                 statement: trimmed_stmt.to_string(),
                                 success: true,
                                 error: None,
-                                columns: Some(result.columns),
-                                rows: Some(result.rows),
+                                columns: Some(query_result.columns),
+                                rows: Some(query_result.rows),
                                 affected_rows: None,
                             });
                             success_count += 1;
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             log::warn!("DuckDB execution failed, falling back to SQLite: {}", e);
+                            execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                        }
+                        Err(e) => {
+                            log::error!("DuckDB panicked, falling back to SQLite: {:?}", e);
                             execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
                         }
                     }
@@ -634,6 +824,13 @@ fn delete_project(project_name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn rename_project(old_name: String, new_name: String) -> Result<String, String> {
+    ProjectManager::rename_project(&old_name, &new_name)
+        .map(|_| format!("项目已从 '{}' 重命名为 '{}'", old_name, new_name))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn switch_project(state: State<AppState>, project_name: String) -> Result<String, String> {
     let db_path = dirs::data_dir()
         .ok_or("无法获取数据目录".to_string())?
@@ -683,6 +880,44 @@ fn get_current_db_path(state: State<AppState>) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(&path, content)
+        .map_err(|e| format!("写入文件失败: {}", e))
+}
+
+#[tauri::command]
+fn export_selected_projects(selected_projects: Vec<String>, dest_dir: String) -> Result<Vec<String>, String> {
+    let dest_path = PathBuf::from(&dest_dir);
+    
+    if !dest_path.exists() {
+        return Err(format!("导出目录不存在: {}", dest_dir));
+    }
+    
+    let mut exported_paths = Vec::new();
+    
+    for project_name in &selected_projects {
+        let db_path = dirs::data_dir()
+            .ok_or("无法获取数据目录".to_string())?
+            .join("la-duck")
+            .join(&project_name)
+            .join("meta.db");
+        
+        if !db_path.exists() {
+            return Err(format!("项目 '{}' 的数据库不存在", project_name));
+        }
+
+        let export_file = dest_path.join(format!("{}.db", project_name));
+        
+        ProjectManager::export_database(&db_path, &export_file)
+            .map_err(|e| format!("导出项目 '{}' 失败: {}", project_name, e))?;
+        
+        exported_paths.push(export_file.to_string_lossy().to_string());
+    }
+    
+    Ok(exported_paths)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -701,12 +936,20 @@ pub fn run() {
             open_project,
             list_projects,
             delete_project,
+            rename_project,
             switch_project,
             open_database_from_path,
             export_database,
             get_current_db_path,
+            get_excel_sheets,
+            load_excel_sheet,
+            write_text_file,
+            export_selected_projects,
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod excel_tests;

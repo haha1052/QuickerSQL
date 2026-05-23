@@ -1,3 +1,6 @@
+@import "ag-grid-community/styles/ag-grid.css";
+@import "ag-grid-community/styles/ag-theme-alpine.css";
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }

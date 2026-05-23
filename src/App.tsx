@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useState, useEffect } from 'react';
 import './App.css';
 import { AgGridReact } from 'ag-grid-react';
@@ -87,15 +87,31 @@ interface DatabaseStatus {
   is_connected: boolean;
 }
 
+// Excel Sheet信息
+interface SheetInfo {
+  name: string;
+  rowCount: number;
+  columnCount: number;
+}
+
+// Excel预览
+interface ExcelPreview {
+  sheets: SheetInfo[];
+  activeSheetPreview?: CsvPreview;
+}
+
 // 导入项状态类型
 type ImportStatus = 'idle' | 'loading' | 'previewing' | 'importing' | 'success' | 'error';
 
 // 单个导入项接口
 interface ImportItem {
   id: string;
-  fileType: 'csv';
+  fileType: 'csv' | 'excel';
   filePath: string;
   fileName: string;
+  sheets?: SheetInfo[];
+  sheetName?: string;
+  activeSheetIndex?: number;
   preview: CsvPreview;
   hasHeader: boolean;
   tableName: string;
@@ -103,6 +119,10 @@ interface ImportItem {
   selected: boolean;
   status: ImportStatus;
   error?: string;
+  // 新增字段：支持分组
+  parentId?: string; // 如果是子项（Sheet），指向父文件ID
+  isParent?: boolean; // 是否是父文件（Excel）
+  isExpanded?: boolean; // 父文件是否展开
 }
 
 const DATA_TYPES = ['VARCHAR', 'INTEGER', 'DOUBLE', 'DATE', 'BOOLEAN'];
@@ -132,6 +152,7 @@ function App() {
   const [currentDbPath, setCurrentDbPath] = useState('');
   const [useCustomPath, setUseCustomPath] = useState(false);
   const [customDbPath, setCustomDbPath] = useState('');
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
 
   // 初始化项目信息
   useEffect(() => {
@@ -200,21 +221,35 @@ function App() {
     }
   };
 
-  // 导出数据库
-  const exportDatabase = async () => {
+  // 删除项目
+  const handleDeleteProject = async (projectName: string) => {
     try {
-      const destPath = await save({
-        filters: [{ name: 'SQLite Database', extensions: ['db'] }],
-        defaultPath: `${currentProject || 'backup'}.db`
-      });
-
-      if (!destPath) return;
-
-      await invoke('export_database', { destPath });
-      setMessage(`数据库已导出到: ${destPath}`);
+      await invoke('delete_project', { projectName });
+      setMessage(`项目 "${projectName}" 已删除`);
+      await loadProjects();
+      if (currentProject === projectName) {
+        setCurrentProject('default');
+        await loadCurrentDbPath();
+      }
     } catch (e) {
-      console.error('导出数据库失败:', e);
-      setMessage('导出数据库失败: ' + e);
+      console.error('删除项目失败:', e);
+      setMessage('删除项目失败: ' + e);
+    }
+  };
+
+  // 重命名项目
+  const handleRenameProject = async (oldName: string, newName: string) => {
+    try {
+      await invoke('rename_project', { oldName, newName });
+      setMessage(`项目已从 "${oldName}" 重命名为 "${newName}"`);
+      await loadProjects();
+      if (currentProject === oldName) {
+        setCurrentProject(newName);
+        await loadCurrentDbPath();
+      }
+    } catch (e) {
+      console.error('重命名项目失败:', e);
+      setMessage('重命名项目失败: ' + e);
     }
   };
 
@@ -256,6 +291,36 @@ function App() {
     }
   };
 
+  const handleBatchExport = async () => {
+    if (selectedProjects.size === 0) {
+      setMessage('请先选择要导出的项目');
+      return;
+    }
+
+    try {
+      const destDir = await open({
+        directory: true,
+        multiple: false,
+        title: '选择导出目录',
+      });
+
+      if (!destDir) return;
+
+      const dirPath = Array.isArray(destDir) ? destDir[0] : destDir;
+      const selectedList = Array.from(selectedProjects);
+
+      const exportedPaths = await invoke<string[]>('export_selected_projects', {
+        selectedProjects: selectedList,
+        destDir: dirPath,
+      });
+      setMessage(`成功导出 ${exportedPaths.length} 个项目到: ${dirPath}`);
+      setSelectedProjects(new Set());
+    } catch (e) {
+      console.error('批量导出失败:', e);
+      setMessage('导出失败: ' + e);
+    }
+  };
+
   const refreshAllDatabaseStatus = async () => {
     const newStatuses: DatabaseStatus[] = [];
 
@@ -270,13 +335,17 @@ function App() {
     setAllDatabaseStatus(newStatuses);
   };
 
-  const handleLoadCsv = async () => {
+  const handleLoadFiles = async () => {
     setLoading(true);
     setMessage('');
     try {
       const selected = await open({
-        multiple: true, // 支持多选
-        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        multiple: true,
+        directory: false,
+        filters: [
+          { name: 'CSV/Excel Files', extensions: ['csv', 'xlsx', 'xls'] },
+          { name: 'All Files', extensions: ['*'] }
+        ],
       });
 
       if (!selected) {
@@ -287,42 +356,142 @@ function App() {
       const newItems: ImportItem[] = [];
 
       for (const filePath of filePaths) {
+        const lowerPath = filePath.toLowerCase();
+        const isExcel = lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls');
+        
         try {
-          const result = await invoke<CsvPreview>('load_csv', { filePath });
-          const fileName = filePath.split(/[\\/]/).pop() || 'my_table';
-          const suggestedName = fileName.replace('.csv', '').replace(/[^a-zA-Z0-9_]/g, '_');
-          
-          const initialFields = result.headers.map((header, index) => ({
-            name: header || `column${index + 1}`,
-            dataType: 'VARCHAR' as const,
-          }));
+          if (isExcel) {
+            // Excel文件处理：创建父项 + 多个Sheet子项
+            const excelPreview = await invoke<ExcelPreview>('get_excel_sheets', { filePath });
+            const fileName = filePath.split(/[\\/]/).pop() || 'excel_file';
+            const parentId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+            
+            // 创建父项（Excel分组容器）
+            const parentItem: ImportItem = {
+              id: parentId,
+              fileType: 'excel',
+              filePath,
+              fileName,
+              sheets: excelPreview.sheets,
+              isParent: true,
+              isExpanded: true,
+              // 父项不需要预览和其他字段，仅用于分组显示
+              preview: { headers: [], rows: [] },
+              hasHeader: true,
+              tableName: '',
+              fields: [],
+              selected: false,
+              status: 'idle',
+            };
+            newItems.push(parentItem);
+            
+            // 为每个Sheet创建子项
+            for (let i = 0; i < excelPreview.sheets.length; i++) {
+              const sheet = excelPreview.sheets[i];
+              try {
+                const sheetData = await invoke<CsvPreview>('load_excel_sheet', { filePath, sheetName: sheet.name });
+                const suggestedName = `${fileName.replace(/\.(xlsx|xls)$/i, '')}_${sheet.name}`.replace(/[^a-zA-Z0-9_]/g, '_');
+                const initialFields = sheetData.headers.map((header, idx) => {
+                  // 清理字段名，防止特殊字符导致SQL错误
+                  let cleanName: string = (header || `column${idx + 1}`).toString();
+                  cleanName = cleanName.split('').map(c => {
+                    if (/[a-zA-Z0-9_]/.test(c) || (c >= '\u{4e00}' && c <= '\u{9fff}')) {
+                      return c;
+                    }
+                    return '_';
+                  }).join('');
+                  // 处理空或全下划线的情况
+                  if (!cleanName.trim() || /^_+$/.test(cleanName)) {
+                    cleanName = `column_${idx + 1}`;
+                  }
+                  // 确保不以数字开头
+                  if (/^\d/.test(cleanName)) {
+                    cleanName = `col_${cleanName}`;
+                  }
+                  return {
+                    name: cleanName,
+                    dataType: 'VARCHAR' as const,
+                  };
+                });
+                
+                newItems.push({
+                  id: `${parentId}_sheet_${i}`,
+                  fileType: 'excel',
+                  filePath,
+                  fileName,
+                  sheetName: sheet.name,
+                  preview: sheetData,
+                  hasHeader: true,
+                  tableName: suggestedName,
+                  fields: initialFields,
+                  selected: true,
+                  status: 'previewing',
+                  parentId,
+                  isParent: false,
+                });
+              } catch (e) {
+                console.warn(`加载Sheet '${sheet.name}' 失败:`, e);
+              }
+            }
+          } else {
+            // CSV文件处理：单个项
+            const result = await invoke<CsvPreview>('load_csv', { filePath });
+            const fileName = filePath.split(/[\\/]/).pop() || 'my_table';
+            const suggestedName = fileName.replace('.csv', '').replace(/[^a-zA-Z0-9_]/g, '_');
+            
+            const initialFields = result.headers.map((header, idx) => {
+              // 清理字段名，防止特殊字符导致SQL错误
+              let cleanName: string = (header || `column${idx + 1}`).toString();
+              cleanName = cleanName.split('').map(c => {
+                if (/[a-zA-Z0-9_]/.test(c) || (c >= '\u{4e00}' && c <= '\u{9fff}')) {
+                  return c;
+                }
+                return '_';
+              }).join('');
+              // 处理空或全下划线的情况
+              if (!cleanName.trim() || /^_+$/.test(cleanName)) {
+                cleanName = `column_${idx + 1}`;
+              }
+              // 确保不以数字开头
+              if (/^\d/.test(cleanName)) {
+                cleanName = `col_${cleanName}`;
+              }
+              return {
+                name: cleanName,
+                dataType: 'VARCHAR' as const,
+              };
+            });
 
-          newItems.push({
-            id: Date.now() + Math.random().toString(36).substr(2, 9),
-            fileType: 'csv',
-            filePath,
-            fileName,
-            preview: result,
-            hasHeader: true,
-            tableName: suggestedName,
-            fields: initialFields,
-            selected: true,
-            status: 'previewing' as ImportStatus,
-          });
+            newItems.push({
+              id: Date.now() + Math.random().toString(36).substr(2, 9),
+              fileType: 'csv',
+              filePath,
+              fileName,
+              preview: result,
+              hasHeader: true,
+              tableName: suggestedName,
+              fields: initialFields,
+              selected: true,
+              status: 'previewing',
+            });
+          }
         } catch (e) {
           console.error(`加载文件失败: ${filePath}`, e);
           const fileName = filePath.split(/[\\/]/).pop() || 'unknown';
+          const lowerPath = filePath.toLowerCase();
+          const isExcel = lowerPath.endsWith('.xlsx') || lowerPath.endsWith('.xls');
+          
           newItems.push({
             id: Date.now() + Math.random().toString(36).substr(2, 9),
-            fileType: 'csv',
+            fileType: isExcel ? 'excel' : 'csv',
             filePath,
             fileName,
             preview: { headers: [], rows: [] },
             hasHeader: true,
-            tableName: fileName.replace('.csv', '').replace(/[^a-zA-Z0-9_]/g, '_'),
+            tableName: fileName.replace(/\.(csv|xlsx|xls)$/i, '').replace(/[^a-zA-Z0-9_]/g, '_'),
             fields: [],
             selected: true,
-            status: 'error' as ImportStatus,
+            status: 'error',
             error: `加载失败: ${e}`,
           });
         }
@@ -330,13 +499,14 @@ function App() {
 
       setImportItems(prev => [...prev, ...newItems]);
       
-      // 自动选中第一个新增项
-      if (newItems.length > 0) {
-        setActiveImportItemId(newItems[0].id);
+      // 自动选中第一个可预览的项
+      const firstSelectable = newItems.find(item => !item.isParent && item.status !== 'error');
+      if (firstSelectable) {
+        setActiveImportItemId(firstSelectable.id);
       }
 
       const successCount = newItems.filter(i => i.status !== 'error').length;
-      setMessage(`成功加载 ${successCount} 个文件`);
+      setMessage(`成功加载 ${successCount} 个文件/工作表`);
     } catch (e) {
       console.error('错误:', e);
       setMessage('加载失败: ' + e);
@@ -509,23 +679,6 @@ function App() {
     }
   };
 
-  const handleDeleteTable = async (tableName: string) => {
-    if (!confirm(`确定要删除表 "${tableName}" 吗？此操作不可恢复。`)) {
-      return;
-    }
-
-    try {
-      await invoke<string>('delete_table', { tableName });
-      setMessage(`表 "${tableName}" 已删除`);
-      await refreshAllDatabaseStatus();
-      const tables = await invoke<string[]>('list_tables');
-      setTables(tables);
-    } catch (e) {
-      console.error('删除表失败:', e);
-      setMessage('删除表失败: ' + e);
-    }
-  };
-
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
 
   const previewGridOptions = {
@@ -546,11 +699,6 @@ function App() {
       resizable: true,
       minWidth: 120,
     },
-  };
-
-  const getCurrentDbTables = () => {
-    const status = allDatabaseStatus.find(s => s.db_type.toLowerCase() === 'sqlite');
-    return status?.tables || [];
   };
 
   return (
@@ -580,7 +728,16 @@ function App() {
               <line x1="16" y1="17" x2="8" y2="17"></line>
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
-            {currentProject || '项目管理'}
+            <span style={{ fontWeight: 500 }}>项目</span>
+            <span style={{ 
+              color: '#666', 
+              background: '#e9ecef', 
+              padding: '2px 8px', 
+              borderRadius: '4px',
+              fontSize: '13px'
+            }}>
+              {currentProject || '未选择'}
+            </span>
           </button>
         </div>
 
@@ -664,7 +821,7 @@ function App() {
           {/* 顶部操作栏 */}
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #ddd', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
             <button
-              onClick={handleLoadCsv}
+              onClick={handleLoadFiles}
               disabled={loading}
               style={{
                 padding: '10px 20px',
@@ -677,7 +834,7 @@ function App() {
                 opacity: loading ? 0.7 : 1,
               }}
             >
-              + 添加文件
+              + 添加文件 (CSV/Excel)
             </button>
 
             {importItems.length > 0 && (
@@ -759,99 +916,208 @@ function App() {
                   文件队列 ({importItems.length})
                 </div>
                 
-                {importItems.map((item) => {
-                  const isActive = activeImportItemId === item.id;
-                  return (
-                    <div
-                      key={item.id}
-                      onClick={() => setActiveImportItemId(item.id)}
-                      style={{
-                        padding: '12px 16px',
-                        borderBottom: '1px solid #eee',
-                        background: isActive ? '#e3f2fd' : 'transparent',
-                        cursor: 'pointer',
-                        borderLeft: isActive ? '3px solid #2196f3' : '3px solid transparent',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                        <input
-                          type="checkbox"
-                          checked={item.selected}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setImportItems(prev => prev.map(i => i.id === item.id ? { ...i, selected: !i.selected } : i));
-                          }}
-                          style={{ cursor: 'pointer' }}
-                        />
-                        <span style={{ fontSize: '14px', fontWeight: '500', color: '#333', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.fileName}>
-                          {item.fileName}
-                        </span>
-                        <span style={{ fontSize: '12px', color: '#666' }}>
-                          {item.preview.rows.length} 行
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (window.confirm(`确定要删除 ${item.fileName} 吗？`)) {
-                              setImportItems(prev => {
-                                const filtered = prev.filter(i => i.id !== item.id);
-                                if (activeImportItemId === item.id) {
-                                  setActiveImportItemId(filtered[0]?.id || null);
+                {(() => {
+                  // 构建父子关系
+                  const parents = importItems.filter(i => i.isParent);
+                  const orphans = importItems.filter(i => !i.isParent && !i.parentId);
+                  
+                  // 渲染函数
+                  const renderItem = (item: ImportItem, indent: number = 0) => {
+                    const isActive = activeImportItemId === item.id;
+                    
+                    // 父项渲染（Excel文件）
+                    if (item.isParent && item.sheets) {
+                      const childItems = importItems.filter(i => i.parentId === item.id);
+                      const allChildrenSelected = childItems.every(i => i.selected);
+                      const someChildrenSelected = childItems.some(i => i.selected);
+                      
+                      return (
+                        <div key={item.id}>
+                          {/* 父项（Excel文件标题） */}
+                          <div
+                            style={{
+                              padding: '10px 16px',
+                              borderBottom: '1px solid #eee',
+                              background: '#e9ecef',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px',
+                            }}
+                            onClick={() => {
+                              setImportItems(prev => prev.map(i => 
+                                i.id === item.id ? { ...i, isExpanded: !i.isExpanded } : i
+                              ));
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={allChildrenSelected}
+                              ref={(input) => {
+                                if (input) {
+                                  input.indeterminate = someChildrenSelected && !allChildrenSelected;
                                 }
-                                return filtered;
-                              });
-                            }
-                          }}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: '#999',
-                            cursor: 'pointer',
-                            padding: '0 2px',
-                            fontSize: '16px',
-                            lineHeight: 1,
-                          }}
-                          title="删除"
-                        >
-                          ×
-                        </button>
+                              }}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                // 全选/取消全选子项
+                                setImportItems(prev => prev.map(i => 
+                                  i.parentId === item.id ? { ...i, selected: !allChildrenSelected } : i
+                                ));
+                              }}
+                              style={{ cursor: 'pointer' }}
+                            />
+                            <span style={{ fontSize: '12px', fontWeight: 'bold' }}>
+                              {item.isExpanded ? '▼' : '▶'}
+                            </span>
+                            <span style={{ fontSize: '14px', fontWeight: '500', color: '#333', flex: 1 }}>
+                              📁 {item.fileName}
+                              <span style={{ fontSize: '12px', color: '#666', marginLeft: '8px' }}>
+                                ({item.sheets.length} 个工作表)
+                              </span>
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`确定要删除 ${item.fileName} 及其所有工作表吗？`)) {
+                                  setImportItems(prev => {
+                                    const filtered = prev.filter(i => i.id !== item.id && i.parentId !== item.id);
+                                    if (activeImportItemId === item.id || filtered.findIndex(i => i.id === activeImportItemId) === -1) {
+                                      setActiveImportItemId(filtered[0]?.id || null);
+                                    }
+                                    return filtered;
+                                  });
+                                }
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#999',
+                                cursor: 'pointer',
+                                padding: '0 4px',
+                                fontSize: '16px',
+                              }}
+                              title="删除整个文件"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          
+                          {/* 子项（Sheet） */}
+                          {item.isExpanded && childItems.map(child => renderItem(child, 1))}
+                        </div>
+                      );
+                    }
+                    
+                    // 子项或普通项（Sheet或CSV）
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => !item.isParent && setActiveImportItemId(item.id)}
+                        style={{
+                          padding: '10px 16px',
+                          paddingLeft: `${16 + indent * 24}px`,
+                          borderBottom: '1px solid #eee',
+                          background: isActive ? '#e3f2fd' : 'transparent',
+                          cursor: item.isParent ? 'default' : 'pointer',
+                          borderLeft: isActive ? '3px solid #2196f3' : '3px solid transparent',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                          <input
+                            type="checkbox"
+                            checked={item.selected}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setImportItems(prev => prev.map(i => i.id === item.id ? { ...i, selected: !i.selected } : i));
+                            }}
+                            style={{ cursor: 'pointer' }}
+                          />
+                          {item.parentId && <span style={{ fontSize: '12px', color: '#666' }}>📄</span>}
+                          <span style={{ fontSize: '14px', fontWeight: '500', color: '#333', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.sheetName || item.fileName}>
+                            {item.sheetName || item.fileName}
+                          </span>
+                          {!item.isParent && (
+                            <span style={{ fontSize: '12px', color: '#666' }}>
+                              {item.preview.rows.length} 行
+                            </span>
+                          )}
+                          {!item.isParent && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`确定要删除 ${item.sheetName || item.fileName} 吗？`)) {
+                                  setImportItems(prev => {
+                                    const filtered = prev.filter(i => i.id !== item.id);
+                                    if (activeImportItemId === item.id) {
+                                      setActiveImportItemId(filtered[0]?.id || null);
+                                    }
+                                    return filtered;
+                                  });
+                                }
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#999',
+                                cursor: 'pointer',
+                                padding: '0 2px',
+                                fontSize: '16px',
+                                lineHeight: 1,
+                              }}
+                              title="删除"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                        {!item.isParent && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '24px' }}>
+                            <span style={{ fontSize: '12px', color: '#666' }}>表名:</span>
+                            <input
+                              type="text"
+                              value={item.tableName}
+                              onKeyDown={(e) => {
+                                if (e.key === '.') {
+                                  e.preventDefault();
+                                }
+                              }}
+                              onChange={(e) => {
+                                const newName = e.target.value.replace(/\./g, '');
+                                setImportItems(prev => prev.map(i => i.id === item.id ? { ...i, tableName: newName } : i));
+                              }}
+                              style={{
+                                padding: '4px 8px',
+                                border: '1px solid #ddd',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                minWidth: '100px',
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            {item.status === 'error' && (
+                              <span style={{ fontSize: '11px', color: '#dc3545' }}>错误</span>
+                            )}
+                            {item.status === 'success' && (
+                              <span style={{ fontSize: '11px', color: '#28a745' }}>✓ 已导入</span>
+                            )}
+                            {item.status === 'importing' && (
+                              <span style={{ fontSize: '11px', color: '#007bff' }}>导入中...</span>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '24px' }}>
-                        <span style={{ fontSize: '12px', color: '#666' }}>表名:</span>
-                        <input
-                          type="text"
-                          value={item.tableName}
-                          onKeyDown={(e) => {
-                            if (e.key === '.') {
-                              e.preventDefault();
-                            }
-                          }}
-                          onChange={(e) => {
-                            const newName = e.target.value.replace(/\./g, '');
-                            setImportItems(prev => prev.map(i => i.id === item.id ? { ...i, tableName: newName } : i));
-                          }}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #ddd',
-                            borderRadius: '4px',
-                            fontSize: '12px',
-                            minWidth: '100px',
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                        {item.status === 'error' && (
-                          <span style={{ fontSize: '11px', color: '#dc3545' }}>错误</span>
-                        )}
-                        {item.status === 'success' && (
-                          <span style={{ fontSize: '11px', color: '#28a745' }}>✓ 已导入</span>
-                        )}
-                        {item.status === 'importing' && (
-                          <span style={{ fontSize: '11px', color: '#007bff' }}>导入中...</span>
-                        )}
-                      </div>
-                    </div>
+                    );
+                  };
+                  
+                  // 渲染所有内容
+                  return (
+                    <>
+                      {parents.map(p => renderItem(p))}
+                      {orphans.map(o => renderItem(o))}
+                    </>
                   );
-                })}
+                })()}
               </div>
 
               {/* 右侧：选中项的预览和配置 */}
@@ -881,6 +1147,16 @@ function App() {
                     <>
                       {/* 配置栏 */}
                       <div style={{ padding: '12px 20px', borderBottom: '1px solid #ddd', display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        {/* 显示文件/工作表信息 */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '14px', color: '#666' }}>
+                            {activeItem.fileType === 'excel' ? '工作表' : '文件'}:
+                          </span>
+                          <span style={{ fontSize: '14px', fontWeight: '500', color: '#333' }}>
+                            {activeItem.sheetName || activeItem.fileName}
+                          </span>
+                        </div>
+                        
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', cursor: 'pointer' }}>
                           <input
                             type="checkbox"
@@ -888,13 +1164,28 @@ function App() {
                             onChange={() => {
                               const newHasHeader = !activeItem.hasHeader;
                               const newFields = newHasHeader 
-                                ? activeItem.preview.headers.map((header, idx) => ({
-                                    name: header || `column${idx + 1}`,
-                                    dataType: 'VARCHAR' as const,
-                                  }))
+                                ? activeItem.preview.headers.map((header, idx) => {
+                                    let cleanName: string = (header || `column${idx + 1}`).toString();
+                                    cleanName = cleanName.split('').map(c => {
+                                      if (/[a-zA-Z0-9_]/.test(c) || (c >= '\u{4e00}' && c <= '\u{9fff}')) {
+                                        return c;
+                                      }
+                                      return '_';
+                                    }).join('');
+                                    if (!cleanName.trim() || /^_+$/.test(cleanName)) {
+                                      cleanName = `column_${idx + 1}`;
+                                    }
+                                    if (/^\d/.test(cleanName)) {
+                                      cleanName = `col_${cleanName}`;
+                                    }
+                                    return {
+                                      name: cleanName,
+                                      dataType: 'VARCHAR' as const,
+                                    };
+                                  })
                                 : (activeItem.preview.headers.length > 0 
                                     ? activeItem.preview.headers.map((_, idx) => ({
-                                        name: `column${idx + 1}`,
+                                        name: `column_${idx + 1}`,
                                         dataType: 'VARCHAR' as const,
                                       }))
                                     : activeItem.fields);
@@ -955,11 +1246,20 @@ function App() {
 
                       {/* 字段编辑区 */}
                       {activeItem.fields.length > 0 && (
-                        <div style={{ padding: '12px 20px', borderBottom: '1px solid #eee', background: '#fafafa', maxHeight: '200px', overflowY: 'auto' }}>
-                          <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#333' }}>字段信息</h4>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '10px' }}>
+                        <div style={{ padding: '16px 20px', borderBottom: '1px solid #eee', background: '#fafafa', maxHeight: '280px', overflowY: 'auto' }}>
+                          <h4 style={{ margin: '0 0 16px 0', fontSize: '15px', color: '#333', fontWeight: 600 }}>字段信息</h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '12px' }}>
                             {activeItem.fields.map((field, index) => (
-                              <div key={index} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <div key={index} style={{ 
+                                display: 'flex', 
+                                gap: '10px', 
+                                alignItems: 'center',
+                                padding: '8px 12px',
+                                background: 'white',
+                                border: '1px solid #e0e0e0',
+                                borderRadius: '8px',
+                                transition: 'all 0.2s',
+                              }}>
                                 <input
                                   type="text"
                                   value={field.name}
@@ -969,7 +1269,23 @@ function App() {
                                     }
                                   }}
                                   onChange={(e) => {
-                                    const newName = e.target.value.replace(/\./g, '');
+                                    // 清理字段名，防止特殊字符
+                                    let newName: string = e.target.value;
+                                    newName = newName.split('').map(c => {
+                                      if (/[a-zA-Z0-9_]/.test(c) || (c >= '\u{4e00}' && c <= '\u{9fff}')) {
+                                        return c;
+                                      }
+                                      return '_';
+                                    }).join('');
+                                    // 处理空或全下划线的情况
+                                    if (!newName.trim() || /^_+$/.test(newName)) {
+                                      newName = `column_${index + 1}`;
+                                    }
+                                    // 确保不以数字开头
+                                    if (/^\d/.test(newName)) {
+                                      newName = `col_${newName}`;
+                                    }
+                                    
                                     setImportItems(prev => prev.map(i => {
                                       if (i.id !== activeImportItemId) return i;
                                       const newFields = [...i.fields];
@@ -977,8 +1293,18 @@ function App() {
                                       return { ...i, fields: newFields };
                                     }));
                                   }}
-                                  style={{ flex: 1, padding: '6px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px' }}
+                                  style={{ 
+                                    flex: 2, 
+                                    padding: '8px 12px', 
+                                    border: '1px solid #ddd', 
+                                    borderRadius: '6px', 
+                                    fontSize: '14px',
+                                    outline: 'none',
+                                    transition: 'border-color 0.2s',
+                                  }}
                                   placeholder="字段名"
+                                  onFocus={(e) => e.target.style.borderColor = '#007bff'}
+                                  onBlur={(e) => e.target.style.borderColor = '#ddd'}
                                 />
                                 <select
                                   value={field.dataType}
@@ -990,7 +1316,17 @@ function App() {
                                       return { ...i, fields: newFields };
                                     }));
                                   }}
-                                  style={{ padding: '6px 10px', border: '1px solid #ddd', borderRadius: '4px', fontSize: '13px', minWidth: '100px' }}
+                                  style={{ 
+                                    padding: '8px 12px', 
+                                    border: '1px solid #ddd', 
+                                    borderRadius: '6px', 
+                                    fontSize: '14px',
+                                    minWidth: '120px',
+                                    outline: 'none',
+                                    transition: 'border-color 0.2s',
+                                  }}
+                                  onFocus={(e) => e.target.style.borderColor = '#007bff'}
+                                  onBlur={(e) => e.target.style.borderColor = '#ddd'}
                                 >
                                   {DATA_TYPES.map((type) => (
                                     <option key={type} value={type}>{type}</option>
@@ -1009,11 +1345,14 @@ function App() {
                                     border: 'none',
                                     color: '#dc3545',
                                     cursor: 'pointer',
-                                    fontSize: '16px',
-                                    padding: '0',
-                                    lineHeight: 1,
+                                    fontSize: '18px',
+                                    padding: '4px 8px',
+                                    borderRadius: '4px',
+                                    transition: 'background 0.2s',
                                   }}
                                   title="删除字段"
+                                  onMouseEnter={(e) => e.currentTarget.style.background = '#f8d7da'}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
                                 >
                                   ×
                                 </button>
@@ -1026,6 +1365,7 @@ function App() {
                       {/* 预览表格 */}
                       <div style={{ flex: 1, overflow: 'hidden' }}>
                         <AgGridReact
+                          className="ag-theme-alpine"
                           rowData={activePreviewRowData as any}
                           columnDefs={activePreviewColDefs as any}
                           domLayout="normal"
@@ -1055,106 +1395,84 @@ function App() {
       {/* SQL 查询页面 */}
       {activeTab === 'sql' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ padding: '16px 20px', borderBottom: '1px solid #ddd' }}>
+          <div style={{ padding: '16px 20px', borderBottom: '1px solid #ddd', flexShrink: 0 }}>
+            {/* 简化的数据库状态栏 */}
             {allDatabaseStatus.length > 0 && (
               <div style={{
                 display: 'flex',
+                alignItems: 'center',
                 gap: '12px',
                 marginBottom: '12px',
-                flexWrap: 'wrap'
+                padding: '12px',
+                background: '#f8f9fa',
+                borderRadius: '8px',
+                border: '1px solid #dee2e6'
               }}>
-                {allDatabaseStatus.map((dbStatus) => {
-                  const isCurrent = dbStatus.db_type.toLowerCase() === 'sqlite';
+                {(() => {
+                  const currentDb = allDatabaseStatus.find(d => d.db_type.toLowerCase() === 'sqlite') || allDatabaseStatus[0];
+                  const MAX_VISIBLE_TABLES = 3;
+                  const visibleTables = currentDb.tables.slice(0, MAX_VISIBLE_TABLES);
+                  const hiddenCount = currentDb.tables.length - MAX_VISIBLE_TABLES;
                   return (
-                    <div key={dbStatus.db_type} style={{
-                      flex: '1 1 300px',
-                      padding: '12px',
-                      background: isCurrent ? '#e3f2fd' : '#f8f9fa',
-                      borderRadius: '6px',
-                      border: isCurrent ? '2px solid #2196f3' : '1px solid #dee2e6',
-                      opacity: isCurrent ? 1 : 0.7,
-                    }}>
-                      <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: '#333', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span style={{
-                          width: '8px',
-                          height: '8px',
+                          width: '10px',
+                          height: '10px',
                           borderRadius: '50%',
-                          background: dbStatus.is_connected ? '#28a745' : '#dc3545'
+                          background: currentDb.is_connected ? '#28a745' : '#dc3545'
                         }}></span>
-                        {dbStatus.db_type}
-                        {isCurrent && (
-                          <span style={{ fontSize: '11px', background: '#2196f3', color: 'white', padding: '2px 6px', borderRadius: '3px' }}>当前数据库</span>
-                        )}
-                        <span style={{ fontSize: '12px', color: '#666', marginLeft: 'auto' }}>{dbStatus.tables.length} 个表</span>
-                      </h4>
-                      {dbStatus.tables.length > 0 && (
-                        <div style={{
-                          display: 'flex',
-                          flexWrap: 'wrap',
-                          gap: '6px',
-                          fontSize: '12px'
-                        }}>
-                          {dbStatus.tables.map((table) => (
-                            <div key={table} style={{
-                              padding: '4px 10px',
-                              background: isCurrent ? '#fff' : '#e9ecef',
-                              borderRadius: '4px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              border: '1px solid #dee2e6',
-                            }}>
-                              <span
-                                style={{ fontWeight: 500, fontSize: '11px', cursor: 'pointer' }}
-                                onClick={() => updateQuerySql(activeQueryId, `SELECT * FROM "${table}"`)}
-                              >
-                                {table}
+                        <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#333' }}>{currentDb.db_type}</span>
+                        <span style={{ fontSize: '11px', background: '#2196f3', color: 'white', padding: '2px 6px', borderRadius: '3px' }}>当前</span>
+                      </div>
+                      <div style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '6px',
+                        flex: 1
+                      }}>
+                        {visibleTables.map((table) => (
+                          <div key={table} style={{
+                            padding: '4px 10px',
+                            background: '#fff',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            border: '1px solid #dee2e6',
+                            fontSize: '12px'
+                          }}>
+                            <span
+                              style={{ fontWeight: 500, cursor: 'pointer' }}
+                              onClick={() => updateQuerySql(activeQueryId, `SELECT * FROM "${table}"`)}
+                            >
+                              {table}
+                            </span>
+                            {currentDb.row_count.find(([t]) => t === table) && (
+                              <span style={{ color: '#007bff', fontSize: '10px' }}>
+                                ({currentDb.row_count.find(([t]) => t === table)?.[1]})
                               </span>
-                              {dbStatus.row_count.find(([t]) => t === table) && (
-                                <span style={{ color: '#007bff', fontSize: '10px' }}>
-                                  ({dbStatus.row_count.find(([t]) => t === table)?.[1]})
-                                </span>
-                              )}
-                              {isCurrent && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteTable(table);
-                                  }}
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    color: '#dc3545',
-                                    cursor: 'pointer',
-                                    fontSize: '12px',
-                                    padding: '0 2px',
-                                  }}
-                                  title="删除表"
-                                >
-                                  ×
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {dbStatus.tables.length === 0 && (
-                        <div style={{ fontSize: '12px', color: '#999', fontStyle: 'italic' }}>暂无表</div>
-                      )}
-                    </div>
+                            )}
+                          </div>
+                        ))}
+                        {hiddenCount > 0 && (
+                          <div style={{
+                            padding: '4px 10px',
+                            background: '#e9ecef',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            color: '#666'
+                          }}>
+                            +{hiddenCount} 个表
+                          </div>
+                        )}
+                        {currentDb.tables.length === 0 && (
+                          <span style={{ fontSize: '12px', color: '#999', fontStyle: 'italic' }}>暂无表</span>
+                        )}
+                      </div>
+                    </>
                   );
-                })}
-              </div>
-            )}
-
-            {getCurrentDbTables().length > 0 && (
-              <div style={{ marginBottom: '12px', padding: '10px', background: '#fff3cd', borderRadius: '6px', border: '1px solid #ffc107' }}>
-                <span style={{ fontSize: '14px', color: '#856404', fontWeight: 'bold' }}>
-                  当前数据库: SQLite
-                </span>
-                <span style={{ fontSize: '13px', color: '#856404', marginLeft: '12px' }}>
-                  表: {getCurrentDbTables().join(', ')}
-                </span>
+                })()}
               </div>
             )}
 
@@ -1341,8 +1659,9 @@ function App() {
                       <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px' }}>
                         返回 {stmtResult.rows.length} 行，{stmtResult.columns.length} 列
                       </div>
-                      <div style={{ height: '200px', overflow: 'hidden' }}>
+                      <div style={{ height: '300px', overflow: 'hidden' }}>
                         <AgGridReact
+                          className="ag-theme-alpine"
                           rowData={stmtResult.rows.map((row, rowIndex) => ({ rowIndex, ...row })) as any}
                           columnDefs={stmtResult.columns.map((header, colIndex) => ({
                             field: `col${colIndex}` as any,
@@ -1474,30 +1793,150 @@ function App() {
 
               {/* 项目列表 */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ fontSize: '14px', color: '#333', marginBottom: '8px', display: 'block' }}>
-                  现有项目 ({projects.length})
-                </label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ fontSize: '14px', color: '#333', margin: 0 }}>
+                    现有项目 ({projects.length})
+                  </label>
+                  {projects.length > 0 && (
+                    <button
+                      onClick={() => {
+                        if (selectedProjects.size === projects.length) {
+                          setSelectedProjects(new Set());
+                        } else {
+                          setSelectedProjects(new Set(projects));
+                        }
+                      }}
+                      style={{
+                        padding: '4px 10px',
+                        background: '#f5f5f5',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {selectedProjects.size === projects.length ? '取消全选' : '全选'}
+                    </button>
+                  )}
+                </div>
                 {projects.length > 0 ? (
-                  <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '6px' }}>
+                  <div style={{ maxHeight: '240px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '8px' }}>
                     {projects.map((project) => (
                       <div
                         key={project}
                         style={{
-                          padding: '12px 16px',
+                          padding: '12px 14px',
                           borderBottom: '1px solid #eee',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
-                          cursor: 'pointer',
                           background: currentProject === project ? '#e3f2fd' : 'transparent',
                         }}
-                        onClick={() => {
-                          switchProject(project);
-                          setShowProjectModal(false);
-                        }}
                       >
-                        <span style={{ fontSize: '14px', color: '#333' }}>{project}</span>
-                        <span style={{ fontSize: '12px', color: '#007bff' }}>点击切换</span>
+                        <div style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedProjects.has(project)}
+                            onChange={(e) => {
+                              const newSelected = new Set(selectedProjects);
+                              if (e.target.checked) {
+                                newSelected.add(project);
+                              } else {
+                                newSelected.delete(project);
+                              }
+                              setSelectedProjects(newSelected);
+                            }}
+                            style={{
+                              marginRight: '12px',
+                              width: '16px',
+                              height: '16px',
+                              cursor: 'pointer'
+                            }}
+                          />
+                          <div
+                            style={{
+                              flex: 1,
+                              fontSize: '14px',
+                              color: currentProject === project ? '#1976d2' : '#333',
+                              cursor: 'pointer',
+                              padding: '6px 0',
+                              fontWeight: currentProject === project ? 600 : 400,
+                            }}
+                            onClick={(e) => {
+                              switchProject(project);
+                              if (!e.ctrlKey) {
+                                setShowProjectModal(false);
+                              }
+                            }}
+                            title={currentProject !== project ? "Ctrl+点击可保持打开" : ""}
+                          >
+                            {project}
+                            {currentProject === project && <span style={{ marginLeft: '8px', fontSize: '12px', color: '#4caf50' }}>当前</span>}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          {/* 重命名按钮 */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const newName = prompt('请输入新的项目名称:', project);
+                              if (newName && newName.trim() && newName !== project) {
+                                handleRenameProject(project, newName.trim());
+                              }
+                            }}
+                            style={{
+                              padding: '6px 10px',
+                              border: '1px solid #ff9800',
+                              borderRadius: '6px',
+                              background: '#fff',
+                              color: '#f57c00',
+                              cursor: 'pointer',
+                              fontSize: '13px',
+                              transition: 'all 0.2s',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = '#fff3e0';
+                              e.currentTarget.style.borderColor = '#f57c00';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = '#fff';
+                              e.currentTarget.style.borderColor = '#ff9800';
+                            }}
+                            title="重命名"
+                          >
+                            ✏️
+                          </button>
+                          {/* 删除按钮 */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`确定要删除项目 "${project}" 吗？此操作不可恢复！`)) {
+                                handleDeleteProject(project);
+                              }
+                            }}
+                            style={{
+                              padding: '6px 10px',
+                              border: '1px solid #f44336',
+                              borderRadius: '6px',
+                              background: '#fff',
+                              color: '#d32f2f',
+                              cursor: 'pointer',
+                              fontSize: '13px',
+                              transition: 'all 0.2s',
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = '#ffebee';
+                              e.currentTarget.style.borderColor = '#d32f2f';
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = '#fff';
+                              e.currentTarget.style.borderColor = '#f44336';
+                            }}
+                            title="删除"
+                          >
+                            🗑️
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1507,6 +1946,30 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {selectedProjects.size > 0 && (
+                <div style={{ marginBottom: '20px', padding: '12px', background: '#e3f2fd', borderRadius: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '14px', color: '#1976d2' }}>
+                      已选择 {selectedProjects.size} 个项目
+                    </span>
+                    <button
+                      onClick={handleBatchExport}
+                      style={{
+                        padding: '8px 20px',
+                        background: '#28a745',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                      }}
+                    >
+                      📤 批量导出
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* 自定义数据库路径 */}
               <div style={{ marginBottom: '20px' }}>
@@ -1571,27 +2034,6 @@ function App() {
                 )}
               </div>
 
-              {/* 导出数据库 */}
-              <div>
-                <button
-                  onClick={() => {
-                    exportDatabase();
-                    setShowProjectModal(false);
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '10px',
-                    background: '#6c757d',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '14px'
-                  }}
-                >
-                  导出当前数据库
-                </button>
-              </div>
             </div>
           </div>
         </div>

@@ -25,6 +25,15 @@ pub enum ProjectError {
     
     #[error("数据库验证失败: {0}")]
     ValidationFailed(String),
+    
+    #[error("项目名称无效: {0}")]
+    InvalidName(String),
+    
+    #[error("项目已存在: {0}")]
+    ProjectExists(String),
+    
+    #[error("重命名项目失败: {0}")]
+    RenameFailed(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProjectError>;
@@ -106,6 +115,32 @@ impl ProjectManager {
         
         std::fs::remove_dir_all(&project_dir)
             .map_err(|e| ProjectError::CreateDirFailed(e.to_string()))?;
+        
+        Ok(())
+    }
+    
+    pub fn rename_project(old_name: &str, new_name: &str) -> Result<()> {
+        let base_dir = data_dir()
+            .ok_or(ProjectError::DataDirNotFound)?
+            .join("la-duck");
+        
+        let old_dir = base_dir.join(old_name);
+        let new_dir = base_dir.join(new_name);
+        
+        if !old_dir.exists() {
+            return Err(ProjectError::DbNotFound);
+        }
+        
+        if new_dir.exists() {
+            return Err(ProjectError::ProjectExists(new_name.to_string()));
+        }
+        
+        if new_name.trim().is_empty() {
+            return Err(ProjectError::InvalidName("项目名称不能为空".to_string()));
+        }
+        
+        std::fs::rename(&old_dir, &new_dir)
+            .map_err(|e| ProjectError::RenameFailed(e.to_string()))?;
         
         Ok(())
     }

@@ -5,6 +5,12 @@ description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
 
+[profile.dev]
+incremental = true
+
+[profile.release]
+incremental = true
+
 [lib]
 name = "tv_sc_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -28,3 +34,4 @@ tempfile = "3.8"
 duckdb = { version = "1.106", features = ["bundled", "vtab-full"] }
 regex = "1.10"
 log = "0.4"
+calamine = "0.26"
