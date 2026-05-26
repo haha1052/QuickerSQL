@@ -48,22 +48,13 @@ impl QueryRouter {
         false
     }
 
-    /// 自动路由表名
-    /// 将用户写的表名（如 orders）转换为 DuckDB 中的限定名（sqlite_db.orders）
-    pub fn route_table_names(sql: &str, table_names: &[&str]) -> String {
-        let mut result = sql.to_string();
-        
-        for table_name in table_names {
-            result = result.replace(&format!(" FROM {} ", table_name), &format!(" FROM sqlite_db.{} ", table_name));
-            result = result.replace(&format!(" FROM {}", table_name), &format!(" FROM sqlite_db.{}", table_name));
-            result = result.replace(&format!(" JOIN {} ", table_name), &format!(" JOIN sqlite_db.{} ", table_name));
-            result = result.replace(&format!(" JOIN {}", table_name), &format!(" JOIN sqlite_db.{}", table_name));
-            result = result.replace(&format!(" {} AS ", table_name), &format!(" sqlite_db.{} AS ", table_name));
-            result = result.replace(&format!(", {}", table_name), &format!(", sqlite_db.{}", table_name));
-        }
-        
-        log::trace!("Table name routing completed: {} -> {}", sql, result);
-        result
+    /// 自动路由表名（VIEW 机制）
+    /// 在 VIEW 机制下，SQL 查询不需要任何修改，直接返回即可
+    pub fn route_table_names(sql: &str, _table_names: &[&str]) -> Result<String> {
+        // VIEW 机制下，SQL 查询不需要任何修改
+        // 因为已经为每个表创建了同名的 VIEW，会自动路由到 sqlite_db.xxx
+        log::trace!("VIEW routing: passing SQL through unchanged: {}", sql);
+        Ok(sql.to_string())
     }
 
     /// 从 SQLite 获取当前数据库的所有表名
@@ -114,17 +105,45 @@ mod tests {
     }
 
     #[test]
-    fn test_route_table_names() {
+    fn test_route_table_names_safe() {
         let tables = ["users", "orders"];
         
+        // 在 VIEW 机制下，SQL 不应该被修改
         let result = QueryRouter::route_table_names("SELECT * FROM users", &tables);
-        assert!(result.contains("sqlite_db.users"));
+        assert!(result.is_ok());
+        let result_str = result.unwrap();
+        // SQL 保持不变，因为 VIEW 会自动处理
+        assert_eq!(result_str, "SELECT * FROM users");
         
         let result = QueryRouter::route_table_names(
             "SELECT * FROM users JOIN orders ON users.id = orders.user_id",
             &tables
         );
-        assert!(result.contains("sqlite_db.users"));
-        assert!(result.contains("sqlite_db.orders"));
+        assert!(result.is_ok());
+        let result_str = result.unwrap();
+        // SQL 保持不变
+        assert_eq!(result_str, "SELECT * FROM users JOIN orders ON users.id = orders.user_id");
+    }
+    
+    #[test]
+    fn test_route_table_names_invalid() {
+        // 在 VIEW 机制下，表名验证在创建 VIEW 时完成，路由时不再验证
+        // 因为 route_table_names() 不再处理的表名列表现在只是通过
+        let tables = ["users; DROP TABLE"];
+        
+        let result = QueryRouter::route_table_names("SELECT * FROM users; DROP TABLE", &tables);
+        // 现在直接通过（因为验证逻辑移到了 VIEW 创建时）
+        assert!(result.is_ok());
+    }
+    
+    #[test]
+    fn test_route_table_names_with_prefix() {
+        let tables = ["users", "user_profiles"];
+        
+        let result = QueryRouter::route_table_names("SELECT * FROM user_profiles", &tables);
+        assert!(result.is_ok());
+        let result_str = result.unwrap();
+        assert_eq!(result_str, "SELECT * FROM user_profiles");
+        // VIEW 机制会正确工作，不需要任何替换
     }
 }
