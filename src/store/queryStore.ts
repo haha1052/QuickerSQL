@@ -1,0 +1,123 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import type { SqlQuery, QueryResult, QueryHistoryItem } from '../types';
+
+interface QueryState {
+  sqlQueries: SqlQuery[];
+  activeQueryId: string;
+  queryLoading: string | null;
+  queryHistory: QueryHistoryItem[];
+  
+  setSqlQueries: (queries: SqlQuery[]) => void;
+  addSqlQuery: () => void;
+  updateSqlQuery: (id: string, updates: Partial<SqlQuery>) => void;
+  removeSqlQuery: (id: string) => void;
+  setActiveQueryId: (id: string) => void;
+  setQueryLoading: (id: string | null) => void;
+  setQueryResult: (id: string, result: QueryResult | null) => void;
+  setBatchResults: (id: string, batchResults: any[] | null) => void;
+  addToHistory: (sql: string, success?: boolean, rowCount?: number | null) => void;
+  removeFromHistory: (id: string) => void;
+  clearHistory: () => void;
+}
+
+export const useQueryStore = create<QueryState>()(
+  persist(
+    (set) => ({
+      sqlQueries: [
+        { 
+          id: '1', 
+          name: '查询 1', 
+          sql: 'SELECT * FROM my_table', 
+          result: null, 
+          batchResults: null 
+        }
+      ],
+      activeQueryId: '1',
+      queryLoading: null,
+      queryHistory: [],
+
+      setSqlQueries: (queries) => set({ sqlQueries: queries }),
+      
+      addSqlQuery: () => set((state) => {
+        const newId = Date.now().toString();
+        const queryNumber = state.sqlQueries.length + 1;
+        const newQueries = [
+          ...state.sqlQueries,
+          { 
+            id: newId, 
+            name: `查询 ${queryNumber}`, 
+            sql: '', 
+            result: null, 
+            batchResults: null 
+          }
+        ];
+        return { 
+          sqlQueries: newQueries, 
+          activeQueryId: newId 
+        };
+      }),
+      
+      updateSqlQuery: (id, updates) => set((state) => ({
+        sqlQueries: state.sqlQueries.map((query) =>
+          query.id === id ? { ...query, ...updates } : query
+        ),
+      })),
+      
+      removeSqlQuery: (id) => set((state) => {
+        if (state.sqlQueries.length <= 1) return state;
+        
+        const filtered = state.sqlQueries.filter((query) => query.id !== id);
+        return {
+          sqlQueries: filtered,
+          activeQueryId: state.activeQueryId === id 
+            ? (filtered[0]?.id || '1')
+            : state.activeQueryId,
+        };
+      }),
+      
+      setActiveQueryId: (id) => set({ activeQueryId: id }),
+      
+      setQueryLoading: (id) => set({ queryLoading: id }),
+      
+      setQueryResult: (id, result) => set((state) => ({
+        sqlQueries: state.sqlQueries.map((query) =>
+          query.id === id ? { ...query, result } : query
+        ),
+      })),
+      
+      setBatchResults: (id, batchResults) => set((state) => ({
+        sqlQueries: state.sqlQueries.map((query) =>
+          query.id === id ? { ...query, batchResults } : query
+        ),
+      })),
+      
+      addToHistory: (sql, success, rowCount) => set((state) => {
+        const newItem: QueryHistoryItem = {
+          id: `history_${Date.now()}`,
+          sql,
+          timestamp: Date.now(),
+          success,
+          rowCount,
+        };
+        // 移除重复的历史记录，保持最新的在前
+        const filtered = state.queryHistory.filter(h => h.sql !== sql);
+        return {
+          queryHistory: [newItem, ...filtered].slice(0, 100), // 最多保留100条
+        };
+      }),
+      
+      removeFromHistory: (id) => set((state) => ({
+        queryHistory: state.queryHistory.filter(h => h.id !== id),
+      })),
+      
+      clearHistory: () => set({ queryHistory: [] }),
+    }),
+    {
+      name: 'la-duck-query',
+      partialize: (state) => ({
+        queryHistory: state.queryHistory,
+      }),
+    }
+  )
+);

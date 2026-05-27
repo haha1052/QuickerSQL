@@ -98,6 +98,11 @@ button {
   margin-right: 5px;
 }
 
+.rotated-icon {
+  transform: rotate(90deg);
+  transition: transform 0.2s;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;

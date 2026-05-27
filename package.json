@@ -1,7 +1,7 @@
 {
-  "name": "tv_sc",
+  "name": "la-duck",
   "private": true,
-  "version": "1.1.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,12 +16,22 @@
     "ag-grid-community": "^35.2.1",
     "ag-grid-react": "^35.2.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.0",
+    "zustand-persist": "^0.4.0",
+    "@monaco-editor/react": "^4.6.0",
+    "echarts": "^5.5.1",
+    "echarts-for-react": "^3.0.2",
+    "lodash-es": "^4.17.21",
+    "dayjs": "^1.11.13",
+    "lucide-react": "^0.344.0",
+    "react-resizable-panels": "^2.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/lodash-es": "^4.17.12",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
     "vite": "^7.0.4"

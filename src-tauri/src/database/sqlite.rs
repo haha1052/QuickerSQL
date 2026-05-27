@@ -169,17 +169,25 @@ impl DatabaseConnection for SqliteConnection {
             placeholders.join(", ")
         );
         
+        conn.execute("BEGIN TRANSACTION", [])
+            .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
+        
         let mut stmt = conn.prepare(&insert_sql)
             .map_err(|e| DatabaseError::PrepareFailed(e.to_string()))?;
         
-        // 不使用事务，或者使用单个事务
         for row in rows {
             let params: Vec<&dyn rusqlite::ToSql> = row.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
             stmt.execute(rusqlite::params_from_iter(params))
-                .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
+                .map_err(|e| {
+                    let _ = conn.execute("ROLLBACK", []);
+                    DatabaseError::QueryFailed(e.to_string())
+                })?;
             
             total_count += 1;
         }
+        
+        conn.execute("COMMIT", [])
+            .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
         
         Ok(total_count)
     }
