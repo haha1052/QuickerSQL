@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { SqlQuery, QueryResult, QueryHistoryItem } from '../types';
+import type { SqlQuery, QueryResult, QueryHistoryItem, SqlStatementResult } from '../types';
 
 interface QueryState {
   sqlQueries: SqlQuery[];

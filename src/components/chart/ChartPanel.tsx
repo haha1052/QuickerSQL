@@ -50,7 +50,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const applyChartSettings = useCallback((chart: echarts.ECharts | null) => {
     if (!chart || !chartConfig) return;
     
-    const option: Partial<echarts.EChartsOption> = chart.getOption() || {} as Partial<echarts.EChartsOption>;
+    const option = chart.getOption() as unknown as Record<string, unknown>;
     
     // 应用网格设置
     if (option.xAxis) {
@@ -107,7 +107,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
     };
     option.color = colorSchemes[defaultColorScheme as keyof typeof colorSchemes] || colorSchemes.default;
     
-    chart.setOption(option);
+    chart.setOption(option as echarts.EChartsOption);
   }, [chartConfig, showGrid, showLegend, defaultColorScheme]);
 
   // 当设置变化时重新应用
@@ -223,7 +223,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       });
 
       if (response.success && response.data) {
-        setChartConfig(response.data);
+        setChartConfig(response.data as echarts.EChartsOption);
         setStage('preview');
       } else {
         setError(response.error || t('chart.generateFail'));

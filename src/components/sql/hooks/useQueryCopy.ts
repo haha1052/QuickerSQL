@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useAppStore } from '../../../store';
 import { useLocale } from '../../../context/LocaleContext';
-import type { GridApi } from 'ag-grid-community';
+import type { GridApi, CellContextMenuEvent } from 'ag-grid-community';
 
 type QueryRow = Record<string, string | number | boolean | null>;
 
@@ -99,21 +99,16 @@ export const useQueryCopy = () => {
     setContextMenu(null);
   }, [t, setMessage]);
 
-  const handleGridContextMenu = useCallback((params: {
-    event?: { clientX: number; clientY: number; preventDefault?: () => void };
-    data?: QueryRow;
-    column?: unknown;
-    value?: unknown;
-    api?: GridApi;
-  }) => {
-    params?.event?.preventDefault?.();
+  const handleGridContextMenu = useCallback((event: CellContextMenuEvent) => {
+    const ev = event.event as MouseEvent | undefined;
+    ev?.preventDefault?.();
     setContextMenu({
-      x: params.event?.clientX ?? 0,
-      y: params.event?.clientY ?? 0,
-      rowData: params.data,
-      colData: params.column,
-      cellValue: params.value,
-      api: params.api,
+      x: ev?.clientX ?? 0,
+      y: ev?.clientY ?? 0,
+      rowData: event.data as QueryRow | undefined,
+      colData: event.column,
+      cellValue: event.value,
+      api: event.api as GridApi,
     });
   }, []);
 

@@ -33,32 +33,18 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     }
 
     // 配置图表
+    const titleText = Array.isArray(config.title)
+      ? (config.title[0] as { text?: string } | undefined)?.text
+      : (config.title as { text?: string } | undefined)?.text;
     const echartsConfig: echarts.EChartsOption = {
-      title: config.title,
-      tooltip: config.tooltip,
-      legend: config.legend,
-      xAxis: config.xAxis,
-      yAxis: config.yAxis,
-      series: config.series,
-      dataZoom: config.dataZoom,
+      ...config,
       grid: {
         left: '10%',
         right: '5%',
-        bottom: config.dataZoom ? '15%' : '8%',
-        top: config.title?.text ? '60px' : '40px',
+        bottom: (config as { dataZoom?: unknown[] }).dataZoom ? '15%' : '8%',
+        top: titleText ? '60px' : '40px',
         containLabel: true,
       },
-      color: [
-        '#5470c6',
-        '#91cc75',
-        '#fac858',
-        '#ee6666',
-        '#73c0de',
-        '#3ba272',
-        '#fc8452',
-        '#9a60b4',
-        '#ea7ccc',
-      ],
     };
 
     chart.setOption(echartsConfig);
@@ -92,32 +78,18 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   // 当配置变化时更新图表
   useEffect(() => {
     if (chartInstanceRef.current && config) {
+      const titleText = Array.isArray(config.title)
+        ? (config.title[0] as { text?: string } | undefined)?.text
+        : (config.title as { text?: string } | undefined)?.text;
       const echartsConfig: echarts.EChartsOption = {
-        title: config.title,
-        tooltip: config.tooltip,
-        legend: config.legend,
-        xAxis: config.xAxis,
-        yAxis: config.yAxis,
-        series: config.series,
-        dataZoom: config.dataZoom,
+        ...config,
         grid: {
           left: '10%',
           right: '5%',
-          bottom: config.dataZoom ? '15%' : '8%',
-          top: config.title?.text ? '60px' : '40px',
+          bottom: (config as { dataZoom?: unknown[] }).dataZoom ? '15%' : '8%',
+          top: titleText ? '60px' : '40px',
           containLabel: true,
         },
-        color: [
-          '#5470c6',
-          '#91cc75',
-          '#fac858',
-          '#ee6666',
-          '#73c0de',
-          '#3ba272',
-          '#fc8452',
-          '#9a60b4',
-          '#ea7ccc',
-        ],
       };
 
       chartInstanceRef.current.setOption(echartsConfig, true);

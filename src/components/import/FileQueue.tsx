@@ -2,6 +2,7 @@ import React from 'react';
 import { ImportItem as ImportItemComponent } from './ImportItem';
 import { useImportStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
+import type { ImportItem } from '../../types';
 
 interface FileQueueProps {
   onFileSelect: (id: string) => void;
@@ -22,7 +23,7 @@ export const FileQueue: React.FC<FileQueueProps> = ({ onFileSelect }) => {
   const parentExcelItems = allItems.filter(item => item.isParent && item.fileType === 'excel');
   const standaloneItems = allItems.filter(item => !item.isParent && !item.parentId);
 
-  const displayItems: Array<{ item: any; children: any[] }> = [];
+  const displayItems: Array<{ item: ImportItem; children: ImportItem[] }> = [];
 
   parentExcelItems.forEach(parent => {
     const children = allItems.filter(child => child.parentId === parent.id);

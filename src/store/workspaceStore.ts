@@ -124,7 +124,7 @@ function tabsFromBackendFormat(backendTabs: BackendWorkspaceTab[] | undefined | 
       title: panel.title || '',
       size: typeof panel.size === 'number' ? panel.size : parseInt(String(panel.size ?? '0'), 10) || 100,
       active: typeof panel.is_active === 'boolean' ? panel.is_active : panel.active !== false,
-      content: panel.sql_content ?? null,
+      content: (panel.sql_content ?? null) as string | null,
     })),
     active: typeof tab.is_active === 'boolean' ? tab.is_active : tab.active !== false,
     createdAt: Date.now(),
