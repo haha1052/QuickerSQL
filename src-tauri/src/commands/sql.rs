@@ -298,6 +298,17 @@ fn execute_sql_with_sqlite(
     }
 }
 
+/// 判断一条 SQL 是否应当使用独立临时连接执行。
+/// SELECT / WITH / EXPLAIN / PRAGMA 等长查询走临时连接，
+/// 避免持有主连接锁阻塞其他短命令。
+fn should_use_temp_connection(sql: &str) -> bool {
+    let upper = sql.trim_start().to_uppercase();
+    upper.starts_with("SELECT")
+        || upper.starts_with("WITH")
+        || upper.starts_with("EXPLAIN")
+        || upper.starts_with("PRAGMA")
+}
+
 #[tauri::command]
 pub fn execute_sql(state: State<'_, TauriAppState>, sql: String) -> Result<BatchExecuteResult, String> {
     use std::time::Instant;
@@ -307,6 +318,7 @@ pub fn execute_sql(state: State<'_, TauriAppState>, sql: String) -> Result<Batch
         return Err("未连接到数据库".to_string());
     }
 
+    // 主连接：读取表名元信息、写审计日志、写查询历史
     let sqlite_conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
 
     let table_names = crate::database::router::QueryRouter::get_table_names(&sqlite_conn);
@@ -370,28 +382,121 @@ pub fn execute_sql(state: State<'_, TauriAppState>, sql: String) -> Result<Batch
                                     }
                                     Ok(Err(e)) => {
                                         log::warn!("DuckDB execution failed, falling back to SQLite: {}", e);
-                                        metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                        // 根据前缀选择主连接或临时连接
+                                        if should_use_temp_connection(trimmed_stmt) {
+                                            match state.db_manager.open_temporary_connection() {
+                                                Ok(temp_conn) => {
+                                                    metadata = execute_sql_on_conn(
+                                                        &*temp_conn,
+                                                        trimmed_stmt,
+                                                        &mut results,
+                                                        &mut success_count,
+                                                        &mut fail_count,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("临时连接获取失败，回退到主连接: {}", e);
+                                                    metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                                }
+                                            }
+                                        } else {
+                                            metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                        }
                                     }
                                     Err(e) => {
                                         log::error!("DuckDB panicked, falling back to SQLite: {:?}", e);
-                                        metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                        if should_use_temp_connection(trimmed_stmt) {
+                                            match state.db_manager.open_temporary_connection() {
+                                                Ok(temp_conn) => {
+                                                    metadata = execute_sql_on_conn(
+                                                        &*temp_conn,
+                                                        trimmed_stmt,
+                                                        &mut results,
+                                                        &mut success_count,
+                                                        &mut fail_count,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    log::warn!("临时连接获取失败，回退到主连接: {}", e);
+                                                    metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                                }
+                                            }
+                                        } else {
+                                            metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                        }
                                     }
                                 }
                             }
                             Err(e) => {
                                 log::warn!("SQL routing failed, falling back to SQLite: {}", e);
-                                metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                if should_use_temp_connection(trimmed_stmt) {
+                                    match state.db_manager.open_temporary_connection() {
+                                        Ok(temp_conn) => {
+                                            metadata = execute_sql_on_conn(
+                                                &*temp_conn,
+                                                trimmed_stmt,
+                                                &mut results,
+                                                &mut success_count,
+                                                &mut fail_count,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            log::warn!("临时连接获取失败，回退到主连接: {}", e);
+                                            metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                        }
+                                    }
+                                } else {
+                                    metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
                     log::warn!("DuckDB not initialized, using SQLite: {}", e);
-                    metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                    // 选择连接类型
+                    if should_use_temp_connection(trimmed_stmt) {
+                        match state.db_manager.open_temporary_connection() {
+                            Ok(temp_conn) => {
+                                metadata = execute_sql_on_conn(
+                                    &*temp_conn,
+                                    trimmed_stmt,
+                                    &mut results,
+                                    &mut success_count,
+                                    &mut fail_count,
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("临时连接获取失败，回退到主连接: {}", e);
+                                metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                            }
+                        }
+                    } else {
+                        metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                    }
                 }
             }
         } else {
-            metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+            // SQLite 路径：按前缀选择主连接或临时连接
+            if should_use_temp_connection(trimmed_stmt) {
+                match state.db_manager.open_temporary_connection() {
+                    Ok(temp_conn) => {
+                        metadata = execute_sql_on_conn(
+                            &*temp_conn,
+                            trimmed_stmt,
+                            &mut results,
+                            &mut success_count,
+                            &mut fail_count,
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("临时连接获取失败，回退到主连接: {}", e);
+                        metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+                    }
+                }
+            } else {
+                metadata = execute_sql_with_sqlite(&sqlite_conn, trimmed_stmt, &mut results, &mut success_count, &mut fail_count);
+            }
         }
 
         let stmt_duration = stmt_start.elapsed().as_millis() as i64;
@@ -436,4 +541,89 @@ pub fn execute_sql(state: State<'_, TauriAppState>, sql: String) -> Result<Batch
         success_count,
         fail_count,
     })
+}
+
+/// 在任意实现了 `DatabaseConnection` 的连接上执行 SQL，
+/// 内部只负责 SELECT/PRAGMA → query()，其余 → execute()，
+/// 不与任何全局锁耦合（调用方决定连接的生命周期）。
+fn execute_sql_on_conn(
+    conn: &dyn crate::database::DatabaseConnection,
+    stmt: &str,
+    results: &mut Vec<SqlStatementResult>,
+    success_count: &mut usize,
+    fail_count: &mut usize,
+) -> ExecutionMetadata {
+    let upper_stmt = stmt.to_uppercase();
+
+    if upper_stmt.starts_with("SELECT") || upper_stmt.starts_with("PRAGMA") {
+        match conn.query(stmt, &[]) {
+            Ok(result) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: Some(result.columns),
+                    rows: Some(result.rows.clone()),
+                    affected_rows: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(result.rows.len() as i64),
+                    error_message: None,
+                }
+            }
+            Err(e) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(format!("执行查询失败: {}", e)),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(format!("执行查询失败: {}", e)),
+                }
+            }
+        }
+    } else {
+        match conn.execute(stmt, &[]) {
+            Ok(rows) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: None,
+                    rows: None,
+                    affected_rows: Some(rows),
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(rows as i64),
+                    error_message: None,
+                }
+            }
+            Err(e) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(format!("执行SQL失败: {}", e)),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(format!("执行SQL失败: {}", e)),
+                }
+            }
+        }
+    }
 }

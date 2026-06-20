@@ -149,7 +149,7 @@ export const DataImport: React.FC<DataImportProps> = ({
           selected: false,
           status: 'idle',
           isParent: true,
-          sheets: sheetsResponse.data.sheets.map((s: any) => typeof s === 'string' ? s : s.name),
+          sheets: sheetsResponse.data.sheets.map((s: unknown) => typeof s === 'string' ? s : (s as { name: string }).name),
           isExpanded: true,
         });
       }

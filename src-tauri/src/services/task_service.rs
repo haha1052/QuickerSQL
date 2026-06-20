@@ -1,6 +1,9 @@
 //! 自动化任务服务
 //! 负责任务的 CRUD、运行、调度
 //! 系统表: __automation_tasks, __automation_runs
+//!
+//! 关键改进：长 SQL 任务执行时通过独立临时连接运行用户 SQL，
+//! 避免长期持有主连接锁阻塞前端短命令。
 
 use crate::database::traits::{MutexGuardConnection, ToSql};
 use crate::database::SharedDatabaseManager;
@@ -377,16 +380,39 @@ impl TaskService {
     // ============================================================
 
     pub fn run_task_now(
-        conn: &MutexGuardConnection<'_>,
+        db_manager: &SharedDatabaseManager,
         id: &str,
     ) -> Result<TaskRun, String> {
-        Self::execute(conn, id, "manual")
+        let conn = db_manager
+            .get_connection()
+            .map_err(|e| format!("获取数据库连接失败: {}", e))?;
+        // 手动触发：直接用主连接执行，不启用临时连接避免阻塞前端
+        Self::execute_inner(db_manager, &conn, id, "manual", false)
     }
 
+    /// 主入口：支持临时连接。
+    /// 当 `use_temp_conn=true` 且 `task_type="sql"` 时，用户 SQL 会通过独立的临时连接执行，
+    /// 避免长期持有主连接锁。系统表（run/tasks）读写仍使用主连接以保证一致性。
     pub fn execute(
-        conn: &MutexGuardConnection<'_>,
+        db_manager: &SharedDatabaseManager,
         id: &str,
         trigger_type: &str,
+        use_temp_conn: bool,
+    ) -> Result<TaskRun, String> {
+        let conn = db_manager
+            .get_connection()
+            .map_err(|e| format!("获取数据库连接失败: {}", e))?;
+        Self::execute_inner(db_manager, &conn, id, trigger_type, use_temp_conn)
+    }
+
+    /// 真正的业务逻辑：持有主连接 `primary_conn` 读写系统表；
+    /// 当 `use_temp_conn=true` 时，用户 SQL 通过临时连接执行。
+    fn execute_inner(
+        db_manager: &SharedDatabaseManager,
+        primary_conn: &MutexGuardConnection<'_>,
+        id: &str,
+        trigger_type: &str,
+        use_temp_conn: bool,
     ) -> Result<TaskRun, String> {
         // ============================================================
         // 非事务化执行：INSERT run（立即可见）→ dispatch → UPDATE run+tasks
@@ -402,20 +428,21 @@ impl TaskService {
         let run_id = uuid::Uuid::new_v4().to_string();
 
         // 1. 读取任务
-        let task = Self::get_task(conn, id)?;
+        let task = Self::get_task(primary_conn, id)?;
 
-        // 2. 写入一条 status='running' 的 run 记录
+        // 2. 写入一条 status='running' 的 run 记录（始终用主连接写系统表）
         let insert_run_sql = "INSERT INTO __automation_runs (id, task_id, status, started_at, trigger_type) \
              VALUES (?, ?, 'running', ?, ?);";
         let params_run: [&dyn ToSql; 4] = [&run_id, &id, &start_unix.to_string(), &trigger_type];
-        if let Err(e) = conn.execute(insert_run_sql, &params_run) {
+        if let Err(e) = primary_conn.execute(insert_run_sql, &params_run) {
             log::warn!("写入 run 记录失败: {}", e);
             return Err(format!("写入 run 记录失败: {}", e));
         }
 
         // 3. 根据 task_type 分派执行
-        //    dispatch 返回的 Err 消息已是用户友好化（底层错误只记日志）
-        let exec_result = Self::dispatch(conn, &task);
+        //    - sql 任务：如果 use_temp_conn=true，则用独立临时连接，避免长查询占主锁
+        //    - 其他任务：始终用主连接（都是短操作）
+        let exec_result = Self::dispatch(db_manager, primary_conn, &task, use_temp_conn);
 
         let now = chrono::Utc::now().timestamp();
         let duration_ms = (now - start_unix).max(0) * 1000;
@@ -443,7 +470,7 @@ impl TaskService {
                 params.push(output_str.clone());
                 params.push(run_id.clone());
                 let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
-                if let Err(e) = conn.execute(&update_run_sql, &param_refs) {
+                if let Err(e) = primary_conn.execute(&update_run_sql, &param_refs) {
                     log::warn!("更新 run success 失败: {}", e);
                 }
 
@@ -471,7 +498,7 @@ impl TaskService {
                 params2.push(now.to_string());
                 params2.push(id.to_string());
                 let param_refs2: Vec<&dyn ToSql> = params2.iter().map(|p| p as &dyn ToSql).collect();
-                if let Err(e) = conn.execute(&update_task_sql, &param_refs2) {
+                if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs2) {
                     log::warn!("更新 task 成功状态失败: {}", e);
                 }
 
@@ -498,7 +525,7 @@ impl TaskService {
                     &user_msg.as_str(),
                     &run_id.as_str(),
                 ];
-                if let Err(e) = conn.execute(update_run_sql, &params) {
+                if let Err(e) = primary_conn.execute(update_run_sql, &params) {
                     log::warn!("更新 run failed 失败: {}", e);
                 }
 
@@ -513,7 +540,7 @@ impl TaskService {
                         &now.to_string(),
                         &id,
                     ];
-                    if let Err(e) = conn.execute(update_task_sql, &params) {
+                    if let Err(e) = primary_conn.execute(update_task_sql, &params) {
                         log::warn!("更新 task disabled 失败: {}", e);
                     }
                 } else {
@@ -543,7 +570,7 @@ impl TaskService {
                     params.push(now.to_string());
                     params.push(id.to_string());
                     let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
-                    if let Err(e) = conn.execute(&update_task_sql, &param_refs) {
+                    if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs) {
                         log::warn!("更新 task failed 失败: {}", e);
                     }
                 }
@@ -574,8 +601,10 @@ impl TaskService {
 
     /// 根据 task_type 分派执行，返回 (affected_rows, output_msg)
     fn dispatch(
-        conn: &MutexGuardConnection<'_>,
+        db_manager: &SharedDatabaseManager,
+        primary_conn: &MutexGuardConnection<'_>,
         task: &Task,
+        use_temp_conn: bool,
     ) -> Result<(Option<i64>, Option<String>), String> {
         // 解析 payload JSON
         let payload_json: JsonValue = serde_json::from_str(&task.payload).unwrap_or(JsonValue::Object(serde_json::Map::new()));
@@ -589,13 +618,25 @@ impl TaskService {
                 let statements = split_sql_statements(sql);
                 let mut last_affected: Option<i64> = None;
                 let mut out_lines: Vec<String> = Vec::new();
+
+                // 🔑 长 SQL 任务：如果配置了 use_temp_conn，则通过独立的临时连接
+                // 执行用户 SQL，避免长期持有主连接锁。系统表读写始终走 primary_conn。
+                let temp_conn_result = if use_temp_conn {
+                    match db_manager.open_temporary_connection() {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            log::warn!("打开临时连接失败（退回主连接）: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 for (idx, stmt) in statements.iter().enumerate() {
                     let trimmed = stmt.trim();
                     if trimmed.is_empty() { continue; }
 
-                    // 🔑 按 SQL 前缀区分 execute / query：
-                    //   - DML/DDL/事务/管理语句 → execute()（无结果集
-                    //   - SELECT/SHOW/EXPLAIN/PRAGMA/WITH 等返回结果集的 → query()
                     let upper = trimmed.to_uppercase();
                     let is_query_like = upper.starts_with("SELECT")
                         || upper.starts_with("SHOW")
@@ -603,29 +644,58 @@ impl TaskService {
                         || upper.starts_with("PRAGMA")
                         || upper.starts_with("WITH");
 
-                    let exec_result: Result<i64, String> = if is_query_like {
-                        match conn.query(trimmed, &[]) {
-                            Ok(result) => {
-                                let rows = result.rows.len() as i64;
-                                out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
-                                Ok(rows)
+                    let exec_result: Result<i64, String> = if let Some(temp_conn) = &temp_conn_result {
+                        if is_query_like {
+                            match temp_conn.query(trimmed, &[]) {
+                                Ok(result) => {
+                                    let rows = result.rows.len() as i64;
+                                    out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
+                                    Ok(rows)
+                                }
+                                Err(e) => {
+                                    let raw = e.to_string();
+                                    log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task.id, trimmed, raw);
+                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                                }
                             }
-                            Err(e) => {
-                                let raw = e.to_string();
-                                log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task.id, trimmed, raw);
-                                Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                        } else {
+                            match temp_conn.execute(trimmed, &[]) {
+                                Ok(n) => {
+                                    out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
+                                    Ok(n as i64)
+                                }
+                                Err(e) => {
+                                    let raw = e.to_string();
+                                    log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task.id, trimmed, raw);
+                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                                }
                             }
                         }
                     } else {
-                        match conn.execute(trimmed, &[]) {
-                            Ok(n) => {
-                                out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
-                                Ok(n as i64)
+                        if is_query_like {
+                            match primary_conn.query(trimmed, &[]) {
+                                Ok(result) => {
+                                    let rows = result.rows.len() as i64;
+                                    out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
+                                    Ok(rows)
+                                }
+                                Err(e) => {
+                                    let raw = e.to_string();
+                                    log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task.id, trimmed, raw);
+                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                                }
                             }
-                            Err(e) => {
-                                let raw = e.to_string();
-                                log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task.id, trimmed, raw);
-                                Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                        } else {
+                            match primary_conn.execute(trimmed, &[]) {
+                                Ok(n) => {
+                                    out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
+                                    Ok(n as i64)
+                                }
+                                Err(e) => {
+                                    let raw = e.to_string();
+                                    log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task.id, trimmed, raw);
+                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                                }
                             }
                         }
                     };
@@ -642,8 +712,7 @@ impl TaskService {
                     .get("chartId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "payload.chartId 为空".to_string())?;
-                // 真正执行图表的 SQL，把结果写回 last_result，让前端能直接读缓存
-                let rows = crate::services::DashboardService::refresh_saved_chart(conn, chart_id)
+                let rows = crate::services::DashboardService::refresh_saved_chart(primary_conn, chart_id)
                     .map_err(|e| format!("刷新图表 {} 失败：{}", chart_id, e))?;
                 Ok((Some(rows), Some(format!("图表 {} 已刷新（{} 行）", chart_id, rows))))
             }
@@ -652,10 +721,9 @@ impl TaskService {
                     .get("dashboardId")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "payload.dashboardId 为空".to_string())?;
-                // 通过 dashboard_items 找到所有关联 chart_id，对每个 chart 调用 refresh_saved_chart
                 let chart_sql = "SELECT DISTINCT chart_id FROM __dashboard_items WHERE dashboard_id=?;";
                 let params: [&dyn ToSql; 1] = [&dashboard_id];
-                let chart_result = conn.query(chart_sql, &params)
+                let chart_result = primary_conn.query(chart_sql, &params)
                     .map_err(|e| format!("读取仪表盘图表失败：{}", e))?;
                 let mut refreshed: i64 = 0;
                 let mut total_rows: i64 = 0;
@@ -663,12 +731,12 @@ impl TaskService {
                     if row.is_empty() { continue; }
                     let cid = &row[0];
                     if cid.is_empty() { continue; }
-                    match crate::services::DashboardService::refresh_saved_chart(conn, cid) {
+                    match crate::services::DashboardService::refresh_saved_chart(primary_conn, cid) {
                         Ok(r) => {
                             refreshed += 1;
                             total_rows += r;
                         }
-                        Err(_) => continue, // 单个图表失败不影响整体
+                        Err(_) => continue,
                     }
                 }
                 Ok((Some(refreshed), Some(format!("仪表盘 {} 已刷新{}张图表（合计{}行）", dashboard_id, refreshed, total_rows))))
@@ -677,19 +745,14 @@ impl TaskService {
                 let sql = payload_json.get("sql").and_then(|v| v.as_str()).unwrap_or("");
                 let output_path = payload_json.get("outputPath").and_then(|v| v.as_str()).unwrap_or("");
                 if sql.is_empty() { return Err("payload.sql 为空".to_string()); }
-                // 1. 执行查询获取结果
-                let result = conn.query(sql, &[])
+                let result = primary_conn.query(sql, &[])
                     .map_err(|e| format!("导出CSV查询失败：{}", e))?;
-                // 2. 如果没有指定 outputPath，则只报告行数；否则生成 CSV 文件
                 if output_path.is_empty() {
                     return Ok((Some(result.rows.len() as i64), Some(format!("查询成功：{} 行 × {} 列（未指定输出路径）", result.rows.len(), result.columns.len()))));
                 }
-                // 3. 生成 CSV 文本
                 let mut csv = String::new();
-                // 表头
                 csv.push_str(&result.columns.join(","));
                 csv.push('\n');
-                // 数据行（简单转义：含逗号或双引号的字段用双引号包裹并转义内部双引号）
                 for row in &result.rows {
                     let parts: Vec<String> = row.iter().map(|cell| {
                         let needs_quote = cell.contains(',') || cell.contains('"') || cell.contains('\n');
@@ -702,7 +765,6 @@ impl TaskService {
                     csv.push_str(&parts.join(","));
                     csv.push('\n');
                 }
-                // 4. 写入文件
                 std::fs::write(output_path, &csv)
                     .map_err(|e| format!("写入 CSV 失败：{}", e))?;
                 Ok((Some(result.rows.len() as i64), Some(format!("已导出 {} 行 × {} 列 → {}", result.rows.len(), result.columns.len(), output_path))))
@@ -911,19 +973,14 @@ impl TaskScheduleEngine {
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 return scan_interval_secs;
             }
-            // 每个任务单独获取连接 → 执行 → 释放，避免阻塞前端
-            if let Ok(exec_conn) = db_manager.get_connection() {
-                match TaskService::execute(&exec_conn, &cid, "schedule") {
-                    Ok(_run) => {
-                        log::debug!("任务 {} 执行成功", cid);
-                    }
-                    Err(e) => {
-                        log::warn!("任务 {} 执行失败：{}", cid, e);
-                    }
+            // 调度器启动的任务：用独立连接 + 启用临时连接（sql 任务不阻塞主连接）
+            match TaskService::execute(db_manager, &cid, "schedule", true) {
+                Ok(_run) => {
+                    log::debug!("任务 {} 执行成功", cid);
                 }
-                // exec_conn 在此 drop → 锁释放
-            } else {
-                log::warn!("执行任务 {} 时无法获取 DB 连接，跳过", cid);
+                Err(e) => {
+                    log::warn!("任务 {} 执行失败：{}", cid, e);
+                }
             }
             // 任务间的 200ms 间隔（此时已不持有锁，不阻塞前端）
             std::thread::sleep(std::time::Duration::from_millis(200));

@@ -87,25 +87,48 @@ function tabsToBackendFormat(tabs: WorkspaceTab[]): Array<{
   }));
 }
 
+interface BackendTabPanel {
+  id: string;
+  panel_type?: string;
+  type?: string;
+  title?: string;
+  size?: number;
+  sql_content?: unknown;
+  active?: boolean;
+  is_active?: boolean;
+  position?: number;
+}
+
+interface BackendWorkspaceTab {
+  id: string;
+  title?: string;
+  tab_type?: string;
+  type?: string;
+  position?: number;
+  is_active?: boolean;
+  active?: boolean;
+  panels?: BackendTabPanel[];
+}
+
 /** 将后端返回的 tabs 数据转换为前端 WorkspaceTab 格式 */
-function tabsFromBackendFormat(backendTabs: any[]): WorkspaceTab[] {
+function tabsFromBackendFormat(backendTabs: BackendWorkspaceTab[] | undefined | null): WorkspaceTab[] {
   if (!backendTabs || backendTabs.length === 0) return [];
 
-  return backendTabs.map((tab) => ({
+  return backendTabs.map((tab: BackendWorkspaceTab) => ({
     id: tab.id,
-    title: tab.title,
+    title: tab.title || '',
     type: (tab.tab_type || tab.type || 'sql') as WorkspaceTabType,
-    panels: (tab.panels || []).map((panel: any) => ({
+    panels: (tab.panels || []).map((panel: BackendTabPanel) => ({
       id: panel.id,
       type: (panel.panel_type || panel.type || 'sql_editor') as PanelType,
-      title: panel.title,
-      size: typeof panel.size === 'number' ? panel.size : parseInt(String(panel.size), 10) || 100,
+      title: panel.title || '',
+      size: typeof panel.size === 'number' ? panel.size : parseInt(String(panel.size ?? '0'), 10) || 100,
       active: typeof panel.is_active === 'boolean' ? panel.is_active : panel.active !== false,
       content: panel.sql_content ?? null,
     })),
     active: typeof tab.is_active === 'boolean' ? tab.is_active : tab.active !== false,
     createdAt: Date.now(),
-    queryId: '', // 加载后由上层逻辑关联到查询
+    queryId: '',
   }));
 }
 
@@ -458,13 +481,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         sidebar: state.sidebar,
       }),
       version: 1,
-      migrate: (persistedState: any, version: number) => {
+      migrate: (persistedState: unknown, version: number) => {
         if (version < 1) {
           const { sqlQueries } = useQueryStore.getState();
 
-          if (persistedState && persistedState.tabs) {
-            persistedState.tabs = persistedState.tabs.map(
-              (tab: any, index: number) => {
+          if (persistedState && typeof persistedState === 'object' && 'tabs' in (persistedState as Record<string, unknown>)) {
+            const casted = persistedState as { tabs: Array<{ queryId?: string; [k: string]: unknown }> };
+            casted.tabs = casted.tabs.map(
+              (tab, index: number) => {
                 if (!tab.queryId) {
                   const queryId =
                     sqlQueries[index]?.id ||

@@ -41,6 +41,7 @@ interface DashboardStore {
   // Phase 4: 筛选器 actions
   setFilterValue: (field: string, value: string | string[]) => void;
   resetFilters: () => void;
+  refreshChartsVersion: number;
   refreshCharts: () => void;
 
   // Phase 6: 全屏模式
@@ -61,6 +62,7 @@ export const useDashboardStore = create<DashboardStore>()(
     selectedChartId: null,
     filterValues: {},
     isFullscreen: false,
+    refreshChartsVersion: 0,
 
     // SavedChart actions
     loadSavedCharts: async (queryId?: string, tags?: string[]) => {
@@ -382,8 +384,8 @@ export const useDashboardStore = create<DashboardStore>()(
       }
     },
     refreshCharts: () => {
-      // Trigger UI refresh by toggling a ref-based counter (handled at component level)
-      set((state) => ({ ...state }));
+      // 通过版本号递增触发订阅组件刷新，而不是无意义的深拷贝整份 state
+      set((state) => ({ refreshChartsVersion: (state.refreshChartsVersion || 0) + 1 }));
     },
 
     // Phase 6: 全屏模式

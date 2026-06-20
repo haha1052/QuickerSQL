@@ -15,7 +15,7 @@ interface QueryState {
   setActiveQueryId: (id: string) => void;
   setQueryLoading: (id: string | null) => void;
   setQueryResult: (id: string, result: QueryResult | null) => void;
-  setBatchResults: (id: string, batchResults: any[] | null) => void;
+  setBatchResults: (id: string, batchResults: SqlStatementResult[] | null) => void;
   addToHistory: (sql: string, success?: boolean, rowCount?: number | null) => void;
   removeFromHistory: (id: string) => void;
   clearHistory: () => void;

@@ -77,8 +77,7 @@ pub fn run_automation_task_now(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<TaskRun, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
-    TaskService::run_task_now(&conn, &id)
+    TaskService::run_task_now(&state.db_manager, &id)
 }
 
 #[tauri::command]

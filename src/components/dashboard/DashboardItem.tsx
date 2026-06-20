@@ -199,7 +199,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   const [chartConfig, setChartConfig] = useState<Record<string, unknown> | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards } = useDashboardStore();
+  const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards, refreshChartsVersion } = useDashboardStore();
   const isSelected = selectedChartId === item.chartId;
 
   const savedChart = savedCharts.find(c => c.id === item.chartId);
@@ -334,7 +334,8 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
 
     renderChart();
     // P2-1：filterValuesKey 变化时触发重新渲染（筛选器联动）
-  }, [savedChart, item.chartId, retryKey, filterValuesKey, filtersActive]);
+    // refreshChartsVersion 变化时（用户点击刷新）也重新拉取数据
+  }, [savedChart, item.chartId, retryKey, filterValuesKey, filtersActive, refreshChartsVersion]);
 
   /**
    * P0-1 修复：拖拽启动逻辑

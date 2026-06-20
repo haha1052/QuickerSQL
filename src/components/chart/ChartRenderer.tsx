@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 
 interface ChartRendererProps {
-  config: any;
+  config: echarts.EChartsOption;
   width?: number | string;
   height?: number | string;
   onChartReady?: (chart: echarts.ECharts) => void;
@@ -33,7 +33,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     }
 
     // 配置图表
-    const echartsConfig: any = {
+    const echartsConfig: echarts.EChartsOption = {
       title: config.title,
       tooltip: config.tooltip,
       legend: config.legend,
@@ -92,7 +92,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   // 当配置变化时更新图表
   useEffect(() => {
     if (chartInstanceRef.current && config) {
-      const echartsConfig: any = {
+      const echartsConfig: echarts.EChartsOption = {
         title: config.title,
         tooltip: config.tooltip,
         legend: config.legend,

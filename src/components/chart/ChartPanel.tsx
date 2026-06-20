@@ -15,7 +15,7 @@ interface ChartPanelProps {
   } | null;
 }
 
-type ChartConfigType = any;
+type ChartConfigType = echarts.EChartsOption;
 type ChartStage = 'config' | 'preview';
 
 export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
@@ -50,18 +50,19 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const applyChartSettings = useCallback((chart: echarts.ECharts | null) => {
     if (!chart || !chartConfig) return;
     
-    const option: any = chart.getOption() || {};
+    const option: Partial<echarts.EChartsOption> = chart.getOption() || {} as Partial<echarts.EChartsOption>;
     
     // 应用网格设置
     if (option.xAxis) {
       if (Array.isArray(option.xAxis)) {
-        option.xAxis.forEach((x: any) => {
-          if (x.splitLine) {
-            x.splitLine.show = showGrid === 'true';
+        option.xAxis.forEach((x: unknown) => {
+          const xAxisOpt = x as { splitLine?: { show?: boolean } };
+          if (xAxisOpt && xAxisOpt.splitLine) {
+            xAxisOpt.splitLine.show = showGrid === 'true';
           }
         });
       } else {
-        const xAxis = option.xAxis as any;
+        const xAxis = option.xAxis as { splitLine?: { show?: boolean } };
         if (xAxis.splitLine) {
           xAxis.splitLine.show = showGrid === 'true';
         }
@@ -70,13 +71,14 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
     
     if (option.yAxis) {
       if (Array.isArray(option.yAxis)) {
-        option.yAxis.forEach((y: any) => {
-          if (y.splitLine) {
-            y.splitLine.show = showGrid === 'true';
+        option.yAxis.forEach((y: unknown) => {
+          const yAxisOpt = y as { splitLine?: { show?: boolean } };
+          if (yAxisOpt && yAxisOpt.splitLine) {
+            yAxisOpt.splitLine.show = showGrid === 'true';
           }
         });
       } else {
-        const yAxis = option.yAxis as any;
+        const yAxis = option.yAxis as { splitLine?: { show?: boolean } };
         if (yAxis.splitLine) {
           yAxis.splitLine.show = showGrid === 'true';
         }
@@ -86,17 +88,18 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
     // 应用图例设置
     if (option.legend) {
       if (Array.isArray(option.legend)) {
-        option.legend.forEach((l: any) => {
-          l.show = showLegend === 'true';
+        option.legend.forEach((l: unknown) => {
+          const legendOpt = l as { show?: boolean };
+          if (legendOpt) legendOpt.show = showLegend === 'true';
         });
       } else {
-        const legend = option.legend as any;
+        const legend = option.legend as { show?: boolean };
         legend.show = showLegend === 'true';
       }
     }
     
     // 应用配色方案
-    const colorSchemes = {
+    const colorSchemes: Record<string, string[]> = {
       default: ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'],
       dark: ['#333', '#666', '#999', '#ccc', '#f0f0f0'],
       light: ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7'],

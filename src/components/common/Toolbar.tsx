@@ -136,7 +136,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           selected: false,
           status: 'idle',
           isParent: true,
-          sheets: sheetsResponse.data.sheets.map((s: any) => typeof s === 'string' ? s : s.name),
+          sheets: sheetsResponse.data.sheets.map((s: unknown) => typeof s === 'string' ? s : (s as { name: string }).name),
           isExpanded: true,
         });
       }
@@ -239,7 +239,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
   const handleRunQuery = async () => {
     const { sqlQueries, activeQueryId } = useQueryStore.getState();
-    const activeQuery = sqlQueries.find((q: any) => q.id === activeQueryId);
+    const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
     
     if (!activeQuery || !activeQuery.sql.trim()) {
       setMessage(t('toolbar.pleaseEnterSQL'), 'warning');
@@ -257,8 +257,8 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         
         // 计算总行数
         const totalRowCount = response.data.results
-          .filter((r: any) => r.success && r.rows)
-          .reduce((sum: number, r: any) => sum + r.rows.length, 0);
+          .filter((r) => r.success && r.rows)
+          .reduce((sum: number, r) => sum + (r.rows?.length ?? 0), 0);
         
         // 统一记录到历史（双重写入）
         recordQueryHistoryToStore(
@@ -382,11 +382,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         const results = activeQuery.batchResults;
         let csvContent = '';
         
-        results.forEach((result: any) => {
+        results.forEach((result) => {
           if (result.columns && result.rows) {
             csvContent += result.columns.join(',') + '\n';
-            result.rows.forEach((row: any[]) => {
-              csvContent += row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',') + '\n';
+            result.rows.forEach((row: unknown[]) => {
+              csvContent += row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',') + '\n';
             });
           }
         });
@@ -412,7 +412,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   // 添加图表功能（M3）
   const handleAddChartPanel = () => {
     const { sqlQueries, activeQueryId } = useQueryStore.getState();
-    const activeQuery = sqlQueries.find((q: any) => q.id === activeQueryId);
+    const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
     
     if (!activeQuery || !activeQuery.batchResults || activeQuery.batchResults.length === 0) {
       setMessage(t('toolbar.noDataToChart'), 'warning');
@@ -420,12 +420,12 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     }
 
     const { tabs, activeTabId, addPanel } = useWorkspaceStore.getState();
-    const activeTab = tabs.find((t: any) => t.id === activeTabId);
+    const activeTab = tabs.find((t) => t.id === activeTabId);
     
     if (!activeTab) return;
 
     // 检查是否已存在图表面板
-    const hasChartPanel = activeTab.panels.some((p: any) => p.type === 'chart');
+    const hasChartPanel = activeTab.panels.some((p) => p.type === 'chart');
     if (hasChartPanel) {
       setMessage(t('toolbar.chartAlreadyAdded'), 'warning');
       return;
