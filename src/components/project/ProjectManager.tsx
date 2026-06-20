@@ -1,6 +1,7 @@
 import React from 'react';
 import { useProjectStore } from '../../store';
 import { tauriService } from '../../services';
+import { useLocale } from '../../context/LocaleContext';
 
 interface ProjectManagerProps {
   onClose: () => void;
@@ -8,6 +9,7 @@ interface ProjectManagerProps {
 }
 
 export const ProjectManager: React.FC<ProjectManagerProps> = ({ onClose, onProjectSwitch }) => {
+  const { t } = useLocale();
   const {
     projects,
     newProjectName,
@@ -18,58 +20,58 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({ onClose, onProje
 
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) {
-      alert('请输入项目名称');
+      alert(t('projectManager.pleaseEnterProjectName'));
       return;
     }
 
     const response = await tauriService.createProject(newProjectName.trim());
     if (response.success) {
-      alert(`项目 "${newProjectName}" 创建成功`);
+      alert(t('projectManager.projectCreated'));
       setNewProjectName('');
       onProjectSwitch();
     } else {
-      alert(`创建失败: ${response.error}`);
+      alert(`${t('common.error')}: ${response.error}`);
     }
   };
 
   const handleSwitchProject = async (projectName: string) => {
     const response = await tauriService.switchProject(projectName);
     if (response.success) {
-      alert(`已切换到项目 "${projectName}"`);
+      alert(t('projectManager.projectSwitched'));
       onProjectSwitch();
       onClose();
     } else {
-      alert(`切换失败: ${response.error}`);
+      alert(`${t('common.error')}: ${response.error}`);
     }
   };
 
   const handleDeleteProject = async (projectName: string) => {
-    if (!confirm(`确定要删除项目 "${projectName}" 吗？`)) {
+    if (!confirm(t('projectManager.confirmDeleteProject'))) {
       return;
     }
 
     const response = await tauriService.deleteProject(projectName);
     if (response.success) {
-      alert(`项目 "${projectName}" 已删除`);
+      alert(t('projectManager.projectDeleted'));
       onProjectSwitch();
     } else {
-      alert(`删除失败: ${response.error}`);
+      alert(`${t('common.error')}: ${response.error}`);
     }
   };
 
   const handleOpenCustomDatabase = async () => {
     if (!customDbPath.trim()) {
-      alert('请先选择数据库文件');
+      alert(t('projectManager.pleaseSelectDatabaseFile'));
       return;
     }
 
     const response = await tauriService.openDatabaseFromPath(customDbPath);
     if (response.success) {
-      alert('已切换到自定义数据库');
+      alert(t('projectManager.customDatabaseOpened'));
       onProjectSwitch();
       onClose();
     } else {
-      alert(`打开失败: ${response.error}`);
+      alert(`${t('common.error')}: ${response.error}`);
     }
   };
 
@@ -77,35 +79,35 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({ onClose, onProje
     <div style={styles.overlay}>
       <div style={styles.modal}>
         <div style={styles.header}>
-          <h2 style={styles.title}>项目管理</h2>
+          <h2 style={styles.title}>{t('projectManager.title')}</h2>
           <button style={styles.closeButton} onClick={onClose}>×</button>
         </div>
 
         <div style={styles.content}>
           <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>创建新项目</h3>
+            <h3 style={styles.sectionTitle}>{t('projectManager.createNewProject')}</h3>
             <div style={styles.inputGroup}>
               <input
                 type="text"
                 style={styles.input}
-                placeholder="输入项目名称"
+                placeholder={t('projectManager.enterProjectName')}
                 value={newProjectName}
                 onChange={(e) => setNewProjectName(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleCreateProject()}
               />
               <button style={styles.primaryButton} onClick={handleCreateProject}>
-                创建
+                {t('common.confirm')}
               </button>
             </div>
           </div>
 
           <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>自定义数据库</h3>
+            <h3 style={styles.sectionTitle}>{t('projectManager.customDatabase')}</h3>
             <div style={styles.inputGroup}>
               <input
                 type="text"
                 style={styles.input}
-                placeholder="选择数据库文件..."
+                placeholder={t('projectManager.selectDatabaseFile')}
                 value={customDbPath}
                 readOnly
               />
@@ -120,19 +122,19 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({ onClose, onProje
                   setCustomDbPath(path);
                 }
               }}>
-                选择文件
+                {t('projectManager.selectFile')}
               </button>
               <button style={styles.primaryButton} onClick={handleOpenCustomDatabase}>
-                打开
+                {t('common.confirm')}
               </button>
             </div>
           </div>
 
           <div style={styles.section}>
-            <h3 style={styles.sectionTitle}>项目列表</h3>
+            <h3 style={styles.sectionTitle}>{t('projectManager.projectList')}</h3>
             <div style={styles.projectList}>
               {projects.length === 0 ? (
-                <div style={styles.emptyState}>暂无项目</div>
+                <div style={styles.emptyState}>{t('common.noData')}</div>
               ) : (
                 projects.map((project) => (
                   <div key={project} style={styles.projectItem}>
@@ -142,13 +144,13 @@ export const ProjectManager: React.FC<ProjectManagerProps> = ({ onClose, onProje
                         style={styles.smallButton}
                         onClick={() => handleSwitchProject(project)}
                       >
-                        切换
+                        {t('projectManager.switch')}
                       </button>
                       <button 
                         style={styles.dangerButton}
                         onClick={() => handleDeleteProject(project)}
                       >
-                        删除
+                        {t('common.delete')}
                       </button>
                     </div>
                   </div>
@@ -176,7 +178,7 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 1000,
   },
   modal: {
-    background: 'white',
+    background: 'var(--bg-secondary)',
     borderRadius: '8px',
     width: '600px',
     maxHeight: '80vh',
@@ -189,12 +191,13 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '20px',
-    borderBottom: '1px solid #ddd',
+    borderBottom: '1px solid var(--border-primary)',
   },
   title: {
     margin: 0,
     fontSize: '18px',
     fontWeight: 'bold',
+    color: 'var(--text-primary)',
   },
   closeButton: {
     background: 'none',
@@ -202,6 +205,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '24px',
     cursor: 'pointer',
     padding: '0 8px',
+    color: 'var(--text-primary)',
   },
   content: {
     padding: '20px',
@@ -215,7 +219,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0 0 12px 0',
     fontSize: '16px',
     fontWeight: 'bold',
-    color: '#333',
+    color: 'var(--text-primary)',
   },
   inputGroup: {
     display: 'flex',
@@ -224,13 +228,15 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     flex: 1,
     padding: '8px 12px',
-    border: '1px solid #ddd',
+    border: '1px solid var(--border-primary)',
     borderRadius: '4px',
     fontSize: '14px',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
   },
   primaryButton: {
     padding: '8px 16px',
-    background: '#007bff',
+    background: 'var(--primary)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
@@ -239,7 +245,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   secondaryButton: {
     padding: '8px 16px',
-    background: '#6c757d',
+    background: 'var(--text-secondary)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
@@ -255,11 +261,11 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '12px',
-    borderBottom: '1px solid #eee',
+    borderBottom: '1px solid var(--border-primary)',
   },
   projectName: {
     fontSize: '14px',
-    color: '#333',
+    color: 'var(--text-primary)',
   },
   projectActions: {
     display: 'flex',
@@ -267,7 +273,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   smallButton: {
     padding: '4px 12px',
-    background: '#007bff',
+    background: 'var(--primary)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
@@ -276,7 +282,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   dangerButton: {
     padding: '4px 12px',
-    background: '#dc3545',
+    background: 'var(--error)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
@@ -286,7 +292,7 @@ const styles: Record<string, React.CSSProperties> = {
   emptyState: {
     padding: '20px',
     textAlign: 'center',
-    color: '#999',
+    color: 'var(--text-tertiary)',
     fontSize: '14px',
   },
 };

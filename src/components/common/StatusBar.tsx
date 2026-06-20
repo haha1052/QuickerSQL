@@ -1,9 +1,11 @@
 import React from 'react';
 import { DatabaseIcon, ClockIcon, CheckCircleIcon, AlertCircleIcon } from './Icons';
 import { useAppStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 
 export const StatusBar: React.FC = () => {
   const { allDatabaseStatus } = useAppStore();
+  const { t } = useLocale();
 
   const isConnected = allDatabaseStatus.length > 0 && allDatabaseStatus[0].is_connected;
   const dbType = allDatabaseStatus[0]?.db_type || 'Unknown';
@@ -13,28 +15,28 @@ export const StatusBar: React.FC = () => {
     <div style={styles.statusBar}>
       <div style={styles.statusLeft}>
         <div style={styles.statusItem}>
-          <DatabaseIcon size={14} color={isConnected ? '#28a745' : '#dc3545'} />
-          <span style={{ color: isConnected ? '#28a745' : '#dc3545', marginLeft: '4px' }}>
+          <DatabaseIcon size={14} color={isConnected ? 'var(--success)' : 'var(--error)'} />
+          <span style={{ color: isConnected ? 'var(--success)' : 'var(--error)', marginLeft: '4px' }}>
             {dbType}
           </span>
         </div>
 
         <div style={styles.statusItem}>
-          {isConnected ? <CheckCircleIcon size={14} color="#28a745" /> : <AlertCircleIcon size={14} color="#dc3545" />}
+          {isConnected ? <CheckCircleIcon size={14} color="var(--success)" /> : <AlertCircleIcon size={14} color="var(--error)" />}
           <span style={{ marginLeft: '4px' }}>
-            {isConnected ? '已连接' : '未连接'}
+            {isConnected ? t('status.connected') : t('status.notConnected')}
           </span>
         </div>
 
         <div style={styles.statusItem}>
-          <span>{tableCount} 个表</span>
+          <span>{tableCount} {t('status.tables')}</span>
         </div>
       </div>
 
       <div style={styles.statusRight}>
         <div style={styles.statusItem}>
           <ClockIcon size={14} />
-          <span style={{ marginLeft: '4px' }}>准备就绪</span>
+          <span style={{ marginLeft: '4px' }}>{t('status.ready')}</span>
         </div>
       </div>
     </div>
@@ -47,10 +49,10 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '6px 16px',
-    background: '#333',
-    color: '#fff',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
     fontSize: '12px',
-    borderTop: '1px solid #444',
+    borderTop: '1px solid var(--border-primary)',
   },
   statusLeft: {
     display: 'flex',

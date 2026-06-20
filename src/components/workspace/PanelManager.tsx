@@ -3,8 +3,8 @@ import type { Panel } from '../../types';
 import { useWorkspaceStore, useQueryStore } from '../../store';
 import { SQLEditor } from '../sql/SQLEditor';
 import { QueryResult } from '../sql/QueryResult';
+import { ChartPanel } from '../chart/ChartPanel';
 import { useQueryExecution } from '../sql/hooks';
-import { Colors } from '../../styles/design-system';
 
 interface PanelManagerProps {
   tabId: string;
@@ -12,15 +12,26 @@ interface PanelManagerProps {
 }
 
 export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => {
-  const { updatePanel } = useWorkspaceStore();
-  const { sqlQueries, activeQueryId, updateSqlQuery } = useQueryStore();
+  const { updatePanel, tabs } = useWorkspaceStore();
+  const { sqlQueries, activeQueryId, updateSqlQuery, setActiveQueryId } = useQueryStore();
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragStartY, setDragStartY] = useState(0);
   const [dragStartSizes, setDragStartSizes] = useState<number[]>([]);
 
-  const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
+  // 当前 Tab 绑定的 queryId（从 tab 数据里拿，而不是全局 activeQueryId）
+  const tabData = tabs.find(t => t.id === tabId);
+  const tabQueryId = tabData?.queryId || activeQueryId;
+  
+  // 确保全局 activeQueryId 与当前 tab.queryId 同步
+  React.useEffect(() => {
+    if (tabQueryId && activeQueryId !== tabQueryId) {
+      setActiveQueryId(tabQueryId);
+    }
+  }, [tabQueryId, activeQueryId, setActiveQueryId]);
+
+  const activeQuery = sqlQueries.find(q => q.id === tabQueryId);
   const { executeQuery, isLoading } = useQueryExecution();
 
   const handleMouseDown = (index: number, e: React.MouseEvent) => {
@@ -77,10 +88,14 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
   const renderPanelContent = (panel: Panel) => {
     switch (panel.type) {
       case 'sql_editor':
+        // 使用当前 Tab 绑定的 queryId，确保每个 Tab 显示自己的查询
+        const displayedQuery = activeQuery || sqlQueries[0];
+        const displayedQueryId = displayedQuery?.id || tabQueryId;
+        
         return (
           <SQLEditor
-            query={activeQuery || sqlQueries[0]}
-            onChange={(sql) => updateSqlQuery(activeQueryId, { sql })}
+            query={displayedQuery}
+            onChange={(sql) => updateSqlQuery(displayedQueryId, { sql })}
             onExecute={executeQuery}
             isLoading={isLoading}
           />
@@ -89,9 +104,12 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
         return <QueryResult />;
       case 'chart':
         return (
-          <div style={styles.placeholderPanel}>
-            图表区域（即将推出）
-          </div>
+          <ChartPanel
+            queryResult={activeQuery?.result ? {
+              columns: activeQuery.result.columns || [],
+              rows: activeQuery.result.rows || []
+            } : null}
+          />
         );
       case 'query_plan':
         return (
@@ -110,29 +128,34 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
 
   return (
     <div id="panel-container" style={styles.panelContainer}>
-      {panels.map((panel, index) => (
-        <React.Fragment key={panel.id}>
-          <div style={{ 
-            ...styles.panel, 
-            height: `${panel.size}%`,
-          }}>
-            <div style={styles.panelContent}>
-              {renderPanelContent(panel)}
+      {panels.map((panel, index) => {
+        // size === 0 时跳过渲染（only-editor / only-results 模式）
+        if (panel.size === 0) return null;
+
+        return (
+          <React.Fragment key={panel.id}>
+            <div style={{
+              ...styles.panel,
+              height: `${panel.size}%`,
+            }}>
+              <div style={styles.panelContent}>
+                {renderPanelContent(panel)}
+              </div>
             </div>
-          </div>
-          
-          {index < panels.length - 1 && (
-            <div 
-              style={{
-                ...styles.resizer,
-                cursor: isDragging && dragIndex === index ? 'row-resize' : 'ns-resize',
-                background: isDragging && dragIndex === index ? Colors.primary : '#e0e0e0',
-              }}
-              onMouseDown={(e) => handleMouseDown(index, e)}
-            />
-          )}
-        </React.Fragment>
-      ))}
+
+            {index < panels.length - 1 && panels[index + 1]?.size !== 0 && (
+              <div
+                style={{
+                  ...styles.resizer,
+                  cursor: isDragging && dragIndex === index ? 'row-resize' : 'ns-resize',
+                  background: isDragging && dragIndex === index ? 'var(--primary)' : 'var(--border-primary)',
+                }}
+                onMouseDown={(e) => handleMouseDown(index, e)}
+              />
+            )}
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 };
@@ -143,7 +166,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
-    background: Colors.background,
+    background: 'var(--bg-primary)',
   },
   panel: {
     display: 'flex',
@@ -152,7 +175,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   panelContent: {
     flex: 1,
-    overflow: 'auto',
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
   },
   resizer: {
     height: '4px',
@@ -164,6 +190,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: Colors.textDisabled,
+    color: 'var(--text-secondary)',
   },
 };

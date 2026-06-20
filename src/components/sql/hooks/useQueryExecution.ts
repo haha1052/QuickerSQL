@@ -1,9 +1,11 @@
 import { useCallback } from 'react';
 import { useQueryStore, useAppStore } from '../../../store';
 import { tauriService } from '../../../services';
+import { useLocale } from '../../../context/LocaleContext';
 import type { SqlStatementResult } from '../../../types';
 
 export const useQueryExecution = () => {
+  const { t } = useLocale();
   const { sqlQueries, activeQueryId, setQueryLoading, setQueryResult, setBatchResults, addToHistory } = useQueryStore();
   const { setMessage } = useAppStore();
 
@@ -11,7 +13,7 @@ export const useQueryExecution = () => {
 
   const executeQuery = useCallback(async () => {
     if (!activeQuery) {
-      setMessage('请先选择或创建一个查询', 'warning');
+      setMessage(t('hooks.pleaseSelectQuery'), 'warning');
       return;
     }
 
@@ -41,23 +43,23 @@ export const useQueryExecution = () => {
         addToHistory(activeQuery.sql, hasSuccess, rowCount);
         
         if (hasSuccess) {
-          setMessage(`查询执行成功，${successCount} 个语句成功`, 'success');
+          setMessage(`${t('hooks.querySuccess').replace('{count}', String(successCount))}`, 'success');
         } else {
-          setMessage('查询执行失败', 'error');
+          setMessage(t('hooks.queryFail'), 'error');
         }
       } else {
-        console.error('查询失败:', response.error);
-        setMessage(response.error || '查询失败', 'error');
+        console.error(t('hooks.queryError'), response.error);
+        setMessage(response.error || t('hooks.queryFail'), 'error');
         addToHistory(activeQuery.sql, false);
       }
     } catch (error) {
-      console.error('查询异常:', error);
-      setMessage('查询执行异常', 'error');
+      console.error(t('hooks.queryError'), error);
+      setMessage(t('hooks.queryError'), 'error');
       addToHistory(activeQuery.sql, false);
     } finally {
       setQueryLoading(null);
     }
-  }, [activeQuery, activeQueryId, setQueryLoading, setQueryResult, setBatchResults, addToHistory, setMessage]);
+  }, [t, activeQuery, activeQueryId, setQueryLoading, setQueryResult, setBatchResults, addToHistory, setMessage]);
 
   return {
     executeQuery,

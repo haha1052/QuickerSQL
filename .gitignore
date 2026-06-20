@@ -1,4 +1,6 @@
+# ============================================================
 # Logs
+# ============================================================
 logs
 *.log
 npm-debug.log*
@@ -12,7 +14,9 @@ dist
 dist-ssr
 *.local
 
+# ============================================================
 # Editor directories and files
+# ============================================================
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -25,3 +29,18 @@ dist-ssr
 *.exe
 *.msi
 src-tauri/target/
+
+# ============================================================
+# 项目级：本地私有规则与凭据（不提交 Git）
+# 对应 .trae/rules/CLAUDE.local.md 为模板存在于仓库中，
+# 每个开发者的私有副本不提交
+# ============================================================
+.trae/rules/CLAUDE.local.md
+.trae/rules/*local*.md
+src-tauri/.env
+src-tauri/.env.local
+.env.local
+.env.*.local
+*.pem
+*.key
+

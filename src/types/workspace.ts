@@ -15,7 +15,7 @@ export interface Panel {
   title: string;
   size: number; // 面板大小比例
   active: boolean;
-  content: any; // 面板内容
+  content: string | null;
 }
 
 // 工作区标签页类型
@@ -36,14 +36,7 @@ export interface WorkspaceTab {
 export interface SidebarState {
   collapsed: boolean;
   width: number;
-  activeTab: 'explorer' | 'history' | 'snippets';
-}
-
-// 右侧面板状态
-export interface RightPanelState {
-  collapsed: boolean;
-  width: number;
-  activeTab: 'explorer' | 'history' | 'schema';
+  activeTab: 'explorer' | 'history' | 'snippets' | 'trash';
 }
 
 // 完整的工作区状态
@@ -51,5 +44,4 @@ export interface WorkspaceState {
   tabs: WorkspaceTab[];
   activeTabId: string;
   sidebar: SidebarState;
-  rightPanel: RightPanelState;
 }

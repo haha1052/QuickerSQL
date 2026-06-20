@@ -1,0 +1,208 @@
+.trash-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.trash-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.trash-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-back {
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-back:hover {
+  background: var(--border-primary);
+}
+
+.trash-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.btn-refresh {
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btn-refresh:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+}
+
+.btn-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.trash-error {
+  margin: 16px 20px;
+  padding: 12px 16px;
+  background: var(--error-bg);
+  color: var(--error);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.trash-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 20px;
+  min-height: 0;
+}
+
+.trash-loading,
+.trash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px;
+  color: var(--text-secondary);
+}
+
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.trash-empty p {
+  margin: 0;
+  font-size: 15px;
+}
+
+.trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trash-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  padding: 14px 18px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.trash-item:hover {
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
+}
+
+.trash-item.selected {
+  box-shadow: 0 0 0 2px var(--primary-bg);
+}
+
+.trash-item-info {
+  flex: 1;
+}
+
+.trash-item-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.trash-item-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.meta-item {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.meta-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.meta-tag.rename {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.meta-tag.parquet {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.trash-item-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: 16px;
+}
+
+.btn-action {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-restore {
+  background: var(--primary-bg);
+  color: var(--primary);
+}
+
+.btn-restore:hover:not(:disabled) {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.btn-delete {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: var(--error);
+  color: #ffffff;
+}

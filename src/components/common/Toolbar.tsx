@@ -12,11 +12,13 @@ import {
   FilePlusIcon,
   CheckSquareIcon,
   GridIcon,
-  TrashIcon
+  TrashIcon,
+  BarChart2Icon
 } from './Icons';
 import { useAppStore, useWorkspaceStore, useImportStore, useQueryStore } from '../../store';
 import { tauriService } from '../../services';
 import type { WorkspaceTabType, ImportItem } from '../../types';
+import { useLocale } from '../../context/LocaleContext';
 
 interface ToolbarProps {
   activeTab: TabType;
@@ -34,6 +36,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   const { setMessage, setAllDatabaseStatus } = useAppStore();
   const { addTab } = useWorkspaceStore();
   const { importItems, toggleAllSelected, hasHeader, setHasHeader, updateImportItem, addImportItems, setActiveImportItemId } = useImportStore();
+  const { t } = useLocale();
 
   const selectedCount = importItems.filter(i => i.selected && !i.isParent).length;
   const hasItems = importItems.length > 0;
@@ -72,7 +75,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         };
       }
     } catch (e) {
-      setMessage(`加载 CSV 文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('common.loading')}: ${String(e)}`, 'error');
     }
     return null;
   };
@@ -81,7 +84,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     try {
       const sheetsResponse = await tauriService.getExcelSheets(filePath);
       if (!sheetsResponse.success || !sheetsResponse.data) {
-        setMessage('获取 Excel Sheet 列表失败', 'error');
+        setMessage(`${t('common.error')}: Excel Sheet list`, 'error');
         return [];
       }
 
@@ -140,7 +143,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
       return items;
     } catch (e) {
-      setMessage(`加载 Excel 文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('common.loading')}: ${String(e)}`, 'error');
       return [];
     }
   };
@@ -181,10 +184,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         if (selectableItems.length > 0) {
           setActiveImportItemId(selectableItems[0].id);
         }
-        setMessage(`已添加 ${newItems.filter(i => !i.isParent).length} 个文件`, 'success');
+        setMessage(`${t('common.success')}: ${newItems.filter(i => !i.isParent).length} files`, 'success');
       }
     } catch (e) {
-      setMessage(`选择文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('common.error')}: ${String(e)}`, 'error');
     }
   };
 
@@ -218,8 +221,20 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     const response = await tauriService.getDatabaseStatus();
     if (response.success && response.data) {
       setAllDatabaseStatus([response.data]);
-      setMessage('数据库状态已刷新', 'success');
+      setMessage(`${t('common.refresh')}: ${t('common.success')}`, 'success');
     }
+  };
+
+  // 记录历史 - 仅写入前端 store（后端 execute_sql 内部会自动持久化，避免重复记录）
+  const recordQueryHistoryToStore = (
+    sql: string,
+    success: boolean,
+    rowCount: number | null,
+    _errorMessage: string | null,
+    _name?: string | null,
+  ) => {
+    // 同步到前端 store （用于立即刷新查询历史面板）
+    useQueryStore.getState().addToHistory(sql, success, rowCount);
   };
 
   const handleRunQuery = async () => {
@@ -227,7 +242,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     const activeQuery = sqlQueries.find((q: any) => q.id === activeQueryId);
     
     if (!activeQuery || !activeQuery.sql.trim()) {
-      setMessage('请输入SQL查询语句', 'warning');
+      setMessage(t('toolbar.pleaseEnterSQL'), 'warning');
       return;
     }
 
@@ -235,26 +250,47 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       const response = await tauriService.executeSql(activeQuery.sql);
       
       if (response.success && response.data) {
-        setMessage('查询成功', 'success');
+        setMessage(t('toolbar.querySuccess'), 'success');
         
-        const { setBatchResults, addToHistory } = useQueryStore.getState();
+        const { setBatchResults } = useQueryStore.getState();
         setBatchResults(activeQueryId, response.data.results);
         
-        // 添加到查询历史
-        const firstResult = response.data.results[0];
-        const rowCount = firstResult?.rows?.length;
-        addToHistory(activeQuery.sql, true, rowCount);
-      } else {
-        setMessage(`查询失败: ${response.error}`, 'error');
+        // 计算总行数
+        const totalRowCount = response.data.results
+          .filter((r: any) => r.success && r.rows)
+          .reduce((sum: number, r: any) => sum + r.rows.length, 0);
         
-        const { addToHistory } = useQueryStore.getState();
-        addToHistory(activeQuery.sql, false);
+        // 统一记录到历史（双重写入）
+        recordQueryHistoryToStore(
+          activeQuery.sql,
+          true,
+          totalRowCount || null,
+          null,
+          activeQuery.name
+        );
+      } else {
+        setMessage(`${t('toolbar.queryFail')}: ${response.error}`, 'error');
+        
+        // 统一记录到历史（失败情况）
+        recordQueryHistoryToStore(
+          activeQuery.sql,
+          false,
+          null,
+          response.error || null,
+          activeQuery.name
+        );
       }
     } catch (e) {
-      setMessage(`查询失败: ${String(e)}`, 'error');
+      setMessage(`${t('toolbar.queryFail')}: ${String(e)}`, 'error');
       
-      const { addToHistory } = useQueryStore.getState();
-      addToHistory(activeQuery.sql, false);
+      // 统一记录到历史（异常情况）
+      recordQueryHistoryToStore(
+        activeQuery.sql,
+        false,
+        null,
+        String(e),
+        activeQuery.name
+      );
     }
   };
 
@@ -264,7 +300,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         multiple: false,
         filters: [
           {
-            name: 'SQL文件',
+            name: 'SQL',
             extensions: ['sql'],
           },
         ],
@@ -286,10 +322,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         const fileName = selected.split(/[\\/]/).pop() || 'query.sql';
         updateSqlQuery(newQuery.id, { name: fileName.replace('.sql', '') });
         
-        setMessage(`已打开文件: ${fileName}`, 'success');
+        setMessage(`${t('common.success')}: ${fileName}`, 'success');
       }
     } catch (e) {
-      setMessage(`打开文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('common.error')}: ${String(e)}`, 'error');
     }
   };
 
@@ -298,7 +334,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
     
     if (!activeQuery) {
-      setMessage('没有选中的查询', 'warning');
+      setMessage(t('toolbar.noSelection'), 'warning');
       return;
     }
 
@@ -307,7 +343,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         defaultPath: `${activeQuery.name || 'query'}.sql`,
         filters: [
           {
-            name: 'SQL文件',
+            name: 'SQL',
             extensions: ['sql'],
           },
         ],
@@ -315,10 +351,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
       if (path) {
         await tauriService.writeTextFile(path, activeQuery.sql);
-        setMessage(`已保存到: ${path}`, 'success');
+        setMessage(`${t('common.save')}: ${path}`, 'success');
       }
     } catch (e) {
-      setMessage(`保存失败: ${String(e)}`, 'error');
+      setMessage(`${t('common.error')}: ${String(e)}`, 'error');
     }
   };
 
@@ -327,7 +363,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
     
     if (!activeQuery || !activeQuery.batchResults) {
-      setMessage('没有可导出的查询结果', 'warning');
+      setMessage(t('toolbar.noExportData'), 'warning');
       return;
     }
 
@@ -336,7 +372,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         defaultPath: `${activeQuery.name || 'result'}.csv`,
         filters: [
           {
-            name: 'CSV文件',
+            name: 'CSV',
             extensions: ['csv'],
           },
         ],
@@ -356,10 +392,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         });
 
         await tauriService.writeTextFile(path, csvContent);
-        setMessage(`已导出到: ${path}`, 'success');
+        setMessage(`${t('toolbar.exportResult')}: ${path}`, 'success');
       }
     } catch (e) {
-      setMessage(`导出失败: ${String(e)}`, 'error');
+      setMessage(`${t('toolbar.exportFail')}: ${String(e)}`, 'error');
     }
   };
 
@@ -373,6 +409,43 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     });
   };
 
+  // 添加图表功能（M3）
+  const handleAddChartPanel = () => {
+    const { sqlQueries, activeQueryId } = useQueryStore.getState();
+    const activeQuery = sqlQueries.find((q: any) => q.id === activeQueryId);
+    
+    if (!activeQuery || !activeQuery.batchResults || activeQuery.batchResults.length === 0) {
+      setMessage(t('toolbar.noDataToChart'), 'warning');
+      return;
+    }
+
+    const { tabs, activeTabId, addPanel } = useWorkspaceStore.getState();
+    const activeTab = tabs.find((t: any) => t.id === activeTabId);
+    
+    if (!activeTab) return;
+
+    // 检查是否已存在图表面板
+    const hasChartPanel = activeTab.panels.some((p: any) => p.type === 'chart');
+    if (hasChartPanel) {
+      setMessage(t('toolbar.chartAlreadyAdded'), 'warning');
+      return;
+    }
+
+    // 动态调整面板大小
+    const panelCount = activeTab.panels.length;
+    const newSize = Math.max(25, Math.floor(80 / (panelCount + 1)));
+    
+    addPanel(activeTabId, {
+      type: 'chart',
+      title: t('chart.title'),
+      size: newSize,
+      active: true,
+      content: null,
+    });
+
+    setMessage(t('toolbar.chartAdded'), 'success');
+  };
+
   if (activeTab === 'csv') {
     return (
       <div style={styles.toolbar}>
@@ -380,10 +453,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           <button
             style={styles.toolbarBtnPrimary}
             onClick={handleAddFiles}
-            title="添加文件"
+            title={t('toolbar.addFiles')}
           >
             <FilePlusIcon size={18} />
-            <span style={styles.btnText}>添加文件</span>
+            <span style={styles.btnText}>{t('toolbar.addFiles')}</span>
           </button>
 
           {hasItems && (
@@ -393,10 +466,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
               <button
                 style={styles.toolbarBtn}
                 onClick={toggleAllSelected}
-                title="全选/取消全选"
+                title={t('toolbar.selectAll')}
               >
                 <CheckSquareIcon size={18} />
-                <span style={styles.btnText}>全选</span>
+                <span style={styles.btnText}>{t('toolbar.select')}</span>
               </button>
 
               <button
@@ -405,34 +478,49 @@ export const Toolbar: React.FC<ToolbarProps> = ({
                   ...(hasHeader ? styles.toolbarBtnActive : {}),
                 }}
                 onClick={handleToggleAllHeader}
-                title="全部表头开关"
+                title={t('toolbar.toggleHeader')}
               >
                 <GridIcon size={18} />
-                <span style={styles.btnText}>全部表头</span>
+                <span style={styles.btnText}>{t('toolbar.header')}</span>
               </button>
 
               <button
                 style={styles.toolbarBtnPrimary}
                 onClick={onBatchImport}
                 disabled={selectedCount === 0}
-                title="批量导入"
+                title={t('toolbar.batchImport')}
               >
                 <PlayIcon size={18} />
                 <span style={styles.btnText}>
-                  批量导入{selectedCount > 0 ? ` (${selectedCount})` : ''}
+                  {t('import.button')}{selectedCount > 0 ? ` (${selectedCount})` : ''}
                 </span>
               </button>
 
               <button
                 style={styles.toolbarBtnDanger}
                 onClick={onClearQueue}
-                title="清空队列"
+                title={t('toolbar.clear')}
               >
                 <TrashIcon size={18} />
-                <span style={styles.btnText}>清空</span>
+                <span style={styles.btnText}>{t('toolbar.clear')}</span>
               </button>
             </>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // 仪表盘 Tab：简洁工具栏（仅显示仪表盘相关操作）
+  if (activeTab === 'dashboard') {
+    return (
+      <div style={styles.toolbar}>
+        <div style={styles.toolbarLeft}>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
+            📊 仪表盘模式
+          </span>
+        </div>
+        <div style={styles.toolbarRight}>
         </div>
       </div>
     );
@@ -444,27 +532,27 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         <button
           style={styles.toolbarBtn}
           onClick={handleNewSqlTab}
-          title="新建SQL查询"
+          title={t('toolbar.newSQL')}
         >
           <PlusIcon size={18} />
-          <span style={styles.btnText}>新建</span>
+          <span style={styles.btnText}>{t('toolbar.new')}</span>
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleOpenFile} title="打开SQL文件">
+        <button style={styles.toolbarBtn} onClick={handleOpenFile} title={t('toolbar.openSQLFile')}>
           <FolderOpenIcon size={18} />
-          <span style={styles.btnText}>打开</span>
+          <span style={styles.btnText}>{t('toolbar.open')}</span>
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleSaveFile} title="保存SQL文件">
+        <button style={styles.toolbarBtn} onClick={handleSaveFile} title={t('toolbar.saveSQLFile')}>
           <SaveIcon size={18} />
-          <span style={styles.btnText}>保存</span>
+          <span style={styles.btnText}>{t('toolbar.save')}</span>
         </button>
 
         <div style={styles.divider} />
 
-        <button style={styles.toolbarBtnPrimary} onClick={handleRunQuery} title="运行查询">
+        <button style={styles.toolbarBtnPrimary} onClick={handleRunQuery} title={t('toolbar.runQuery')}>
           <PlayIcon size={18} />
-          <span style={styles.btnText}>运行</span>
+          <span style={styles.btnText}>{t('toolbar.run')}</span>
         </button>
 
         <div style={styles.divider} />
@@ -472,20 +560,27 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         <button
           style={styles.toolbarBtn}
           onClick={handleRefresh}
-          title="刷新数据库状态"
+          title={t('toolbar.refreshDBStatus')}
         >
           <RefreshCwIcon size={18} />
-          <span style={styles.btnText}>刷新</span>
+          <span style={styles.btnText}>{t('common.refresh')}</span>
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleExportResults} title="导出查询结果">
+        <button style={styles.toolbarBtn} onClick={handleExportResults} title={t('toolbar.exportResult')}>
           <DownloadIcon size={18} />
-          <span style={styles.btnText}>导出</span>
+          <span style={styles.btnText}>{t('toolbar.export')}</span>
+        </button>
+
+        <div style={styles.divider} />
+
+        <button style={styles.toolbarBtn} onClick={handleAddChartPanel} title={t('toolbar.addChart')}>
+          <BarChart2Icon size={18} />
+          <span style={styles.btnText}>{t('toolbar.chart')}</span>
         </button>
       </div>
 
       <div style={styles.toolbarRight}>
-        <button style={styles.toolbarBtn} title="数据库信息">
+        <button style={styles.toolbarBtn} title={t('toolbar.databaseInfo')}>
           <DatabaseIcon size={18} />
         </button>
       </div>
@@ -499,8 +594,8 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '8px 16px',
-    borderBottom: '1px solid #e0e0e0',
-    background: '#f5f5f5',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-tertiary)',
   },
   toolbarLeft: {
     display: 'flex',
@@ -522,7 +617,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '13px',
-    color: '#333',
+    color: 'var(--text-primary)',
     transition: 'all 0.2s',
   },
   toolbarBtnPrimary: {
@@ -530,17 +625,17 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: '6px',
     padding: '6px 12px',
-    background: '#007bff',
+    background: 'var(--primary)',
     color: 'white',
-    border: '1px solid #007bff',
+    border: '1px solid var(--primary)',
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '13px',
   },
   toolbarBtnActive: {
-    background: '#e3f2fd',
-    borderColor: '#007bff',
-    color: '#007bff',
+    background: 'var(--primary-bg)',
+    borderColor: 'var(--primary)',
+    color: 'var(--primary)',
   },
   toolbarBtnDanger: {
     display: 'flex',
@@ -552,7 +647,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '13px',
-    color: '#dc3545',
+    color: 'var(--error)',
     transition: 'all 0.2s',
   },
   btnText: {
@@ -561,7 +656,7 @@ const styles: Record<string, React.CSSProperties> = {
   divider: {
     width: '1px',
     height: '24px',
-    background: '#ddd',
+    background: 'var(--border-primary)',
     margin: '0 8px',
   },
 };

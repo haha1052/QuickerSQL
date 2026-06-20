@@ -74,9 +74,76 @@ impl DatabaseConnection for DuckDbConnection {
         let mut stmt = conn.prepare(sql)
             .map_err(|e| DatabaseError::PrepareFailed(e.to_string()))?;
 
-        // 使用 query_arrow() 而不是 query()，
-        // 因为 DuckDB 的 prepare() 不一定预填充 schema，
-        // column_names() 可能 panic；query_arrow() 通过 Arrow 格式可靠返回 schema
+        // 先获取列名（在调用 query() 之前）
+        let column_names: Vec<String> = stmt.column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let col_count = column_names.len();
+
+        // 首先尝试使用标准的 query() 方法
+        match stmt.query([]) {
+            Ok(mut result) => {
+                let mut rows = Vec::new();
+
+                // 如果没有列名信息，使用默认列名
+                let actual_col_count = if col_count == 0 {
+                    // 尝试从第一行获取列数
+                    if let Ok(Some(row)) = result.next() {
+                        let mut count = 0;
+                        let mut test_row = Vec::new();
+                        loop {
+                            match row.get::<usize, String>(count) {
+                                Ok(v) => {
+                                    test_row.push(v);
+                                    count += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        if count > 0 {
+                            rows.push(test_row);
+                        }
+                        count
+                    } else {
+                        0
+                    }
+                } else {
+                    col_count
+                };
+
+                // 如果之前没有列名，生成默认列名
+                let final_column_names = if column_names.is_empty() {
+                    (0..actual_col_count).map(|i| format!("column{}", i + 1)).collect()
+                } else {
+                    column_names
+                };
+
+                // 继续读取剩余行
+                while let Ok(Some(row)) = result.next() {
+                    let mut row_data = Vec::new();
+                    for i in 0..actual_col_count {
+                        let value = match row.get::<usize, String>(i) {
+                            Ok(v) => v,
+                            Err(_) => match row.get::<usize, Option<String>>(i) {
+                                Ok(Some(v)) => v,
+                                Ok(None) => "NULL".to_string(),
+                                Err(_) => "NULL".to_string(),
+                            },
+                        };
+                        row_data.push(value);
+                    }
+                    rows.push(row_data);
+                }
+
+                return Ok(QueryResult { columns: final_column_names, rows });
+            }
+            Err(e) => {
+                log::warn!("DuckDB query() failed: {}, trying query_arrow()", e);
+            }
+        }
+
+        // 如果标准 query() 失败，回退到 query_arrow()
         let mut arrow_result = stmt.query_arrow([])
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
@@ -88,6 +155,7 @@ impl DatabaseConnection for DuckDbConnection {
 
         let mut rows = Vec::new();
 
+        // 遍历 Arrow 批处理
         while let Some(batch) = arrow_result.next() {
             for row_idx in 0..batch.num_rows() {
                 let mut row_data = Vec::new();

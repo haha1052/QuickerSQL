@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useAppStore } from '../../../store';
+import { useLocale } from '../../../context/LocaleContext';
 import type { GridApi } from 'ag-grid-community';
 
 interface ContextMenuState {
@@ -12,6 +13,7 @@ interface ContextMenuState {
 }
 
 export const useQueryCopy = () => {
+  const { t } = useLocale();
   const { setMessage } = useAppStore();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
@@ -19,35 +21,35 @@ export const useQueryCopy = () => {
     if (cellValue !== undefined && cellValue !== null) {
       navigator.clipboard.writeText(String(cellValue))
         .then(() => {
-          setMessage('已复制到剪贴板', 'success');
+          setMessage(t('hooks.copiedToClipboard'), 'success');
         })
         .catch((err) => {
-          console.error('复制失败:', err);
-          setMessage('复制失败', 'error');
+          console.error(t('hooks.copyFail'), err);
+          setMessage(t('hooks.copyFail'), 'error');
         });
     }
     setContextMenu(null);
-  }, [setMessage]);
+  }, [t, setMessage]);
 
   const handleCopyRow = useCallback((rowData: any) => {
     if (rowData) {
       const values = Object.values(rowData).filter((v: any) => typeof v !== 'number' || !String(v).startsWith('col'));
       navigator.clipboard.writeText(values.join('\t'))
         .then(() => {
-          setMessage('已复制整行到剪贴板', 'success');
+          setMessage(t('hooks.copiedRow'), 'success');
         })
         .catch((err) => {
-          console.error('复制失败:', err);
-          setMessage('复制失败', 'error');
+          console.error(t('hooks.copyFail'), err);
+          setMessage(t('hooks.copyFail'), 'error');
         });
     }
     setContextMenu(null);
-  }, [setMessage]);
+  }, [t, setMessage]);
 
   const handleCopySelected = useCallback((api: GridApi<any>) => {
     const selectedNodes = api.getSelectedNodes();
     if (selectedNodes.length === 0) {
-      setMessage('请先选择要复制的行', 'warning');
+      setMessage(t('hooks.selectRowsFirst'), 'warning');
       setContextMenu(null);
       return;
     }
@@ -63,14 +65,14 @@ export const useQueryCopy = () => {
     const text = [header, ...rows].join('\n');
     navigator.clipboard.writeText(text)
       .then(() => {
-        setMessage(`已复制 ${selectedNodes.length} 行到剪贴板`, 'success');
+        setMessage(`${t('hooks.copiedRows').replace('{count}', String(selectedNodes.length))}`, 'success');
       })
       .catch((err) => {
-        console.error('复制失败:', err);
-        setMessage('复制失败', 'error');
+        console.error(t('hooks.copyFail'), err);
+        setMessage(t('hooks.copyFail'), 'error');
       });
     setContextMenu(null);
-  }, [setMessage]);
+  }, [t, setMessage]);
 
   const handleCopyAll = useCallback((api: GridApi<any>) => {
     const columns = api.getColumns() || [];
@@ -86,14 +88,14 @@ export const useQueryCopy = () => {
     const text = [header, ...rows].join('\n');
     navigator.clipboard.writeText(text)
       .then(() => {
-        setMessage(`已复制全部 ${rows.length} 行到剪贴板`, 'success');
+        setMessage(`${t('hooks.copiedAllRows').replace('{count}', String(rows.length))}`, 'success');
       })
       .catch((err) => {
-        console.error('复制失败:', err);
-        setMessage('复制失败', 'error');
+        console.error(t('hooks.copyFail'), err);
+        setMessage(t('hooks.copyFail'), 'error');
       });
     setContextMenu(null);
-  }, [setMessage]);
+  }, [t, setMessage]);
 
   const handleGridContextMenu = useCallback((params: any) => {
     params.event.preventDefault();

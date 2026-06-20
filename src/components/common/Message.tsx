@@ -13,27 +13,27 @@ export const Message: React.FC<MessageProps> = ({ message, type = 'info', onClos
     switch (type) {
       case 'success':
         return {
-          background: '#d4edda',
-          color: '#155724',
-          borderColor: '#c3e6cb',
+          background: 'var(--success-bg)',
+          color: 'var(--success)',
+          borderColor: 'var(--success)',
         };
       case 'error':
         return {
-          background: '#f8d7da',
-          color: '#721c24',
-          borderColor: '#f5c6cb',
+          background: 'var(--error-bg)',
+          color: 'var(--error)',
+          borderColor: 'var(--error)',
         };
       case 'warning':
         return {
-          background: '#fff3cd',
-          color: '#856404',
-          borderColor: '#ffeaa7',
+          background: 'var(--warning-bg)',
+          color: 'var(--warning)',
+          borderColor: 'var(--warning)',
         };
       default:
         return {
-          background: '#d1ecf1',
-          color: '#0c5460',
-          borderColor: '#bee5eb',
+          background: 'var(--primary-bg)',
+          color: 'var(--primary)',
+          borderColor: 'var(--primary)',
         };
     }
   };

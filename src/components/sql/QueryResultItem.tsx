@@ -1,10 +1,12 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 import { Button, DropdownMenu } from '../common';
-import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
+import { ChartPanel } from '../chart/ChartPanel';
 import { useQueryCopy } from './hooks/useQueryCopy';
 import { useQueryExport } from './hooks/useQueryExport';
+import { useSetting } from '../../context/SettingsContext';
+import { useLocale } from '../../context/LocaleContext';
 import type { SqlStatementResult } from '../../types';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -14,18 +16,12 @@ interface QueryResultItemProps {
   index: number;
 }
 
-const zhCNLocaleText = {
-  equals: '等于',
-  notEqual: '不等于',
-  lessThan: '小于',
-  greaterThan: '大于',
-  filterOoo: '筛选...',
-  applyFilter: '应用筛选',
-  resetFilter: '重置筛选',
-  noRowsToShow: '暂无数据',
-};
-
 export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index }) => {
+  const [showChart, setShowChart] = useState(false);
+  const [fontSize] = useSetting('appearance', 'fontSize');
+  const [fontFamily] = useSetting('appearance', 'fontFamily');
+  const { locale, t, localeText } = useLocale();
+  
   const {
     contextMenu,
     handleCopyCell,
@@ -41,6 +37,12 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
   const displayStatement = result.statement.length > 50 
     ? result.statement.substring(0, 47) + '...' 
     : result.statement;
+
+  const fontSizeNum = parseInt(fontSize || '14', 10);
+  const gridStyle = {
+    '--ag-font-size': `${fontSizeNum}px`,
+    '--ag-font-family': fontFamily || 'Monaco, Menlo, "Ubuntu Mono", monospace',
+  } as React.CSSProperties;
 
   // 点击外部关闭右键菜单
   useEffect(() => {
@@ -83,16 +85,34 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
         </div>
         <div style={styles.headerActions}>
           <div style={result.success ? styles.successBadge : styles.errorBadge}>
-            {result.success ? '成功' : '失败'}
+            {result.success ? t('query.success') : t('query.fail')}
           </div>
           {result.success && result.columns && result.rows && (
-            <DropdownMenu
-              trigger={<Button variant="outline" size="sm">导出 ▼</Button>}
-              items={[
-                { label: '导出 CSV', onClick: () => handleExport(result, 'csv') },
-                { label: '导出 JSON', onClick: () => handleExport(result, 'json') },
-              ]}
-            />
+            <>
+              <div style={styles.viewToggle}>
+                <Button
+                  variant={!showChart ? 'primary' : 'outline'}
+                  size="sm"
+                  onClick={() => setShowChart(false)}
+                >
+                  {t('query.table')}
+                </Button>
+                <Button
+                  variant={showChart ? 'primary' : 'outline'}
+                  size="sm"
+                  onClick={() => setShowChart(true)}
+                >
+                  {t('query.chart')}
+                </Button>
+              </div>
+              <DropdownMenu
+                trigger={<Button variant="outline" size="sm">{t('query.exportMenu')} ▼</Button>}
+                items={[
+                  { label: t('query.exportCSV'), onClick: () => handleExport(result, 'csv') },
+                  { label: t('query.exportJSON'), onClick: () => handleExport(result, 'json') },
+                ]}
+              />
+            </>
           )}
         </div>
       </div>
@@ -105,36 +125,50 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
         <>
           {result.affected_rows !== null && !result.columns ? (
             <div style={styles.affectedRowsContainer}>
-              <span style={styles.affectedRowsText}>影响行数: {result.affected_rows}</span>
+              <span style={styles.affectedRowsText}>{t('query.affectedRows')}: {result.affected_rows}</span>
             </div>
           ) : null}
 
           {result.columns && result.rows ? (
-            <div style={{ height: '300px' }} className="ag-theme-alpine">
-              <AgGridReact<any>
-                rowData={result.rows.map((row, rowIndex) => {
-                  const rowObj: Record<string, any> = { id: rowIndex };
-                  row.forEach((cell, colIndex) => {
-                    rowObj[`col${colIndex}`] = cell;
-                  });
-                  return rowObj;
-                })}
-                columnDefs={result.columns.map((col, colIndex) => ({
-                  field: `col${colIndex}`,
-                  headerName: col,
-                }))}
-                localeText={zhCNLocaleText}
-                defaultColDef={{
-                  filter: true,
-                  sortable: true,
-                  resizable: true,
-                  minWidth: 120,
-                }}
-                onCellContextMenu={handleGridContextMenu}
-                rowSelection="multiple"
-                enableCellTextSelection={true}
-              />
-            </div>
+            showChart ? (
+              <div style={styles.chartContainer}>
+                <ChartPanel
+                  queryResult={{
+                    columns: result.columns,
+                    rows: result.rows
+                  }}
+                />
+              </div>
+            ) : (
+              <div style={styles.tableWrapper}>
+                <div style={{ ...styles.tableContainer, ...gridStyle }} className="ag-theme-alpine">
+                  <AgGridReact<any>
+                    key={locale}
+                    rowData={result.rows.map((row, rowIndex) => {
+                      const rowObj: Record<string, any> = { id: rowIndex };
+                      row.forEach((cell, colIndex) => {
+                        rowObj[`col${colIndex}`] = cell;
+                      });
+                      return rowObj;
+                    })}
+                    columnDefs={result.columns.map((col, colIndex) => ({
+                      field: `col${colIndex}`,
+                      headerName: col,
+                    }))}
+                    localeText={localeText}
+                    defaultColDef={{
+                      filter: true,
+                      sortable: true,
+                      resizable: true,
+                      minWidth: 120,
+                    }}
+                    onCellContextMenu={handleGridContextMenu}
+                    rowSelection="multiple"
+                    enableCellTextSelection={true}
+                  />
+                </div>
+              </div>
+            )
           ) : null}
         </>
       )}
@@ -146,7 +180,7 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
               style={styles.contextMenuItem} 
               onClick={(e) => { e.stopPropagation(); handleCopyCell(contextMenu.cellValue); }}
             >
-              复制单元格
+              {t('query.copyCell')}
             </button>
           )}
           {contextMenu.rowData && (
@@ -154,7 +188,7 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
               style={styles.contextMenuItem} 
               onClick={(e) => { e.stopPropagation(); handleCopyRow(contextMenu.rowData); }}
             >
-              复制整行
+              {t('query.copyRow')}
             </button>
           )}
           {contextMenu.api && (
@@ -163,13 +197,13 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
                 style={styles.contextMenuItem} 
                 onClick={(e) => { e.stopPropagation(); handleCopySelected(contextMenu.api!); }}
               >
-                复制选中行
+                {t('query.copySelectedRows')}
               </button>
               <button 
                 style={styles.contextMenuItem} 
                 onClick={(e) => { e.stopPropagation(); handleCopyAll(contextMenu.api!); }}
               >
-                复制全部数据
+                {t('query.copyAll')}
               </button>
             </>
           )}
@@ -181,38 +215,42 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    marginBottom: Spacing.md,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
+    marginBottom: '16px',
+    border: '1px solid var(--border-primary)',
+    borderRadius: '8px',
     overflow: 'hidden',
-    background: Colors.background,
+    background: 'var(--bg-secondary)',
+    display: 'flex',
+    flexDirection: 'column',
+    flex: 1,
+    minHeight: 300,
   },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: `${Spacing.sm} ${Spacing.md}`,
-    background: Colors.backgroundLight,
-    borderBottom: `1px solid ${Colors.border}`,
+    padding: '8px 16px',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
   },
   statementInfo: {
     display: 'flex',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: '8px',
     overflow: 'hidden',
     flex: 1,
   },
   indexBadge: {
-    fontSize: FontSizes.small,
+    fontSize: '13px',
     fontWeight: 'bold',
-    color: Colors.primary,
-    background: Colors.primaryLight,
+    color: 'var(--primary)',
+    background: 'var(--primary-bg)',
     padding: '2px 8px',
-    borderRadius: BorderRadius.sm,
+    borderRadius: '4px',
   },
   statementText: {
-    fontSize: FontSizes.small,
-    color: Colors.textPrimary,
+    fontSize: '13px',
+    color: 'var(--text-primary)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -220,60 +258,84 @@ const styles: Record<string, React.CSSProperties> = {
   headerActions: {
     display: 'flex',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: '8px',
+  },
+  viewToggle: {
+    display: 'flex',
+    gap: '4px',
+  },
+  chartContainer: {
+    flex: 1,
+    minHeight: 300,
+    background: 'var(--bg-secondary)',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  tableWrapper: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--bg-primary)',
+  },
+  tableContainer: {
+    flex: 1,
+    minHeight: 0,
+    height: '100%',
+    background: 'var(--bg-primary)',
   },
   successBadge: {
-    fontSize: FontSizes.caption,
+    fontSize: '12px',
     fontWeight: 'bold',
-    color: Colors.success,
-    background: '#d4edda',
+    color: 'var(--success)',
+    background: 'var(--success-bg)',
     padding: '4px 10px',
-    borderRadius: BorderRadius.sm,
+    borderRadius: '4px',
   },
   errorBadge: {
-    fontSize: FontSizes.caption,
+    fontSize: '12px',
     fontWeight: 'bold',
-    color: Colors.danger,
-    background: '#f8d7da',
+    color: 'var(--error)',
+    background: 'var(--error-bg)',
     padding: '4px 10px',
-    borderRadius: BorderRadius.sm,
+    borderRadius: '4px',
   },
   errorContainer: {
-    padding: Spacing.md,
-    background: '#fff5f5',
+    padding: '16px',
+    background: 'var(--error-bg)',
   },
   errorText: {
-    fontSize: FontSizes.small,
-    color: Colors.danger,
+    fontSize: '13px',
+    color: 'var(--error)',
   },
   affectedRowsContainer: {
-    padding: Spacing.md,
-    background: '#f0f9ff',
+    padding: '16px',
+    background: 'var(--primary-bg)',
   },
   affectedRowsText: {
-    fontSize: FontSizes.small,
-    color: Colors.primary,
+    fontSize: '13px',
+    color: 'var(--primary)',
   },
   contextMenu: {
     position: 'fixed',
-    background: Colors.background,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
-    padding: Spacing.xs,
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-primary)',
+    borderRadius: '8px',
+    boxShadow: 'var(--shadow)',
+    padding: '4px',
     zIndex: 1000,
     minWidth: '140px',
   },
   contextMenuItem: {
     width: '100%',
-    padding: `${Spacing.sm} ${Spacing.md}`,
+    padding: '8px 16px',
     border: 'none',
     background: 'transparent',
     textAlign: 'left',
     cursor: 'pointer',
-    fontSize: FontSizes.small,
-    color: Colors.textPrimary,
-    borderRadius: BorderRadius.sm,
+    fontSize: '13px',
+    color: 'var(--text-primary)',
+    borderRadius: '4px',
     transition: 'background 0.2s',
   },
 };

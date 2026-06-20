@@ -1,11 +1,12 @@
 import React from 'react';
 import { useQueryStore } from '../../store';
 import { QueryResultItem } from './QueryResultItem';
-import { Colors, FontSizes } from '../../styles/design-system';
+import { useLocale } from '../../context/LocaleContext';
 
 export const QueryResult: React.FC = () => {
   const { sqlQueries, activeQueryId, queryLoading } = useQueryStore();
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
+  const { t } = useLocale();
 
   if (!activeQuery) {
     return null;
@@ -18,7 +19,7 @@ export const QueryResult: React.FC = () => {
     <div style={styles.container}>
       {isLoading ? (
         <div style={styles.loadingContainer}>
-          <div style={styles.loadingText}>正在执行查询...</div>
+          <div style={styles.loadingText}>{t('query.running')}</div>
         </div>
       ) : batchResults && batchResults.length > 0 ? (
         <div style={styles.resultsContainer}>
@@ -28,7 +29,7 @@ export const QueryResult: React.FC = () => {
         </div>
       ) : (
         <div style={styles.emptyContainer}>
-          <span style={styles.emptyText}>点击执行按钮运行查询</span>
+          <span style={styles.emptyText}>{t('query.clickToRun')}</span>
         </div>
       )}
     </div>
@@ -41,6 +42,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
+    background: 'var(--bg-primary)',
   },
   loadingContainer: {
     display: 'flex',
@@ -48,15 +50,20 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     padding: '40px',
     height: '100%',
+    background: 'var(--bg-primary)',
   },
   loadingText: {
-    fontSize: FontSizes.body,
-    color: Colors.textSecondary,
+    fontSize: '14px',
+    color: 'var(--text-secondary)',
   },
   resultsContainer: {
     flex: 1,
+    minHeight: 0,
     overflow: 'auto',
     padding: '12px',
+    display: 'flex',
+    flexDirection: 'column',
+    background: 'var(--bg-primary)',
   },
   emptyContainer: {
     display: 'flex',
@@ -64,9 +71,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     padding: '40px',
     height: '100%',
+    background: 'var(--bg-primary)',
   },
   emptyText: {
-    fontSize: FontSizes.body,
-    color: Colors.textSecondary,
+    fontSize: '14px',
+    color: 'var(--text-secondary)',
   },
 };

@@ -5,6 +5,8 @@ import { DataPreview } from './DataPreview';
 import { FilePlusIcon, UploadIcon } from '../common/Icons';
 import { useImportStore, useAppStore } from '../../store';
 import { tauriService } from '../../services';
+import { useSetting } from '../../context/SettingsContext';
+import { useLocale } from '../../context/LocaleContext';
 import type { ImportItem } from '../../types';
 
 interface DataImportProps {
@@ -20,6 +22,11 @@ export const DataImport: React.FC<DataImportProps> = ({
     setActiveImportItemId,
   } = useImportStore();
   const { setMessage } = useAppStore();
+  const { t } = useLocale();
+  
+  // 获取数据导入设置
+  const [skipEmptyRows] = useSetting('import', 'skipEmptyRows');
+  const [firstRowAsHeader] = useSetting('import', 'firstRowAsHeader');
   
   const [isDragging, setIsDragging] = useState(false);
 
@@ -40,18 +47,28 @@ export const DataImport: React.FC<DataImportProps> = ({
       const response = await tauriService.loadCsv(filePath);
       if (response.success && response.data) {
         const id = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        let rows = response.data.rows;
+        if (skipEmptyRows === 'true') {
+          rows = rows.filter((row: string[]) => row.some((cell) => cell.trim() !== ''));
+        }
+        
+        const hasHeader = firstRowAsHeader === 'true';
+        let headers = hasHeader ? (rows[0] || []) : rows[0]?.map((_, i) => `column_${i + 1}`) || [];
+        let dataRows = hasHeader ? rows.slice(1) : rows;
+        
         return {
           id,
           fileType: 'csv',
           filePath,
           fileName,
           preview: {
-            headers: response.data.headers,
-            rows: response.data.rows,
+            headers,
+            rows: dataRows,
           },
-          hasHeader: true,
+          hasHeader,
           tableName: generateTableName(fileName),
-          fields: response.data.headers.map((name: string) => ({
+          fields: headers.map((name: string) => ({
             name,
             dataType: 'TEXT' as const,
           })),
@@ -61,7 +78,7 @@ export const DataImport: React.FC<DataImportProps> = ({
         };
       }
     } catch (e) {
-      setMessage(`加载 CSV 文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('import.loadCSVFail')}: ${String(e)}`, 'error');
     }
     return null;
   };
@@ -70,7 +87,7 @@ export const DataImport: React.FC<DataImportProps> = ({
     try {
       const sheetsResponse = await tauriService.getExcelSheets(filePath);
       if (!sheetsResponse.success || !sheetsResponse.data) {
-        setMessage('获取 Excel Sheet 列表失败', 'error');
+        setMessage(t('import.loadExcelFail'), 'error');
         return [];
       }
 
@@ -82,6 +99,16 @@ export const DataImport: React.FC<DataImportProps> = ({
         const previewResponse = await tauriService.loadExcelSheet(filePath, sheetName);
         if (previewResponse.success && previewResponse.data) {
           const sheetId = `${parentId}_${sheetName}`;
+          
+          let rows = previewResponse.data.rows;
+          if (skipEmptyRows === 'true') {
+            rows = rows.filter((row: string[]) => row.some((cell) => cell.trim() !== ''));
+          }
+          
+          const hasHeader = firstRowAsHeader === 'true';
+          let headers = hasHeader ? (rows[0] || []) : rows[0]?.map((_, i) => `column_${i + 1}`) || [];
+          let dataRows = hasHeader ? rows.slice(1) : rows;
+          
           items.push({
             id: sheetId,
             fileType: 'excel',
@@ -89,12 +116,12 @@ export const DataImport: React.FC<DataImportProps> = ({
             fileName,
             sheetName,
             preview: {
-              headers: previewResponse.data.headers,
-              rows: previewResponse.data.rows,
+              headers,
+              rows: dataRows,
             },
-            hasHeader: true,
+            hasHeader,
             tableName: generateTableName(fileName, sheetName),
-            fields: previewResponse.data.headers.map((name: string) => ({
+            fields: headers.map((name: string) => ({
               name,
               dataType: 'TEXT' as const,
             })),
@@ -116,7 +143,7 @@ export const DataImport: React.FC<DataImportProps> = ({
             headers: [],
             rows: [],
           },
-          hasHeader: true,
+          hasHeader: firstRowAsHeader === 'true',
           tableName: generateTableName(fileName),
           fields: [],
           selected: false,
@@ -129,7 +156,7 @@ export const DataImport: React.FC<DataImportProps> = ({
 
       return items;
     } catch (e) {
-      setMessage(`加载 Excel 文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('import.loadExcelFail')}: ${String(e)}`, 'error');
       return [];
     }
   };
@@ -140,7 +167,7 @@ export const DataImport: React.FC<DataImportProps> = ({
         multiple: true,
         filters: [
           {
-            name: '数据文件',
+            name: t('toolbar.dataFiles'),
             extensions: ['csv', 'xlsx', 'xls'],
           },
         ],
@@ -170,10 +197,10 @@ export const DataImport: React.FC<DataImportProps> = ({
         if (selectableItems.length > 0) {
           setActiveImportItemId(selectableItems[0].id);
         }
-        setMessage(`已添加 ${newItems.filter(i => !i.isParent).length} 个文件`, 'success');
+        setMessage(t('import.addedFiles', { count: newItems.filter(i => !i.isParent).length }), 'success');
       }
     } catch (e) {
-      setMessage(`选择文件失败: ${String(e)}`, 'error');
+      setMessage(`${t('import.selectFileFail')}: ${String(e)}`, 'error');
     }
   };
 
@@ -196,7 +223,7 @@ export const DataImport: React.FC<DataImportProps> = ({
 
     // 由于浏览器安全限制，无法直接获取拖拽文件的真实路径
     // 提示用户使用文件选择对话框
-    setMessage('请使用"添加文件"按钮选择文件，感谢您的理解！', 'info');
+    setMessage(t('import.useAddButtonHint'), 'info');
   }, [setMessage]);
 
   if (importItems.length === 0) {
@@ -214,13 +241,13 @@ export const DataImport: React.FC<DataImportProps> = ({
           }}
           onClick={handleAddFiles}
         >
-          <UploadIcon size={48} color={isDragging ? '#007bff' : '#999'} />
+          <UploadIcon size={48} color={isDragging ? 'var(--primary)' : 'var(--text-tertiary)'} />
           <div style={styles.addButton}>
             <FilePlusIcon size={18} />
-            <span>添加文件</span>
+            <span>{t('import.addFile')}</span>
           </div>
-          <p style={styles.dropText}>点击添加文件</p>
-          <p style={styles.supportedFormats}>支持 CSV、Excel 文件</p>
+          <p style={styles.dropText}>{t('import.clickToAdd')}</p>
+          <p style={styles.supportedFormats}>{t('import.supportedFormats')}</p>
         </div>
       </div>
     );
@@ -235,8 +262,8 @@ export const DataImport: React.FC<DataImportProps> = ({
     >
       {isDragging && (
         <div style={styles.dragOverlay}>
-          <UploadIcon size={48} color="#007bff" />
-          <p style={styles.dragOverlayText}>释放文件以添加</p>
+          <UploadIcon size={48} color="var(--primary)" />
+          <p style={styles.dragOverlayText}>{t('import.releaseToAdd')}</p>
         </div>
       )}
       <FileQueue onFileSelect={handleFileSelect} />
@@ -257,7 +284,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#fff',
+    background: 'var(--bg-primary)',
   },
   dropZone: {
     display: 'flex',
@@ -265,14 +292,14 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     padding: '60px 80px',
-    border: '2px dashed #dee2e6',
+    border: '2px dashed var(--border-primary)',
     borderRadius: '12px',
     transition: 'all 0.2s',
     cursor: 'pointer',
   },
   dropZoneActive: {
-    borderColor: '#007bff',
-    background: '#e3f2fd',
+    borderColor: 'var(--primary)',
+    background: 'var(--primary-bg)',
   },
   addButton: {
     display: 'flex',
@@ -280,7 +307,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '8px',
     marginTop: '20px',
     padding: '12px 24px',
-    background: '#007bff',
+    background: 'var(--primary)',
     color: 'white',
     borderRadius: '6px',
     fontSize: '16px',
@@ -290,12 +317,12 @@ const styles: Record<string, React.CSSProperties> = {
   dropText: {
     marginTop: '16px',
     fontSize: '14px',
-    color: '#666',
+    color: 'var(--text-secondary)',
   },
   supportedFormats: {
     marginTop: '8px',
     fontSize: '12px',
-    color: '#999',
+    color: 'var(--text-tertiary)',
   },
   dragOverlay: {
     position: 'absolute',
@@ -303,20 +330,20 @@ const styles: Record<string, React.CSSProperties> = {
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(227, 242, 253, 0.95)',
+    background: 'var(--primary-bg)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 100,
-    border: '3px dashed #007bff',
+    border: '3px dashed var(--primary)',
     borderRadius: '8px',
     margin: '8px',
   },
   dragOverlayText: {
     marginTop: '16px',
     fontSize: '18px',
-    color: '#007bff',
+    color: 'var(--primary)',
     fontWeight: 500,
   },
 };

@@ -1,0 +1,26 @@
+//! Commands 模块
+//! 包含 Tauri 命令定义
+pub mod trash;
+pub mod query_history;
+pub mod chart;
+pub mod settings;
+pub mod audit_log;
+pub mod app_state;
+pub mod database;
+pub mod file;
+pub mod project;
+pub mod sql;
+pub mod dashboard;
+pub mod automation;
+pub use trash::*;
+pub use query_history::*;
+pub use chart::*;
+pub use settings::*;
+pub use audit_log::*;
+pub use app_state::*;
+pub use database::*;
+pub use file::*;
+pub use project::*;
+pub use sql::*;
+pub use dashboard::*;
+pub use automation::*;

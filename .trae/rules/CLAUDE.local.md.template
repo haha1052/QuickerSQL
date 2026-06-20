@@ -1,0 +1,84 @@
+# QuickerSQL 本地私有规则模板 CLAUDE.local.md v7.0
+
+> ✅ **本模板文件提交 Git**。新开发者使用流程：
+> 1. 复制本文件，改名为 `CLAUDE.local.md`（去掉 `.template`）
+> 2. 填写你的本地值
+> 3. 确认 `CLAUDE.local.md` 会被 `.gitignore` 自动排除（已配置 `.trae/rules/CLAUDE.local.md` / `.trae/rules/*local*.md`）
+>
+> 优先级：最高（本地 `CLAUDE.local.md` 优先生效，高于 `.trae/rules/security.md`）
+> 作用：区分**项目通用规则**（在 git 中）和**本地环境配置**（不在 git 中）。
+
+---
+
+## 一、你是谁
+
+| 字段 | 示例值 | 说明 |
+|------|--------|------|
+| `machine_os` | `Windows 11` | 本地操作系统 |
+| `rust_version` | `rustc 1.79.0 (stable)` | `rustc --version` 输出 |
+| `node_version` | `v20.15.1` | `node --version` 输出 |
+| `shell` | `PowerShell 7.4` / `cmd` / `bash` | Agent 执行命令的 shell |
+| `workspace_path` | `C:\dev\la-duck` | 工作区绝对路径 |
+
+---
+
+## 二、本地数据库路径（仅本地使用，禁止硬编码到源码）
+
+> 如果你的本地 `db_path` 与默认（系统临时目录）不同，在此覆盖。
+> 这样 Agent 生成的测试代码会自动用你的路径，避免每次手动改。
+
+```yaml
+# 以下为示例，实际使用时删除这行注释
+db_path: C:\Users\你\AppData\Local\QuickerSQL\data.db
+```
+
+---
+
+## 三、本地密钥 / API 凭据（仅本地使用，禁止 commit）
+
+> 本项目当前不使用外部密钥。如果未来你引入了：
+
+| 变量名 | 值 | 来源 |
+|-------|---|------|
+| `QUICKERSQL_OPENAI_KEY` | （留空或你的 sk-xxx） | 你本地的 `.env` / 系统环境变量 |
+| `QUICKERSQL_LLM_ENDPOINT` | （留空或 `http://localhost:11434`） | 本地 LLM 服务地址 |
+
+**重要：**
+
+- 上述字符串的**真实值**只能出现在本文件和 `src-tauri/.env.local` 中
+- 提交代码前 `git status` 检查，确保没有 `*.local.*` / `.env` 被 commit
+- 如果你在代码文件中看到了以上真实值，必须立即回退并清理
+
+---
+
+## 四、你对通用规则的覆盖（override）
+
+> 仅在你个人工作流需要不同于通用规则时填写。
+> 示例：
+
+```
+# 示例：你本地的 cargo 命令带 --quiet 参数
+cargo_command: cargo check --quiet --message-format=short
+
+# 示例：你习惯在修改后不跑 tsc（不推荐）
+# skip_tsc: true
+```
+
+---
+
+## 五、提交到 Git 之前的自检清单
+
+```
+□ git status 确认无 *.local.* 或 .env.local 文件
+□ git diff --cached 检查未提交密钥 / 本地绝对路径
+□ cargo check 0 errors
+□ tsc --noEmit 0 errors
+```
+
+---
+
+## 六、版本与变更记录
+
+| 版本 | 日期 | 变更内容 |
+|------|------|---------|
+| v7.0 | 2026-06-20 | 初版。本地环境字段、数据库路径、API 密钥槽位、规则覆盖、提交前自检 |

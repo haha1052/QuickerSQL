@@ -1,7 +1,9 @@
 import { create } from 'zustand';
+import { useToastStore } from './toastStore';
 import type { TabType, DatabaseStatus } from '../types';
 
-interface AppState {
+// AppStoreState: 应用全局状态（不同于后端 Rust AppState）
+interface AppStoreState {
   activeTab: TabType;
   message: string;
   messageType: 'success' | 'error' | 'info' | 'warning';
@@ -15,7 +17,7 @@ interface AppState {
   setAllDatabaseStatus: (status: DatabaseStatus[]) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppStoreState>((set) => ({
   activeTab: 'csv',
   message: '',
   messageType: 'info',
@@ -24,9 +26,13 @@ export const useAppStore = create<AppState>((set) => ({
 
   setActiveTab: (tab) => set({ activeTab: tab }),
   
-  setMessage: (message, type = 'info') => set({ message, messageType: type }),
-  
-  clearMessage: () => set({ message: '', messageType: 'info' }),
+  setMessage: (message, type = 'info') => {
+    useToastStore.getState().addToast(message, type);
+  },
+
+  clearMessage: () => {
+    useToastStore.getState().clearToasts();
+  },
   
   setLoading: (loading) => set({ isLoading: loading }),
   

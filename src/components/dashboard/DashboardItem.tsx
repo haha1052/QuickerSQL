@@ -1,0 +1,759 @@
+import React, { useState, useEffect, useRef, Component, Dispatch, SetStateAction } from 'react';
+import * as echarts from 'echarts';
+import { useDashboardStore } from '../../store/dashboardStore';
+import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
+import { applyFiltersToSql, hasActiveFilters } from '../../utils/filterSql';
+import type { DashboardItem as DashboardItemType, SavedChart, DashboardFilter } from '../../types/dashboard';
+
+interface DashboardItemProps {
+  item: DashboardItemType;
+  isEditing: boolean;
+  onRemove?: () => void;
+  onLayoutChange?: (layout: { x: number; y: number; width: number; height: number }) => void;
+}
+
+/**
+ * 使用 SQL 和 savedChart 配置渲染图表（三层降级策略）
+ */
+async function renderWithSql(
+  sql: string,
+  savedChart: SavedChart,
+  setChartConfig: Dispatch<SetStateAction<Record<string, unknown> | null>>,
+  setError: Dispatch<SetStateAction<string | null>>,
+  setLoading: Dispatch<SetStateAction<boolean>>,
+) {
+  try {
+    const { tauriService } = await import('../../services');
+
+    const execResponse = await tauriService.executeSql(sql);
+    if (!execResponse.success || !execResponse.data) {
+      throw new Error(`执行查询失败: ${execResponse.error || '未知错误'}`);
+    }
+
+    const firstResult = execResponse.data.results?.[0];
+    if (!firstResult || !firstResult.columns || !firstResult.rows) {
+      throw new Error('查询结果为空');
+    }
+
+    const { columns, rows } = firstResult;
+
+    if (!columns.includes(savedChart.xAxis)) {
+      throw new Error(`图表配置的 x 轴列 "${savedChart.xAxis}" 在查询结果中不存在。可用列: ${columns.join(', ')}`);
+    }
+
+    for (const yCol of savedChart.yAxis) {
+      if (!columns.includes(yCol)) {
+        throw new Error(`图表配置的 y 轴列 "${yCol}" 在查询结果中不存在。可用列: ${columns.join(', ')}`);
+      }
+    }
+
+    const chartResponse = await tauriService.generateChartConfig({
+      columns,
+      rows,
+      chart_type: savedChart.chartType,
+      x_axis_column: savedChart.xAxis,
+      y_axis_columns: savedChart.yAxis,
+    });
+
+    if (chartResponse.success && chartResponse.data) {
+      setChartConfig(chartResponse.data);
+    } else {
+      throw new Error(chartResponse.error || '生成图表配置失败');
+    }
+  } catch (e) {
+    console.error('[renderWithSql] 失败:', e);
+    setError(String(e));
+    throw e;
+  } finally {
+    setLoading(false);
+  }
+}
+
+class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: string | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.message };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('[DashboardItemErrorBoundary] 捕获错误:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          ...styles.item,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--error)',
+          fontSize: '12px',
+          textAlign: 'center',
+          padding: '12px',
+        }}>
+          <div>
+            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>图表渲染失败</div>
+            <div style={{ fontSize: '10px', opacity: 0.8 }}>{this.state.error}</div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/**
+ * ECharts 画布渲染组件（仅负责图表实例的初始化和渲染，不参与 Grid 布局）
+ *
+ * P0-1 修复：移除了此组件中重复的 gridStyle / item 样式 / toolbar，
+ *           避免与父组件 DashboardItem 的 Grid 布局产生嵌套冲突。
+ */
+const ChartCanvas: React.FC<{
+  chartConfig: Record<string, unknown> | null;
+  /** 编辑模式下禁用 ECharts 的鼠标交互，让拖拽事件能穿透到外层卡片 */
+  interactive: boolean;
+}> = ({ chartConfig, interactive }) => {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartInstanceRef = useRef<echarts.ECharts | null>(null);
+
+  useEffect(() => {
+    if (!chartConfig || !chartRef.current) return;
+
+    let localInstance: echarts.ECharts | null = chartInstanceRef.current;
+    let handleResize: (() => void) | null = null;
+
+    try {
+      if (!localInstance) {
+        localInstance = echarts.init(chartRef.current);
+        chartInstanceRef.current = localInstance;
+      }
+
+      const normalized = normalizeEChartsConfig(chartConfig);
+      if (!normalized) return;
+      localInstance.setOption(normalized);
+
+      handleResize = () => {
+        localInstance?.resize();
+      };
+
+      window.addEventListener('resize', handleResize);
+    } catch (e) {
+      console.error('[ChartCanvas] ECharts渲染失败:', e);
+      // 配置失败：如果是本次 useEffect 新创建的实例，dispose 它避免泄漏
+      if (localInstance && chartInstanceRef.current === localInstance) {
+        try {
+          localInstance.dispose();
+        } catch {
+          /* ignore */
+        }
+        chartInstanceRef.current = null;
+        localInstance = null;
+      }
+      return;
+    }
+
+    return () => {
+      if (handleResize) {
+        window.removeEventListener('resize', handleResize);
+      }
+      if (chartInstanceRef.current) {
+        try {
+          chartInstanceRef.current.dispose();
+        } catch {
+          /* ignore */
+        }
+        chartInstanceRef.current = null;
+      }
+    };
+  }, [chartConfig]);
+
+  return (
+    <div
+      ref={chartRef}
+      data-echarts-container="true"
+      style={{
+        ...styles.chart,
+        // 编辑模式下禁用 ECharts 的鼠标事件，使拖拽能穿透到外层卡片
+        pointerEvents: interactive ? 'auto' : 'none',
+      }}
+    />
+  );
+};
+
+// 拖拽阈值：鼠标移动超过此距离才认为是拖拽（而非点击）
+const DRAG_THRESHOLD_PX = 5;
+
+export const DashboardItem: React.FC<DashboardItemProps> = ({
+  item,
+  isEditing,
+  onRemove,
+  onLayoutChange,
+}) => {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [chartConfig, setChartConfig] = useState<Record<string, unknown> | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards } = useDashboardStore();
+  const isSelected = selectedChartId === item.chartId;
+
+  const savedChart = savedCharts.find(c => c.id === item.chartId);
+
+  // P2-1 筛选器联动：获取当前仪表盘的筛选器定义
+  const dashboardFilters: DashboardFilter[] = (() => {
+    const dash = dashboards.find((d) => d.id === item.dashboardId);
+    return dash?.filters || [];
+  })();
+  // 用 JSON.stringify 做依赖，避免对象引用变化导致频繁刷新
+  const filterValuesKey = JSON.stringify(filterValues);
+  const filtersActive = hasActiveFilters(JSON.parse(filterValuesKey));
+
+  useEffect(() => {
+    const renderChart = async () => {
+      if (savedCharts.length === 0) {
+        try {
+          await loadSavedCharts();
+        } catch (e) {
+          console.warn('[DashboardItem] 触发 savedCharts 加载失败:', e);
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      if (!savedChart) {
+        const currentSavedCharts = useDashboardStore.getState().savedCharts;
+        const latestChart = currentSavedCharts.find(c => c.id === item.chartId);
+        if (!latestChart) {
+          setLoading(false);
+          setError('图表不存在（该图表可能已被删除，或图表库尚未加载完成）');
+          return;
+        }
+        return;
+      }
+
+      // 策略 0（第三轮新增）：使用自动化任务刷新缓存的查询结果（跳过 SQL 查询）
+      // 当筛选器未激活、且图表的 lastResult 有有效 rows/columns 时，直接调用 generateChartConfig
+      if (!filtersActive && savedChart.lastResult && savedChart.lastResult.rows && savedChart.lastResult.rows.length > 0
+          && savedChart.lastResult.columns && savedChart.lastResult.columns.length > 0) {
+        const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
+        const hasValidYAxis = savedChart.yAxis && savedChart.yAxis.length > 0;
+        if (hasValidXAxis && hasValidYAxis && savedChart.lastResult.columns.includes(savedChart.xAxis)) {
+          try {
+            const { tauriService } = await import('../../services');
+            const chartResponse = await tauriService.generateChartConfig({
+              columns: savedChart.lastResult.columns,
+              rows: savedChart.lastResult.rows,
+              chart_type: savedChart.chartType,
+              x_axis_column: savedChart.xAxis,
+              y_axis_columns: savedChart.yAxis,
+            });
+            if (chartResponse.success && chartResponse.data) {
+              setChartConfig(chartResponse.data);
+              setLoading(false);
+              return;
+            }
+            console.warn('[DashboardItem] 缓存数据生成图表配置失败，继续走常规路径');
+          } catch (e) {
+            console.warn('[DashboardItem] 使用缓存失败，回退到正常路径:', e);
+          }
+        }
+      }
+
+      // 策略 1：直接使用已保存的 ECharts config
+      // P2-1 修复：当筛选器激活时，跳过 config 直渲，强制走 SQL 路径以应用筛选条件
+      if (!filtersActive && savedChart.config && Object.keys(savedChart.config).length > 0) {
+        const cfg = savedChart.config as Record<string, unknown>;
+        const hasSeries = Array.isArray(cfg.series) && cfg.series.length > 0;
+        const hasAxis = 'xAxis' in cfg || 'x_axis' in cfg;
+
+        if (hasSeries || hasAxis) {
+          setChartConfig(savedChart.config);
+          setLoading(false);
+          return;
+        }
+        console.warn('[DashboardItem] config 存在但内容不完整，回退到 SQL 路径');
+      }
+
+      // 策略 2：通过 SQL + 已保存的图表参数重新生成配置
+      // P2-1 修复：将筛选条件注入 SQL
+      const hasSql = savedChart.sql && savedChart.sql.trim().length > 0;
+      const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
+      const hasValidYAxis = savedChart.yAxis && savedChart.yAxis.length > 0;
+
+      if (hasSql && hasValidXAxis && hasValidYAxis) {
+        // P2-1：注入筛选条件
+        const effectiveSql = filtersActive
+          ? applyFiltersToSql(savedChart.sql, JSON.parse(filterValuesKey), dashboardFilters)
+          : savedChart.sql;
+        try {
+          await renderWithSql(effectiveSql, savedChart as any, setChartConfig, setError, setLoading);
+          return;
+        } catch (e) {
+          console.error('[DashboardItem] SQL 渲染失败，继续尝试回退:', e);
+        }
+      }
+
+      // 策略 3：回退 —— 从 saved_queries 查找原始 SQL
+      if (savedChart.queryId && savedChart.queryId.trim() !== '') {
+        try {
+          const { tauriService } = await import('../../services');
+          const queryResponse = await tauriService.getSavedQuery(savedChart.queryId);
+
+          if (queryResponse.success && queryResponse.data?.sql) {
+            // P2-1：回退路径也注入筛选条件
+            const fallbackSql = filtersActive
+              ? applyFiltersToSql(queryResponse.data.sql, JSON.parse(filterValuesKey), dashboardFilters)
+              : queryResponse.data.sql;
+            if (savedChart.xAxis && savedChart.yAxis?.length > 0) {
+              await renderWithSql(fallbackSql, savedChart as any, setChartConfig, setError, setLoading);
+              return;
+            }
+          }
+        } catch (fallbackError) {
+          console.warn('[DashboardItem] 回退也失败:', fallbackError);
+        }
+      }
+
+      // 所有策略都失败
+      setLoading(false);
+      const missing: string[] = [];
+      if (!hasSql || !(savedChart.sql && savedChart.sql.trim().length > 0)) missing.push('SQL');
+      if (!hasValidXAxis) missing.push('X 轴配置');
+      if (!hasValidYAxis) missing.push('Y 轴配置');
+      if (!(savedChart.config && Object.keys(savedChart.config).length > 0)) missing.push('图表配置');
+
+      setError(
+        `此图表数据不完整（缺少：${missing.join(' / ')}）。\n` +
+        `请：1) 点击右上角 🗘 按钮刷新仪表盘 或 2) 回到 SQL 查询页面重新生成并保存该图表。`
+      );
+    };
+
+    renderChart();
+    // P2-1：filterValuesKey 变化时触发重新渲染（筛选器联动）
+  }, [savedChart, item.chartId, retryKey, filterValuesKey, filtersActive]);
+
+  /**
+   * P0-1 修复：拖拽启动逻辑
+   *
+   * 关键改进：
+   * 1. 增加 DRAG_THRESHOLD_PX 阈值 —— 鼠标移动超过 5px 才认为是拖拽，否则视为点击
+   * 2. 拖拽开始后才设置 isDragging 状态，避免误触
+   * 3. 配合 ChartCanvas 的 pointer-events: none，编辑模式下 ECharts 不会拦截鼠标事件
+   * 4. 拖拽中禁止文本选中，避免干扰
+   */
+  const handleDragStart = (e: React.MouseEvent) => {
+    if (!isEditing || !onLayoutChange) return;
+    // 不阻止默认行为和冒泡 —— 让 React onClick 能正常触发（用于点击选中）
+    // 仅在确认是拖拽后才阻止
+
+    const canvasEl = document.querySelector('[data-dashboard-canvas="true"]') as HTMLElement | null;
+    if (!canvasEl) return;
+
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const colWidth = (canvasRect.width - 16) / 12;
+    const rowHeight = 80;
+
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+    const startX = item.x;
+    const startY = item.y;
+
+    let dragStarted = false; // 是否已越过阈值，进入真正的拖拽
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startMouseX;
+      const dy = moveEvent.clientY - startMouseY;
+
+      // 阈值判断：移动距离不足时，不触发拖拽（视为点击）
+      if (!dragStarted) {
+        if (Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) {
+          return;
+        }
+        // 越过阈值，正式开始拖拽
+        dragStarted = true;
+        setIsDragging(true);
+        // 拖拽开始后禁止文本选中
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'move';
+      }
+
+      const deltaCols = Math.round(dx / (colWidth + 16 / 12));
+      const deltaRows = Math.round(dy / (rowHeight + 16 / 12));
+
+      let newX = startX + deltaCols;
+      let newY = startY + deltaRows;
+
+      // 边界约束
+      newX = Math.max(0, Math.min(12 - item.width, newX));
+      newY = Math.max(0, newY);
+
+      if (newX !== item.x || newY !== item.y) {
+        onLayoutChange({ x: newX, y: newY, width: item.width, height: item.height });
+      }
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      // 恢复样式
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      if (dragStarted) {
+        setIsDragging(false);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
+  /**
+   * P0-2 修复：缩放手柄逻辑（保持原有逻辑，样式改进在 styles 中）
+   */
+  const handleResizeStart = (e: React.MouseEvent, edge: 'right' | 'bottom' | 'corner') => {
+    if (!isEditing || !onLayoutChange) return;
+    e.stopPropagation();
+    e.preventDefault();
+
+    const canvasEl = document.querySelector('[data-dashboard-canvas="true"]') as HTMLElement | null;
+    if (!canvasEl) return;
+
+    const canvasRect = canvasEl.getBoundingClientRect();
+    const colWidth = (canvasRect.width - 16) / 12;
+    const rowHeight = 80;
+
+    const startMouseX = e.clientX;
+    const startMouseY = e.clientY;
+    const startWidth = item.width;
+    const startHeight = item.height;
+
+    const MIN_W = 3;
+    const MIN_H = 2;
+    const MAX_W = 12;
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = edge === 'corner' ? 'nwse-resize' : (edge === 'right' ? 'ew-resize' : 'ns-resize');
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      let newWidth = startWidth;
+      let newHeight = startHeight;
+
+      if (edge === 'right' || edge === 'corner') {
+        const dx = moveEvent.clientX - startMouseX;
+        const deltaCols = Math.round(dx / (colWidth + 16 / 12));
+        newWidth = Math.max(MIN_W, Math.min(MAX_W, startWidth + deltaCols));
+        newWidth = Math.min(newWidth, 12 - item.x);
+      }
+
+      if (edge === 'bottom' || edge === 'corner') {
+        const dy = moveEvent.clientY - startMouseY;
+        const deltaRows = Math.round(dy / (rowHeight + 16 / 12));
+        newHeight = Math.max(MIN_H, startHeight + deltaRows);
+      }
+
+      if (newWidth !== item.width || newHeight !== item.height) {
+        onLayoutChange({ x: item.x, y: item.y, width: newWidth, height: newHeight });
+      }
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
+
+  // Grid 位置计算
+  const gridStyle: React.CSSProperties = {
+    gridColumn: `${item.x + 1} / span ${item.width}`,
+    gridRow: `${item.y + 1} / span ${item.height}`,
+    minHeight: `${item.height * 80}px`,
+  };
+
+  return (
+    <DashboardItemErrorBoundary>
+      <div
+        onClick={() => {
+          // 拖拽中不触发点击选中
+          if (!isDragging) {
+            setSelectedChartId(item.chartId);
+          }
+        }}
+        onMouseDown={isEditing && onLayoutChange ? handleDragStart : undefined}
+        style={{
+          ...styles.item,
+          ...gridStyle,
+          ...(isEditing ? styles.itemEditing : {}),
+          ...(isSelected ? styles.itemSelected : {}),
+          ...(isDragging ? styles.itemDragging : {}),
+        }}
+      >
+        {/* 编辑模式下的工具栏 */}
+        {isEditing && (
+          <div style={styles.itemToolbar}>
+            <button
+              style={styles.removeBtn}
+              onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
+              title="从仪表盘移除"
+            >×</button>
+          </div>
+        )}
+        {/* 非编辑模式选中时的关闭按钮 */}
+        {!isEditing && isSelected && (
+          <div style={styles.itemToolbar}>
+            <button
+              style={styles.removeBtn}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedChartId(null);
+              }}
+              title="取消选择"
+            >×</button>
+          </div>
+        )}
+
+        {/* 编辑模式提示条（P1 UX 改进） */}
+        {isEditing && (
+          <div style={styles.editHintBar}>
+            <span style={styles.editHintIcon}>✋</span>
+            <span style={styles.editHintText}>拖拽移动</span>
+          </div>
+        )}
+
+        {savedChart ? (
+          <>
+            {savedChart.title && (
+              <div style={styles.itemTitle}>{savedChart.title}</div>
+            )}
+            {loading ? (
+              <div style={styles.loading}>加载中...</div>
+            ) : error ? (
+              <div style={styles.error}>
+                <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>❌ 图表加载失败</div>
+                <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'pre-wrap' }}>{error}</div>
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLoading(true);
+                      setError(null);
+                      loadSavedCharts().then(() => {
+                        setRetryKey(k => k + 1);
+                      });
+                    }}
+                    style={{
+                      padding: '4px 12px',
+                      fontSize: '11px',
+                      background: 'var(--primary)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    🗘 刷新重试
+                  </button>
+                </div>
+                {error.includes('查询不存在') && (
+                  <div style={{ fontSize: '10px', marginTop: '6px', color: 'var(--warning)' }}>
+                    💡 提示：此图表是在旧版本保存的，请重新保存图表
+                  </div>
+                )}
+              </div>
+            ) : chartConfig ? (
+              <ChartCanvas
+                chartConfig={chartConfig}
+                interactive={!isEditing}
+              />
+            ) : (
+              <div style={styles.placeholder}>
+                📈 {savedChart.chartType}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={styles.placeholder}>
+            图表未找到
+          </div>
+        )}
+
+        {/* P0-2 修复：缩放手柄 —— 编辑模式下显示，hover 高亮 */}
+        {isEditing && onLayoutChange && (
+          <>
+            {/* 右边 —— 调整宽度 */}
+            <div
+              className="resize-handle-right"
+              style={styles.resizeHandleRight}
+              onMouseDown={(e) => handleResizeStart(e, 'right')}
+            />
+            {/* 下边 —— 调整高度 */}
+            <div
+              className="resize-handle-bottom"
+              style={styles.resizeHandleBottom}
+              onMouseDown={(e) => handleResizeStart(e, 'bottom')}
+            />
+            {/* 右下角 —— 同时调整宽高 */}
+            <div
+              style={styles.resizeHandleCorner}
+              onMouseDown={(e) => handleResizeStart(e, 'corner')}
+              title="拖拽以调整图表大小"
+            />
+          </>
+        )}
+      </div>
+    </DashboardItemErrorBoundary>
+  );
+};
+
+const styles: Record<string, React.CSSProperties> = {
+  item: {
+    background: 'var(--bg-secondary)',
+    borderRadius: '8px',
+    padding: '12px',
+    overflow: 'hidden',
+    position: 'relative',
+    display: 'flex',
+    flexDirection: 'column',
+    border: '1px solid var(--border-primary)',
+  },
+  itemEditing: {
+    border: '2px dashed var(--primary)',
+    cursor: 'move',
+  },
+  itemSelected: {
+    border: '2px solid var(--primary)',
+    boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.15)',
+    cursor: 'pointer',
+  },
+  itemDragging: {
+    opacity: 0.8,
+    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+    zIndex: 100,
+  },
+  itemToolbar: {
+    position: 'absolute',
+    top: '8px',
+    right: '8px',
+    display: 'flex',
+    gap: '4px',
+    zIndex: 50,
+  },
+  removeBtn: {
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    background: 'var(--error)',
+    color: 'white',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '14px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // P1 UX：编辑模式提示条
+  editHintBar: {
+    position: 'absolute',
+    top: '8px',
+    left: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '2px 8px',
+    background: 'rgba(59, 130, 246, 0.1)',
+    borderRadius: '4px',
+    fontSize: '11px',
+    color: 'var(--primary)',
+    zIndex: 50,
+    pointerEvents: 'none',
+  },
+  editHintIcon: { fontSize: '12px' },
+  editHintText: { fontWeight: 500 },
+  itemTitle: {
+    fontSize: '13px',
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+    marginBottom: '8px',
+    flexShrink: 0,
+    // 编辑模式下标题不参与拖拽事件
+    pointerEvents: 'none',
+  },
+  loading: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--text-tertiary)',
+    fontSize: '12px',
+  },
+  error: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--error)',
+    fontSize: '12px',
+    textAlign: 'center',
+    padding: '8px',
+  },
+  chart: {
+    flex: 1,
+    minHeight: '150px',
+    width: '100%',
+  },
+  placeholder: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--text-tertiary)',
+    fontSize: '14px',
+  },
+  // P0-2 修复：缩放手柄 —— 可见 + hover 高亮
+  resizeHandleRight: {
+    position: 'absolute',
+    right: '-2px',
+    top: '8px',
+    bottom: '8px',
+    width: '6px',
+    cursor: 'ew-resize',
+    zIndex: 30,
+    background: 'transparent',
+    borderRadius: '3px',
+    transition: 'background 0.15s',
+  },
+  resizeHandleBottom: {
+    position: 'absolute',
+    bottom: '-2px',
+    left: '8px',
+    right: '8px',
+    height: '6px',
+    cursor: 'ns-resize',
+    zIndex: 30,
+    background: 'transparent',
+    borderRadius: '3px',
+    transition: 'background 0.15s',
+  },
+  resizeHandleCorner: {
+    position: 'absolute',
+    right: '-8px',
+    bottom: '-8px',
+    width: '16px',
+    height: '16px',
+    background: 'var(--primary)',
+    borderRadius: '50%',
+    cursor: 'nwse-resize',
+    zIndex: 40,
+    border: '2px solid white',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+  },
+};

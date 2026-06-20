@@ -4,6 +4,7 @@ import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 import { PlayIcon } from '../common/Icons';
 import { useImportStore, useAppStore } from '../../store';
 import { tauriService } from '../../services';
+import { useLocale } from '../../context/LocaleContext';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -13,12 +14,10 @@ interface DataPreviewProps {
 
 export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) => {
   const {
-    importItems,
-    activeImportItemId,
-    updateImportItem,
-    setLoading,
+    importItems, activeImportItemId, updateImportItem, setLoading,
   } = useImportStore();
   const { setMessage } = useAppStore();
+  const { t, locale, localeText } = useLocale();
 
   const activeItem = importItems.find((item) => item.id === activeImportItemId);
 
@@ -26,7 +25,7 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
     return (
       <div style={styles.container}>
         <div style={styles.emptyState}>
-          <p style={styles.emptyText}>选择文件查看预览</p>
+          <p style={styles.emptyText}>{t('import.selectFile')}</p>
         </div>
       </div>
     );
@@ -112,15 +111,15 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
 
       if (response.success) {
         updateImportItem(activeItem.id, { status: 'success' });
-        setMessage(response.data || `成功导入表 ${activeItem.tableName}`, 'success');
+        setMessage(response.data || `${t('import.success')} ${activeItem.tableName}`, 'success');
         onImportComplete();
       } else {
         updateImportItem(activeItem.id, { status: 'error', error: response.error });
-        setMessage(`导入失败: ${response.error || '未知错误'}`, 'error');
+        setMessage(`${t('import.fail')}: ${response.error}`, 'error');
       }
     } catch (e) {
       updateImportItem(activeItem.id, { status: 'error', error: String(e) });
-      setMessage(`导入失败: ${String(e)}`, 'error');
+      setMessage(`${t('import.fail')}: ${String(e)}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -165,13 +164,13 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
       <div style={styles.header}>
         <div style={styles.configRow}>
           <div style={styles.tableNameGroup}>
-            <span style={styles.label}>表名:</span>
+            <span style={styles.label}>Table:</span>
             <input
               type="text"
               value={activeItem.tableName}
               onChange={handleTableNameChange}
               style={styles.tableNameInput}
-              placeholder="输入表名"
+              placeholder="Enter table name"
             />
           </div>
 
@@ -182,14 +181,14 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
               checked={activeItem.hasHeader}
               onChange={handleHasHeaderChange}
             />
-            <label htmlFor="hasHeader">CSV包含表头</label>
+            <label htmlFor="hasHeader">CSV includes header</label>
           </div>
 
           <button
             style={styles.inferBtn}
             onClick={inferFieldTypes}
           >
-            🔮 自动推断类型
+            🔮 Auto infer
           </button>
 
           <button
@@ -199,7 +198,7 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
           >
             <PlayIcon size={16} />
             <span>
-              {activeItem.status === 'importing' ? '导入中...' : '导入'}
+              {activeItem.status === 'importing' ? t('import.importing') : t('import.import')}
             </span>
           </button>
         </div>
@@ -207,16 +206,16 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
 
       <div style={styles.fieldsSection}>
         <div style={styles.fieldsHeader}>
-          <span style={styles.sectionTitle}>字段配置</span>
+          <span style={styles.sectionTitle}>Field Configuration</span>
         </div>
         <div style={styles.fieldsTableContainer}>
           <table style={styles.fieldsTable}>
             <thead>
               <tr>
                 <th style={styles.th}>#</th>
-                <th style={styles.th}>字段名</th>
-                <th style={styles.th}>类型</th>
-                <th style={styles.th}>样本值</th>
+                <th style={styles.th}>{t('import.field')}</th>
+                <th style={styles.th}>{t('import.type')}</th>
+                <th style={styles.th}>{t('import.sample')}</th>
               </tr>
             </thead>
             <tbody>
@@ -259,16 +258,18 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
       <div style={styles.previewSection}>
         <div style={styles.previewHeader}>
           <span style={styles.sectionTitle}>
-            数据预览 ({rowData.length} 行 × {activeItem.fields.length} 列)
+            {t('import.preview')} ({rowData.length} rows × {activeItem.fields.length} cols)
           </span>
           {activeItem.hasHeader && (
-            <span style={styles.previewHint}>(第一行作为表头)</span>
+            <span style={styles.previewHint}>(first row as header)</span>
           )}
         </div>
         <div style={styles.gridContainer} className="ag-theme-alpine">
           <AgGridReact
+            key={locale}
             columnDefs={columnDefs}
             rowData={rowData}
+            localeText={localeText}
             defaultColDef={{
               sortable: true,
               filter: true,
@@ -290,7 +291,7 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
-    background: '#fff',
+    background: 'var(--bg-primary)',
     overflow: 'hidden',
   },
   emptyState: {
@@ -300,13 +301,13 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
   emptyText: {
-    color: '#999',
+    color: 'var(--text-secondary)',
     fontSize: '14px',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e0e0e0',
-    background: '#f8f9fa',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-secondary)',
   },
   configRow: {
     display: 'flex',
@@ -321,30 +322,32 @@ const styles: Record<string, React.CSSProperties> = {
   },
   label: {
     fontSize: '13px',
-    color: '#666',
+    color: 'var(--text-secondary)',
   },
   tableNameInput: {
     padding: '6px 12px',
-    border: '1px solid #ddd',
+    border: '1px solid var(--border-primary)',
     borderRadius: '4px',
     fontSize: '14px',
     width: '200px',
     outline: 'none',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
   },
   headerCheckbox: {
     display: 'flex',
     alignItems: 'center',
     gap: '6px',
     fontSize: '13px',
-    color: '#666',
+    color: 'var(--text-secondary)',
   },
   inferBtn: {
     padding: '6px 12px',
     fontSize: '12px',
-    background: '#e3f2fd',
-    border: '1px solid #007bff',
+    background: 'var(--primary-bg)',
+    border: '1px solid var(--primary)',
     borderRadius: '4px',
-    color: '#007bff',
+    color: 'var(--primary)',
     cursor: 'pointer',
   },
   importBtn: {
@@ -352,7 +355,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: '6px',
     padding: '6px 16px',
-    background: '#007bff',
+    background: 'var(--primary)',
     color: 'white',
     border: 'none',
     borderRadius: '4px',
@@ -361,20 +364,20 @@ const styles: Record<string, React.CSSProperties> = {
     marginLeft: 'auto',
   },
   fieldsSection: {
-    borderBottom: '1px solid #e0e0e0',
-    background: '#fafafa',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-tertiary)',
     maxHeight: '300px',
     overflowY: 'auto',
   },
   fieldsHeader: {
     padding: '10px 16px',
-    background: '#f0f2f5',
-    borderBottom: '1px solid #e0e0e0',
+    background: 'var(--bg-secondary)',
+    borderBottom: '1px solid var(--border-primary)',
   },
   sectionTitle: {
     fontSize: '14px',
     fontWeight: 600,
-    color: '#333',
+    color: 'var(--text-primary)',
   },
   fieldsTableContainer: {
     padding: '8px 16px',
@@ -385,15 +388,15 @@ const styles: Record<string, React.CSSProperties> = {
   },
   th: {
     padding: '8px 12px',
-    background: '#f5f7fa',
+    background: 'var(--bg-secondary)',
     textAlign: 'left',
     fontSize: '13px',
     fontWeight: 600,
-    color: '#666',
-    borderBottom: '1px solid #e0e0e0',
+    color: 'var(--text-secondary)',
+    borderBottom: '1px solid var(--border-primary)',
   },
   tr: {
-    borderBottom: '1px solid #f0f0f0',
+    borderBottom: '1px solid var(--border-primary)',
   },
   td: {
     padding: '8px 12px',
@@ -402,23 +405,27 @@ const styles: Record<string, React.CSSProperties> = {
   fieldNameInput: {
     width: '100%',
     padding: '6px 10px',
-    border: '1px solid #ddd',
+    border: '1px solid var(--border-primary)',
     borderRadius: '4px',
     fontSize: '13px',
     outline: 'none',
+    background: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
   },
   fieldTypeSelect: {
     padding: '6px 10px',
-    border: '1px solid #ddd',
+    border: '1px solid var(--border-primary)',
     borderRadius: '4px',
     fontSize: '13px',
     outline: 'none',
     cursor: 'pointer',
     minWidth: '120px',
+    background: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
   },
   sampleValue: {
     fontSize: '13px',
-    color: '#666',
+    color: 'var(--text-secondary)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -436,13 +443,13 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '10px 16px',
-    background: '#fafafa',
-    borderBottom: '1px solid #e0e0e0',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
   },
   previewHint: {
     fontSize: '12px',
     fontWeight: 400,
-    color: '#999',
+    color: 'var(--text-secondary)',
   },
   gridContainer: {
     flex: 1,

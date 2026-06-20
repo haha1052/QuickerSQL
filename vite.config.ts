@@ -16,7 +16,9 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // 修复 Windows 上 Vite 默认监听 IPv6 ([::1]) 而 WebView2 连接 IPv4 (127.0.0.1) 导致白屏卡死的问题
+    // 显式绑定到 127.0.0.1，确保 IPv4 可达
+    host: host || '127.0.0.1',
     hmr: host
       ? {
           protocol: "ws",

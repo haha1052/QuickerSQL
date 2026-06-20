@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../../../store';
 import { tauriService } from '../../../services';
+import { useLocale } from '../../../context/LocaleContext';
 import type { SqlStatementResult } from '../../../types';
 
 interface ExportMenuState {
@@ -14,21 +15,22 @@ interface ExportMenuState {
 type ExportFormat = 'csv' | 'json';
 
 export const useQueryExport = () => {
+  const { t } = useLocale();
   const { setMessage } = useAppStore();
   const [exportMenu, setExportMenu] = useState<ExportMenuState | null>(null);
 
   const handleExport = useCallback(async (result: SqlStatementResult, format: ExportFormat) => {
     if (!result.columns || !result.rows) {
-      setMessage('没有可导出的数据', 'warning');
+      setMessage(t('hooks.noDataToExport'), 'warning');
       setExportMenu(null);
       return;
     }
 
     try {
       const defaultName = `result_${Date.now()}.${format}`;
-      const filters = format === 'csv' 
-        ? [{ name: 'CSV文件', extensions: ['csv'] }]
-        : [{ name: 'JSON文件', extensions: ['json'] }];
+      const filters = format === 'csv'
+        ? [{ name: t('hooks.csvFile'), extensions: ['csv'] }]
+        : [{ name: t('hooks.jsonFile'), extensions: ['json'] }];
 
       const path = await save({
         defaultPath: defaultName,
@@ -61,15 +63,15 @@ export const useQueryExport = () => {
         }
 
         await tauriService.writeTextFile(path, content);
-        setMessage(`已导出到: ${path}`, 'success');
+        setMessage(`${t('hooks.exportedTo')} ${path}`, 'success');
       }
     } catch (error) {
-      console.error('导出失败:', error);
-      setMessage('导出失败', 'error');
+      console.error(t('hooks.exportFail'), error);
+      setMessage(t('hooks.exportFail'), 'error');
     } finally {
       setExportMenu(null);
     }
-  }, [setMessage]);
+  }, [t, setMessage]);
 
   const openExportMenu = useCallback((event: React.MouseEvent, result: SqlStatementResult, index: number) => {
     event.stopPropagation();

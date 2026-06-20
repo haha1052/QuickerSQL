@@ -8,15 +8,16 @@
 .logo.react:hover {
   filter: drop-shadow(0 0 2em #61dafb);
 }
-:root {
+
+body {
+  margin: 0;
+  padding: 0;
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -51,46 +52,50 @@
 
 a {
   font-weight: 500;
-  color: #646cff;
+  color: var(--primary);
   text-decoration: inherit;
+  transition: color 0.25s;
 }
 
 a:hover {
-  color: #535bf2;
+  color: var(--primary-hover);
 }
 
 h1 {
   text-align: center;
+  color: var(--text-primary);
 }
 
+/* 全局按钮样式 - 完全排除Header内的按钮 */
 input,
-button {
+button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(.header-settings-button) {
   border-radius: 8px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-primary);
   padding: 0.6em 1.2em;
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+  color: var(--text-primary);
+  background-color: var(--bg-secondary);
+  transition: border-color 0.25s, background-color 0.25s;
+  box-shadow: var(--shadow);
 }
 
-button {
+button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(.header-settings-button) {
   cursor: pointer;
 }
 
-button:hover {
-  border-color: #396cd8;
+button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(.header-settings-button):hover {
+  border-color: var(--primary);
 }
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+
+button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(.header-settings-button):active {
+  border-color: var(--primary);
+  background-color: var(--bg-tertiary);
 }
 
 input,
-button {
+button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(.header-settings-button) {
   outline: none;
 }
 
@@ -103,22 +108,263 @@ button {
   transition: transform 0.2s;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
+/* AG Grid 主题适配 */
+.ag-theme-alpine {
+  --ag-foreground-color: var(--text-primary) !important;
+  --ag-background-color: var(--bg-primary) !important;
+  --ag-body-background-color: var(--bg-primary) !important;
+  --ag-viewport-background-color: var(--bg-primary) !important;
+  --ag-header-foreground-color: var(--text-primary) !important;
+  --ag-header-background-color: var(--bg-tertiary) !important;
+  --ag-row-border-color: var(--border-primary) !important;
+  --ag-border-color: var(--border-primary) !important;
+  --ag-selected-row-background-color: var(--primary-bg) !important;
+  --ag-row-hover-color: var(--bg-tertiary) !important;
+  --ag-header-column-separator-color: var(--border-secondary) !important;
+  --ag-odd-row-background-color: var(--bg-secondary) !important;
+  --ag-even-row-background-color: var(--bg-primary) !important;
+  --ag-range-selection-border-color: var(--primary) !important;
+  --ag-font-size: 13px !important;
+  --ag-header-font-size: 13px !important;
+}
 
-  a:hover {
-    color: #24c8db;
-  }
+.ag-theme-alpine .ag-header {
+  background-color: var(--bg-tertiary) !important;
+}
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
+.ag-theme-alpine .ag-header-cell {
+  color: var(--text-primary) !important;
+  border-right: 1px solid var(--border-primary) !important;
+}
+
+.ag-theme-alpine .ag-cell {
+  color: var(--text-primary) !important;
+  border-right: 1px solid var(--border-primary) !important;
+}
+
+.ag-theme-alpine .ag-row {
+  background-color: var(--bg-primary) !important;
+}
+
+.ag-theme-alpine .ag-row-odd {
+  background-color: var(--bg-secondary) !important;
+}
+
+.ag-theme-alpine .ag-row-hover {
+  background-color: var(--bg-tertiary) !important;
+}
+
+.ag-theme-alpine .ag-row-selected {
+  background-color: var(--primary-bg) !important;
+}
+
+.ag-theme-alpine ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.ag-theme-alpine ::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+.ag-theme-alpine ::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 4px;
+}
+
+.ag-theme-alpine ::-webkit-scrollbar-thumb:hover {
+  background: var(--border-secondary);
+}
+
+/* ==================== HEADER 样式 ==================== */
+.header-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-tertiary);
+  height: 56px;
+}
+
+/* Header 左侧 */
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.header-logo {
+  font-size: 24px;
+  margin-left: 8px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.header-project-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.header-project-button:hover {
+  background: var(--bg-primary);
+}
+
+.header-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.header-project-label {
+  font-weight: 500;
+}
+
+.header-project-name {
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.header-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-primary);
+  margin: 0 8px;
+  flex-shrink: 0;
+}
+
+.header-tab {
+  padding: 8px 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 4px;
+  font-weight: 500;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
+}
+
+.header-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.header-tab-active {
+  background: var(--primary) !important;
+  color: white !important;
+  font-weight: bold;
+}
+
+/* Header 拖拽区域 */
+.header-drag-spacer {
+  flex: 1;
+  height: 100%;
+  -webkit-app-region: drag;
+  cursor: default;
+  min-width: 20px;
+}
+
+/* Header 右侧 */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.header-settings-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s;
+  -webkit-app-region: no-drag;
+}
+
+.header-settings-button:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+/* ==================== 窗口控制按钮 - 完全隔离 ==================== */
+.header-window-controls {
+  display: flex;
+  gap: 0;
+  -webkit-app-region: no-drag;
+  height: 100%;
+}
+
+/* 窗口按钮基础样式 - 完全排除所有全局button样式 */
+.header-window-btn {
+  width: 46px !important;
+  height: 56px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer !important;
+  transition: all 0.15s !important;
+  -webkit-app-region: no-drag !important;
+  pointer-events: auto !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  line-height: 1 !important;
+  font-size: 0 !important;
+}
+
+.header-window-btn:hover {
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+/* 关闭按钮特殊样式 */
+.header-window-close:hover {
+  background: #dc2626 !important;
+  color: white !important;
+}
+
+/* 窗口按钮图标 */
+.header-window-icon {
+  font-size: 20px;
+  line-height: 1;
+  color: inherit;
+}
+
+/* ==================== 仪表盘缩放手柄样式 ==================== */
+/* P0-2 修复：编辑模式下缩放手柄的 hover 高亮效果 */
+
+.resize-handle-right:hover,
+.resize-handle-right:active {
+  background: var(--primary) !important;
+  opacity: 0.6;
+}
+
+.resize-handle-bottom:hover,
+.resize-handle-bottom:active {
+  background: var(--primary) !important;
+  opacity: 0.6;
 }

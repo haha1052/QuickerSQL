@@ -1,0 +1,152 @@
+.guide-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: #f5f7fa;
+}
+
+.guide-content {
+  width: 100%;
+  max-width: 600px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.guide-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 30px;
+  border-bottom: 1px solid #eee;
+}
+
+.skip-btn {
+  background: none;
+  border: none;
+  color: #666;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.progress-dots {
+  display: flex;
+  gap: 10px;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ddd;
+}
+
+.dot.active {
+  background: #667eea;
+}
+
+.guide-body {
+  padding: 40px 30px;
+  text-align: center;
+}
+
+.step-icon {
+  font-size: 60px;
+  margin-bottom: 20px;
+}
+
+.guide-body h2 {
+  font-size: 24px;
+  color: #333;
+  margin-bottom: 15px;
+}
+
+.guide-body p {
+  color: #666;
+  line-height: 1.6;
+  margin-bottom: 30px;
+}
+
+.placeholder-card {
+  background: #f9f9f9;
+  border: 2px dashed #ddd;
+  border-radius: 8px;
+  padding: 40px;
+  margin-bottom: 10px;
+}
+
+.placeholder-card p {
+  color: #999;
+  margin: 0;
+}
+
+.quick-tips {
+  text-align: left;
+  background: #f0f5ff;
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.quick-tips p {
+  margin-bottom: 10px;
+  color: #555;
+}
+
+.quick-tips ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #666;
+}
+
+.quick-tips li {
+  margin-bottom: 8px;
+}
+
+.guide-footer {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 20px 30px;
+  border-top: 1px solid #eee;
+}
+
+.btn {
+  padding: 12px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.btn-back {
+  background: #f5f7fa;
+  color: #666;
+}
+
+.btn-back:hover {
+  background: #e9ecef;
+}
+
+.btn-next {
+  background: #667eea;
+  color: white;
+}
+
+.btn-next:hover {
+  background: #5568d3;
+}
+
+.btn-complete {
+  background: #667eea;
+  color: white;
+  font-size: 16px;
+  padding: 14px 30px;
+}
+
+.btn-complete:hover {
+  background: #5568d3;
+}

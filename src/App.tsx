@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAppStore, useProjectStore, useImportStore } from './store';
 import type { TabType } from './types';
-import { Header, Message, StatusBar } from './components/common';
+import { Header, Toast } from './components/common';
 import { ProjectManager } from './components/project';
 import { Workspace } from './components/workspace/Workspace';
 import { tauriService } from './services';
@@ -9,14 +9,9 @@ import './App.css';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('sql');
-  
+
   const {
-    message,
-    messageType,
-    allDatabaseStatus,
-    setAllDatabaseStatus,
     setMessage,
-    clearMessage,
   } = useAppStore();
 
   const {
@@ -37,30 +32,35 @@ function App() {
   const refreshDatabaseStatus = async () => {
     const response = await tauriService.getDatabaseStatus();
     if (response.success && response.data) {
-      setAllDatabaseStatus([response.data]);
+      useAppStore.getState().setAllDatabaseStatus([response.data]);
     }
   };
 
   React.useEffect(() => {
+    console.log('[DIAG] App useEffect started');
     loadProjects();
     loadCurrentDbPath();
     refreshDatabaseStatus();
   }, []);
 
   const loadProjects = async () => {
+    console.log('[DIAG] loadProjects start');
     const response = await tauriService.listProjects();
+    console.log('[DIAG] loadProjects done:', response.success);
     if (response.success && response.data) {
       setProjects(response.data);
     }
   };
 
   const loadCurrentDbPath = async () => {
+    console.log('[DIAG] loadCurrentDbPath start');
     const response = await tauriService.getCurrentDbPath();
+    console.log('[DIAG] loadCurrentDbPath done:', response.success);
     if (response.success && response.data) {
       setCurrentDbPath(response.data);
       const parts = response.data.split(/[\\/]/);
       const projectName = parts[parts.length - 2];
-      if (projectName && projectName !== 'la-duck') {
+      if (projectName && projectName !== 'quickersql') {
         setCurrentProject(projectName);
       }
     }
@@ -118,13 +118,8 @@ function App() {
           : `成功导入 ${successCount} 个文件`;
         setMessage(message, failCount > 0 ? 'warning' : 'success');
         handleImportComplete();
-        
-        if (failCount > 0) {
-          console.log('导入失败详情:', failDetails);
-        }
       } else if (failCount > 0) {
         setMessage(`导入失败：${failCount} 个文件`, 'error');
-        console.log('导入失败详情:', failDetails);
       }
     } finally {
       setLoading(false);
@@ -135,37 +130,30 @@ function App() {
     clearImportItems();
   };
 
-  const isConnected = allDatabaseStatus.length > 0 && allDatabaseStatus[0].is_connected;
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'system-ui' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: 'system-ui', background: 'var(--bg-primary)' }}>
       <Header
         currentProject={currentProject}
-        currentDbPath={useProjectStore.getState().currentDbPath}
         activeTab={activeTab}
         onProjectClick={() => setShowProjectModal(true)}
         onTabChange={(tab) => setActiveTab(tab as TabType)}
-        onRefresh={refreshDatabaseStatus}
-        isConnected={isConnected}
       />
 
-      {message && (
+      {/* {message && (
         <Message
           message={message}
           type={messageType}
           onClose={clearMessage}
         />
-      )}
+      )} */}
 
       <Workspace
         activeTab={activeTab}
         onImportComplete={handleImportComplete}
-        onAddFile={() => {}} // 空回调，实际处理在 DataImport 内部
+        onAddFile={() => {}}
         onBatchImport={handleBatchImport}
         onClearQueue={handleClearQueue}
       />
-
-      <StatusBar />
 
       {showProjectModal && (
         <ProjectManager
@@ -177,6 +165,8 @@ function App() {
           }}
         />
       )}
+
+      <Toast />
     </div>
   );
 }

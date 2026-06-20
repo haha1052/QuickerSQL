@@ -3,7 +3,7 @@ import type { ImportItem as ImportItemType } from '../../types';
 import { CheckCircleIcon, XCircleIcon, LoaderIcon } from '../common/Icons';
 import { ChevronDownIcon, ChevronRightIcon } from '../common/Icons';
 import { useImportSelection } from './hooks/useImportSelection';
-import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
+import { Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
 
 interface ImportItemProps {
   item: ImportItemType;
@@ -64,11 +64,11 @@ export const ImportItem: React.FC<ImportItemProps> = ({
   const renderStatusIcon = () => {
     switch (item.status) {
       case 'success':
-        return <CheckCircleIcon size={16} color={Colors.success} />;
+        return <CheckCircleIcon size={16} color="var(--success)" />;
       case 'error':
-        return <XCircleIcon size={16} color={Colors.danger} />;
+        return <XCircleIcon size={16} color="var(--error)" />;
       case 'importing':
-        return <LoaderIcon size={16} color={Colors.primary} />;
+        return <LoaderIcon size={16} color="var(--primary)" />;
       default:
         return null;
     }
@@ -81,8 +81,8 @@ export const ImportItem: React.FC<ImportItemProps> = ({
       <div
         style={{
           ...styles.itemRow,
-          background: isActive ? Colors.primaryLight : Colors.background,
-          borderLeft: isActive ? `3px solid ${Colors.primary}` : '3px solid transparent',
+          background: isActive ? 'var(--primary-bg)' : 'var(--bg-primary)',
+          borderLeft: isActive ? '3px solid var(--primary)' : '3px solid transparent',
         }}
         onClick={onSelect}
       >
@@ -233,8 +233,8 @@ const ExcelSheetItem: React.FC<ExcelSheetItemProps> = ({
     <div
       style={{
         ...styles.sheetItemRow,
-        background: isActive ? Colors.primaryLight : Colors.background,
-        borderLeft: isActive ? `3px solid ${Colors.primary}` : '3px solid transparent',
+        background: isActive ? 'var(--primary-bg)' : 'var(--bg-primary)',
+        borderLeft: isActive ? '3px solid var(--primary)' : '3px solid transparent',
       }}
       onClick={onSelect}
     >
@@ -275,9 +275,9 @@ const ExcelSheetItem: React.FC<ExcelSheetItemProps> = ({
         </span>
       )}
 
-      {item.status === 'success' && <CheckCircleIcon size={14} color={Colors.success} />}
-      {item.status === 'error' && <XCircleIcon size={14} color={Colors.danger} />}
-      {item.status === 'importing' && <LoaderIcon size={14} color={Colors.primary} />}
+      {item.status === 'success' && <CheckCircleIcon size={14} color="var(--success)" />}
+      {item.status === 'error' && <XCircleIcon size={14} color="var(--error)" />}
+      {item.status === 'importing' && <LoaderIcon size={14} color="var(--primary)" />}
     </div>
   );
 };
@@ -294,7 +294,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: `${Spacing.sm} ${Spacing.lg}`,
     cursor: 'pointer',
     transition: 'background 0.2s',
-    borderBottom: `1px solid ${Colors.borderLight}`,
+    borderBottom: '1px solid var(--border-primary)',
   },
   sheetItemRow: {
     display: 'flex',
@@ -303,7 +303,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: `${Spacing.sm} ${Spacing.lg} ${Spacing.sm} 40px`,
     cursor: 'pointer',
     transition: 'background 0.2s',
-    borderBottom: `1px solid ${Colors.borderLight}`,
+    borderBottom: '1px solid var(--border-primary)',
     position: 'relative',
   },
   parentCheckboxWrapper: {
@@ -318,22 +318,22 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     cursor: 'pointer',
     padding: Spacing.xs,
-    color: Colors.textSecondary,
+    color: 'var(--text-secondary)',
   },
   fileName: {
     flex: 1,
     fontSize: FontSizes.body,
-    color: Colors.textPrimary,
+    color: 'var(--text-primary)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
   sheetLabel: {
     fontSize: FontSizes.small,
-    color: Colors.textSecondary,
+    color: 'var(--text-secondary)',
   },
   arrow: {
-    color: Colors.textDisabled,
+    color: 'var(--text-secondary)',
     fontSize: FontSizes.caption,
   },
   tableNameWrapper: {
@@ -344,12 +344,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tableNameLabel: {
     fontSize: FontSizes.caption,
-    color: Colors.textDisabled,
+    color: 'var(--text-secondary)',
     whiteSpace: 'nowrap',
   },
   tableName: {
     fontSize: FontSizes.small,
-    color: Colors.primary,
+    color: 'var(--primary)',
     padding: '2px 6px',
     borderRadius: BorderRadius.sm,
     cursor: 'pointer',
@@ -361,23 +361,25 @@ const styles: Record<string, React.CSSProperties> = {
   tableNameInput: {
     fontSize: FontSizes.small,
     padding: '2px 6px',
-    border: `1px solid ${Colors.primary}`,
+    border: '1px solid var(--primary)',
     borderRadius: BorderRadius.sm,
     outline: 'none',
     width: '120px',
+    background: 'var(--bg-primary)',
+    color: 'var(--text-primary)',
   },
   deleteBtn: {
     background: 'none',
     border: 'none',
-    color: Colors.textDisabled,
+    color: 'var(--text-secondary)',
     cursor: 'pointer',
     fontSize: FontSizes.h1,
     padding: '0 4px',
     opacity: 0.6,
   },
   childContainer: {
-    background: Colors.backgroundLight,
-    borderLeft: `2px solid ${Colors.border}`,
+    background: 'var(--bg-secondary)',
+    borderLeft: '2px solid var(--border-primary)',
     marginLeft: Spacing.lg,
   },
   indentLine: {
@@ -386,6 +388,6 @@ const styles: Record<string, React.CSSProperties> = {
     top: '0',
     bottom: '0',
     width: '2px',
-    background: Colors.border,
+    background: 'var(--border-primary)',
   },
 };

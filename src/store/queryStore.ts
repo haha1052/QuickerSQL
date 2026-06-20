@@ -96,9 +96,10 @@ export const useQueryStore = create<QueryState>()(
         const newItem: QueryHistoryItem = {
           id: `history_${Date.now()}`,
           sql,
-          timestamp: Date.now(),
-          success,
-          rowCount,
+          executed_at: new Date().toISOString(),
+          success: success ?? false,
+          row_count: rowCount ?? null,
+          is_favorite: false,
         };
         // 移除重复的历史记录，保持最新的在前
         const filtered = state.queryHistory.filter(h => h.sql !== sql);
@@ -114,7 +115,7 @@ export const useQueryStore = create<QueryState>()(
       clearHistory: () => set({ queryHistory: [] }),
     }),
     {
-      name: 'la-duck-query',
+      name: 'quickersql-query',
       partialize: (state) => ({
         queryHistory: state.queryHistory,
       }),

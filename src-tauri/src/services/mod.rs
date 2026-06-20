@@ -1,0 +1,29 @@
+//! Services 模块
+//! 包含业务逻辑相关的服务
+pub mod database_service;
+pub mod view_service;
+pub mod trash_service;
+pub mod query_history_service;
+pub mod chart_service;
+pub mod settings_service;
+pub mod audit_log_service;
+pub mod app_state_service;
+pub mod project_service;
+pub mod migration_service;
+pub mod dashboard_service;
+pub mod task_service;
+
+pub use database_service::DatabaseService;
+pub use view_service::ViewService;
+pub use trash_service::TrashService;
+pub use query_history_service::QueryHistoryService;
+pub use chart_service::ChartService;
+pub use settings_service::SettingsService;
+pub use audit_log_service::AuditLogService;
+pub use app_state_service::AppStateService;
+pub use project_service::ProjectService;
+pub use project_service::ProjectError;
+pub use migration_service::MigrationService;
+pub use dashboard_service::DashboardService;
+pub use task_service::TaskService;
+pub use task_service::TaskScheduleEngine;

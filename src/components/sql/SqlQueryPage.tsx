@@ -3,19 +3,10 @@ import type { SqlQuery, SqlStatementResult } from '../../types';
 import { SQLEditor } from './SQLEditor';
 import { AgGridReact } from 'ag-grid-react';
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+import { useLocale } from '../../context/LocaleContext';
+import { TaskEditorModal } from '../automation/TaskEditorModal';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
-
-const zhCNLocaleText = {
-  equals: '等于',
-  notEqual: '不等于',
-  lessThan: '小于',
-  greaterThan: '大于',
-  filterOoo: '筛选...',
-  applyFilter: '应用筛选',
-  resetFilter: '重置筛选',
-  noRowsToShow: '暂无数据',
-};
 
 interface SqlQueryPageProps {
   query: SqlQuery;
@@ -30,10 +21,12 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
   onExecute,
   isLoading,
 }) => {
-  const [editorSize, setEditorSize] = useState(50); // 编辑器占50%
+  const [editorSize, setEditorSize] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartY, setDragStartY] = useState(0);
   const [dragStartSize, setDragStartSize] = useState(50);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const { t, locale, localeText } = useLocale();
 
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
@@ -71,12 +64,11 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
     }
   }, [isDragging, dragStartY, dragStartSize]);
 
-  // 渲染单个查询结果的组件
   const renderSingleResult = (result: SqlStatementResult, index: number) => {
-    const displayStatement = result.statement.length > 50 
-      ? result.statement.substring(0, 47) + '...' 
+    const displayStatement = result.statement.length > 50
+      ? result.statement.substring(0, 47) + '...'
       : result.statement;
-    
+
     return (
       <div key={index} style={styles.singleResultContainer}>
         <div style={styles.singleResultHeader}>
@@ -85,10 +77,10 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
             <span style={styles.statementText} title={result.statement}>{displayStatement}</span>
           </div>
           <div style={result.success ? styles.successBadge : styles.errorBadge}>
-            {result.success ? '成功' : '失败'}
+            {result.success ? t('query.success') : t('query.fail')}
           </div>
         </div>
-        
+
         {!result.success ? (
           <div style={styles.errorContainer}>
             <span style={styles.errorText}>{result.error}</span>
@@ -97,13 +89,14 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
           <>
             {result.affected_rows !== null && !result.columns ? (
               <div style={styles.affectedRowsContainer}>
-                <span style={styles.affectedRowsText}>影响行数: {result.affected_rows}</span>
+                <span style={styles.affectedRowsText}>{t('query.affectedRows')}: {result.affected_rows}</span>
               </div>
             ) : null}
-            
+
             {result.columns && result.rows ? (
               <div style={{ height: '300px' }} className="ag-theme-alpine">
                 <AgGridReact<any>
+                  key={locale}
                   rowData={result.rows.map((row, rowIndex) => {
                     const rowObj: Record<string, any> = { id: rowIndex };
                     row.forEach((cell, colIndex) => {
@@ -115,7 +108,7 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
                     field: `col${colIndex}`,
                     headerName: col,
                   }))}
-                  localeText={zhCNLocaleText}
+                  localeText={localeText}
                   defaultColDef={{
                     filter: true,
                     sortable: true,
@@ -133,8 +126,16 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
 
   return (
     <div id="sql-query-container" style={styles.container}>
+      <div style={styles.toolbarContainer}>
+        <button
+          style={styles.scheduleBtn}
+          onClick={() => setShowScheduleModal(true)}
+          title="设置定时执行 SQL"
+        >
+          ⚡ 定时执行
+        </button>
+      </div>
       <div style={{ ...styles.panel, height: `${editorSize}%` }}>
-        {/* 移除了多余的面板标题 */}
         <div style={styles.panelContent}>
           <SQLEditor
             query={query}
@@ -149,23 +150,23 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
         style={{
           ...styles.resizer,
           cursor: isDragging ? 'row-resize' : 'ns-resize',
-          background: isDragging ? '#007bff' : '#e0e0e0',
+          background: isDragging ? 'var(--primary)' : 'var(--border-primary)',
         }}
         onMouseDown={handleMouseDown}
       />
 
       <div style={{ ...styles.panel, height: `${100 - editorSize}%` }}>
-        {/* 移除了多余的面板标题 */}
         <div style={styles.panelContent}>
           {query?.batchResults && query.batchResults.length > 0 ? (
             <div style={styles.resultsStackedContainer}>
-              {query.batchResults.map((result, index) => 
+              {query.batchResults.map((result, index) =>
                 renderSingleResult(result, index)
               )}
             </div>
           ) : query?.result ? (
             <div style={{ height: '100%' }} className="ag-theme-alpine">
               <AgGridReact<any>
+                key={locale}
                 rowData={query.result.rows.map((row, rowIndex) => {
                   const rowObj: Record<string, any> = { id: rowIndex };
                   row.forEach((cell, colIndex) => {
@@ -177,7 +178,7 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
                   field: `col${index}`,
                   headerName: col,
                 }))}
-                localeText={zhCNLocaleText}
+                localeText={localeText}
                 defaultColDef={{
                   filter: true,
                   sortable: true,
@@ -188,11 +189,18 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
             </div>
           ) : (
             <div style={styles.placeholder}>
-              暂无查询结果
+              {t('common.noResult')}
             </div>
           )}
         </div>
       </div>
+      <TaskEditorModal
+        open={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        initialTaskType="sql"
+        initialPayload={{ sql: query.sql || '' }}
+        initialName="定时执行SQL"
+      />
     </div>
   );
 };
@@ -202,7 +210,25 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    background: '#fff',
+    background: 'var(--bg-primary)',
+  },
+  toolbarContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 12px',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-secondary)',
+  },
+  scheduleBtn: {
+    padding: '6px 12px',
+    background: 'var(--primary)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '6px',
+    fontSize: '13px',
+    cursor: 'pointer',
+    fontWeight: 500,
   },
   panel: {
     display: 'flex',
@@ -211,11 +237,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   panelHeader: {
     padding: '8px 12px',
-    background: '#f5f5f5',
-    borderBottom: '1px solid #e0e0e0',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
     fontSize: '13px',
     fontWeight: 'bold',
-    color: '#333',
+    color: 'var(--text-primary)',
   },
   panelContent: {
     flex: 1,
@@ -231,9 +257,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#999',
+    color: 'var(--text-tertiary)',
   },
-  // 堆叠结果样式
   resultsStackedContainer: {
     height: '100%',
     overflowY: 'auto',
@@ -241,18 +266,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   singleResultContainer: {
     marginBottom: '16px',
-    border: '1px solid #e0e0e0',
+    border: '1px solid var(--border-primary)',
     borderRadius: '6px',
     overflow: 'hidden',
-    background: '#fff',
+    background: 'var(--bg-secondary)',
   },
   singleResultHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '10px 12px',
-    background: '#f5f7fa',
-    borderBottom: '1px solid #e0e0e0',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
   },
   statementInfo: {
     display: 'flex',
@@ -263,14 +288,14 @@ const styles: Record<string, React.CSSProperties> = {
   statementIndex: {
     fontSize: '12px',
     fontWeight: 'bold',
-    color: '#007bff',
-    background: '#e3f2fd',
+    color: 'var(--primary)',
+    background: 'var(--primary-bg)',
     padding: '2px 8px',
     borderRadius: '4px',
   },
   statementText: {
     fontSize: '13px',
-    color: '#333',
+    color: 'var(--text-primary)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -278,33 +303,33 @@ const styles: Record<string, React.CSSProperties> = {
   successBadge: {
     fontSize: '12px',
     fontWeight: 'bold',
-    color: '#28a745',
-    background: '#d4edda',
+    color: 'var(--success)',
+    background: 'var(--success-bg)',
     padding: '4px 10px',
     borderRadius: '4px',
   },
   errorBadge: {
     fontSize: '12px',
     fontWeight: 'bold',
-    color: '#dc3545',
-    background: '#f8d7da',
+    color: 'var(--error)',
+    background: 'var(--error-bg)',
     padding: '4px 10px',
     borderRadius: '4px',
   },
   errorContainer: {
     padding: '12px',
-    background: '#fff5f5',
+    background: 'var(--error-bg)',
   },
   errorText: {
     fontSize: '13px',
-    color: '#dc3545',
+    color: 'var(--error)',
   },
   affectedRowsContainer: {
     padding: '12px',
-    background: '#f0f9ff',
+    background: 'var(--primary-bg)',
   },
   affectedRowsText: {
     fontSize: '13px',
-    color: '#0066cc',
+    color: 'var(--primary)',
   },
 };

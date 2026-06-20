@@ -44,16 +44,48 @@ export interface FieldMeta {
 
 export interface TableInfo {
   name: string;
-  rowCount: number;
-  columns?: Array<{ name: string; type: string }>;
+  row_count: number;       // 行数（后端精确查询）
+  column_count: number;    // 列数
+  is_system_table: boolean; // 是否系统表（由后端判断，前端不再硬编码）
+}
+
+export interface ColumnInfo {
+  name: string;              // 列名
+  data_type: string;         // 数据类型（TEXT/INTEGER/REAL/BLOB 等）
+  nullable: boolean;         // 是否允许 NULL
+  default_value: string | null; // 默认值
+  is_primary_key: boolean; // 是否主键
+  position: number;          // 列序号（1-based）
 }
 
 export interface QueryHistoryItem {
   id: string;
   sql: string;
-  timestamp: number;
-  success?: boolean;
-  rowCount?: number | null;
+  name?: string | null;
+  executed_at: string;
+  execution_time_ms?: number | null;
+  row_count?: number | null;
+  success: boolean;
+  error_message?: string | null;
+  is_favorite: boolean;
+  tags?: string | null;
+}
+
+export interface QueryHistoryListRequest {
+  search?: string | null;
+  only_favorites?: boolean | null;
+  offset?: number | null;
+  limit?: number | null;
+}
+
+export interface QueryHistoryListResponse {
+  items: QueryHistoryItem[];
+  total: number;
+}
+
+export interface UpdateFavoriteRequest {
+  id: string;
+  is_favorite: boolean;
 }
 
 export interface CsvPreview {
@@ -127,7 +159,7 @@ export interface SqlQuery {
 }
 
 // Tabs
-export type TabType = 'csv' | 'sql';
+export type TabType = 'csv' | 'sql' | 'dashboard' | 'automation';
 
 // API Response Types
 export interface ApiResponse<T = unknown> {
@@ -191,5 +223,62 @@ export interface DatabaseInfo {
   description: string;
 }
 
+// Settings Types
+export interface SettingItem {
+  id: string;
+  category: string;
+  key: string;
+  value: string;
+  value_type: 'string' | 'number' | 'boolean' | 'select' | 'multiselect';
+  description?: string | null;
+  options?: string | null;
+  is_visible: boolean;
+  is_system: boolean;
+  updated_at: string;
+}
+
+export interface SettingCategory {
+  id: string;
+  name: string;
+  icon?: string | null;
+  items: SettingItem[];
+}
+
+export interface SettingsListResponse {
+  categories: SettingCategory[];
+  total_items: number;
+}
+
+export interface UpdateSettingRequest {
+  category: string;
+  key: string;
+  value: string;
+}
+
+export interface ExportSettingsResponse {
+  version: string;
+  exported_at: string;
+  settings: SettingItem[];
+}
+
+export interface ImportSettingsRequest {
+  version: string;
+  settings: SettingItem[];
+}
+
+// Audit Log Types
+export type {
+  AuditLogModule,
+  AuditLogAction,
+  AuditLogStatus,
+  AuditLogItem,
+  RecordAuditLogRequest,
+  QueryAuditLogsRequest,
+  AuditLogsListResponse,
+} from './audit_log';
+
 // Export workspace types
 export * from './workspace';
+
+// Export dashboard types
+export * from './dashboard';

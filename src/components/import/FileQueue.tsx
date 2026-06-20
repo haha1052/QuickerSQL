@@ -1,6 +1,7 @@
 import React from 'react';
 import { ImportItem as ImportItemComponent } from './ImportItem';
 import { useImportStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 
 interface FileQueueProps {
   onFileSelect: (id: string) => void;
@@ -15,6 +16,7 @@ export const FileQueue: React.FC<FileQueueProps> = ({ onFileSelect }) => {
     updateImportItem,
     removeImportItem,
   } = useImportStore();
+  const { t } = useLocale();
 
   const allItems = importItems;
   const parentExcelItems = allItems.filter(item => item.isParent && item.fileType === 'excel');
@@ -66,7 +68,7 @@ export const FileQueue: React.FC<FileQueueProps> = ({ onFileSelect }) => {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.headerText}>文件队列</span>
+        <span style={styles.headerText}>{t('import.fileQueue')}</span>
       </div>
       <div style={styles.list}>
         {displayItems.map(({ item, children }) => (
@@ -93,7 +95,7 @@ export const FileQueue: React.FC<FileQueueProps> = ({ onFileSelect }) => {
         ))}
         {displayItems.length === 0 && (
           <div style={styles.emptyState}>
-            暂无文件
+            {t('import.noFiles')}
           </div>
         )}
       </div>
@@ -104,21 +106,21 @@ export const FileQueue: React.FC<FileQueueProps> = ({ onFileSelect }) => {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     width: '380px',
-    borderRight: '1px solid #e0e0e0',
-    background: '#fff',
+    borderRight: '1px solid var(--border-primary)',
+    background: 'var(--bg-primary)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e0e0e0',
-    background: '#f8f9fa',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-secondary)',
   },
   headerText: {
     fontSize: '14px',
     fontWeight: 600,
-    color: '#333',
+    color: 'var(--text-primary)',
   },
   list: {
     flex: 1,
@@ -127,7 +129,7 @@ const styles: Record<string, React.CSSProperties> = {
   emptyState: {
     padding: '40px 16px',
     textAlign: 'center',
-    color: '#999',
+    color: 'var(--text-secondary)',
     fontSize: '14px',
   },
 };

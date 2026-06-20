@@ -82,14 +82,15 @@ impl DatabaseConnection for SqliteConnection {
         "sqlite"
     }
 
-    fn execute(&self, sql: &str, _params: &[&dyn ToSql]) -> Result<u64> {
+    fn execute(&self, sql: &str, params: &[&dyn ToSql]) -> Result<u64> {
         let conn = self.conn.lock().map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        let result = conn.execute(sql, [])
+        let sqlite_params: Vec<String> = params.iter().map(|p| p.to_sql()).collect();
+        let result = conn.execute(sql, rusqlite::params_from_iter(sqlite_params.iter()))
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
         Ok(result as u64)
     }
 
-    fn query(&self, sql: &str, _params: &[&dyn ToSql]) -> Result<QueryResult> {
+    fn query(&self, sql: &str, params: &[&dyn ToSql]) -> Result<QueryResult> {
         let conn = self.conn.lock().map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
         let mut stmt = conn.prepare(sql)
             .map_err(|e| DatabaseError::PrepareFailed(e.to_string()))?;
@@ -98,8 +99,9 @@ impl DatabaseConnection for SqliteConnection {
             .map(|s| s.to_string())
             .collect();
 
+        let sqlite_params: Vec<String> = params.iter().map(|p| p.to_sql()).collect();
         let mut rows = Vec::new();
-        let mut query_result = stmt.query([])
+        let mut query_result = stmt.query(rusqlite::params_from_iter(sqlite_params.iter()))
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
         while let Ok(Some(row)) = query_result.next() {
