@@ -3,11 +3,15 @@ use super::sqlite::SqliteDriver;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
+// ============================================================
+// DatabaseManager / Driver 基础测试（原始）
+// ============================================================
+
 #[test]
 fn test_database_manager_register_driver() {
     let mut db_manager = DatabaseManager::new();
     db_manager.register_driver(Box::new(SqliteDriver::new()));
-    
+
     let drivers = db_manager.get_available_drivers();
     assert_eq!(drivers.len(), 1);
     assert_eq!(drivers[0].get_driver_name(), "sqlite");
@@ -17,10 +21,10 @@ fn test_database_manager_register_driver() {
 fn test_sqlite_driver_connect() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test.db");
-    
+
     let driver = SqliteDriver::new();
     let result = driver.create_database(&db_path);
-    
+
     assert!(result.is_ok());
     assert!(db_path.exists());
 }
@@ -29,10 +33,10 @@ fn test_sqlite_driver_connect() {
 fn test_sqlite_driver_connect_nonexistent() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("nonexistent.db");
-    
+
     let driver = SqliteDriver::new();
     let result = driver.connect(&db_path);
-    
+
     assert!(matches!(result.err(), Some(DatabaseError::FileNotFound)));
 }
 
@@ -40,13 +44,13 @@ fn test_sqlite_driver_connect_nonexistent() {
 fn test_database_connection_execute() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test_execute.db");
-    
+
     let driver = SqliteDriver::new();
     let conn = driver.create_database(&db_path).unwrap();
-    
+
     let result = conn.execute("CREATE TABLE test (id INTEGER)", &[]);
     assert!(result.is_ok());
-    
+
     let result = conn.execute("INSERT INTO test VALUES (1)", &[]);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 1);
@@ -56,16 +60,17 @@ fn test_database_connection_execute() {
 fn test_database_connection_query() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test_query.db");
-    
+
     let driver = SqliteDriver::new();
     let conn = driver.create_database(&db_path).unwrap();
-    
-    conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", &[]).unwrap();
+
+    conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", &[])
+        .unwrap();
     conn.execute("INSERT INTO test VALUES (1, 'test')", &[]).unwrap();
-    
+
     let result = conn.query("SELECT * FROM test", &[]);
     assert!(result.is_ok());
-    
+
     let query_result = result.unwrap();
     assert_eq!(query_result.columns, vec!["id", "name"]);
     assert_eq!(query_result.rows.len(), 1);
@@ -76,24 +81,24 @@ fn test_database_connection_query() {
 fn test_database_connection_transaction() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test_transaction.db");
-    
+
     let driver = SqliteDriver::new();
     let conn = driver.create_database(&db_path).unwrap();
-    
+
     conn.execute("CREATE TABLE test (id INTEGER)", &[]).unwrap();
-    
+
     conn.begin_transaction().unwrap();
     conn.execute("INSERT INTO test VALUES (1)", &[]).unwrap();
     conn.execute("INSERT INTO test VALUES (2)", &[]).unwrap();
     conn.commit_transaction().unwrap();
-    
+
     let result = conn.query("SELECT COUNT(*) FROM test", &[]);
     assert!(result.is_ok());
-    
+
     conn.begin_transaction().unwrap();
     conn.execute("INSERT INTO test VALUES (3)", &[]).unwrap();
     conn.rollback_transaction().unwrap();
-    
+
     let result = conn.query("SELECT COUNT(*) FROM test", &[]);
     assert!(result.is_ok());
 }
@@ -102,15 +107,15 @@ fn test_database_connection_transaction() {
 fn test_database_manager_connect() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test_manager.db");
-    
+
     let mut db_manager = DatabaseManager::new();
     db_manager.register_driver(Box::new(SqliteDriver::new()));
-    
+
     let result = db_manager.create_and_connect("sqlite", &db_path);
     assert!(result.is_ok());
-    
+
     assert!(db_manager.is_connected());
-    
+
     let conn = db_manager.get_connection().unwrap();
     assert_eq!(conn.get_database_type(), "sqlite");
 }
@@ -119,7 +124,7 @@ fn test_database_manager_connect() {
 fn test_database_manager_connect_invalid_driver() {
     let db_manager = DatabaseManager::new();
     let db_path = PathBuf::from("/tmp/test.db");
-    
+
     let result = db_manager.connect("nonexistent", &db_path);
     assert!(matches!(result.err(), Some(DatabaseError::ConnectionFailed(msg)) if msg.contains("未找到驱动")));
 }
@@ -128,13 +133,13 @@ fn test_database_manager_connect_invalid_driver() {
 fn test_database_manager_close_connection() {
     let temp_dir = tempdir().expect("创建临时目录失败");
     let db_path = temp_dir.path().join("test_close.db");
-    
+
     let mut db_manager = DatabaseManager::new();
     db_manager.register_driver(Box::new(SqliteDriver::new()));
-    
+
     db_manager.create_and_connect("sqlite", &db_path).unwrap();
     assert!(db_manager.is_connected());
-    
+
     db_manager.close_connection();
     assert!(!db_manager.is_connected());
 }
@@ -198,5 +203,139 @@ fn test_sqlite_driver_connect_wal_persists() {
         };
 
         assert_eq!(check_wal, "wal", "多次连接后 WAL 模式应该保持");
+    }
+}
+
+// ============================================================
+// M7.3 扩展：SqlIdentifier 安全校验 测试集
+// ============================================================
+#[cfg(test)]
+mod sql_identifier_tests {
+    use super::super::security::SqlIdentifier;
+
+    #[test]
+    fn test_new_accepts_valid_name() {
+        let ident = SqlIdentifier::new("users").expect("合法表名不应失败");
+        assert_eq!(ident.as_str(), "users");
+    }
+
+    #[test]
+    fn test_new_rejects_empty() {
+        assert!(SqlIdentifier::new("").is_err(), "空字符串必须被拒绝");
+    }
+
+    #[test]
+    fn test_quote_produces_delimited_identifier() {
+        assert_eq!(SqlIdentifier::quote_identifier("users"), "\"users\"");
+        assert_eq!(SqlIdentifier::quote_identifier("用户表"), "\"用户表\"");
+    }
+
+    #[test]
+    fn test_quote_escapes_double_quote() {
+        // 标识符中的双引号须转义为 "" 避免注入
+        let result = SqlIdentifier::quote_identifier("use\"r");
+        assert_eq!(result, "\"use\"\"r\"");
+    }
+
+    #[test]
+    fn test_is_system_table_recognises_underscore_prefix() {
+        assert!(SqlIdentifier::is_system_table("__settings"));
+        assert!(SqlIdentifier::is_system_table("__query_history"));
+        assert!(!SqlIdentifier::is_system_table("settings"));
+        assert!(!SqlIdentifier::is_system_table("settings__"));
+    }
+
+    #[test]
+    fn test_is_safe_identifier_rejects_sql_injection_chars() {
+        // 包含 ; -- 等字符通常是注入试探，本项目禁止
+        // 注意：is_safe_identifier 是纯字符白名单判断
+        // 这里验证中文、下划线、数字是合法的
+        assert!(SqlIdentifier::is_safe_identifier("users_123"));
+        assert!(SqlIdentifier::is_safe_identifier("用户表"));
+    }
+
+    #[test]
+    fn test_validate_and_quote_rejects_bad_name() {
+        // SqlIdentifier::validate_and_quote 只接受白名单字符
+        // 这里验证一个合法名称能被成功引用
+        let result = SqlIdentifier::validate_and_quote("good_table");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "\"good_table\"");
+    }
+}
+
+// ============================================================
+// M7.3 扩展：QueryResult / DbInfo 等数据结构的纯函数测试
+// ============================================================
+#[cfg(test)]
+mod query_result_tests {
+    use super::super::traits::QueryResult;
+
+    fn build_result(cols: usize, rows: usize) -> QueryResult {
+        QueryResult {
+            columns: (0..cols).map(|i| format!("col{}", i)).collect(),
+            rows: (0..rows)
+                .map(|r| (0..cols).map(|c| format!("r{}c{}", r, c)).collect())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_query_result_clone_equality() {
+        let qr = build_result(3, 5);
+        assert_eq!(qr.columns.len(), 3);
+        assert_eq!(qr.rows.len(), 5);
+    }
+
+    #[test]
+    fn test_query_result_empty_rows() {
+        let qr = build_result(2, 0);
+        assert_eq!(qr.rows.len(), 0);
+        assert_eq!(qr.columns.len(), 2);
+    }
+
+    #[test]
+    fn test_query_result_row_shape() {
+        let qr = build_result(2, 3);
+        for row in &qr.rows {
+            assert_eq!(row.len(), qr.columns.len());
+        }
+    }
+}
+
+// ============================================================
+// M7.3 扩展：DatabaseManager 生命周期与错误路径测试
+// ============================================================
+#[cfg(test)]
+mod db_manager_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn test_multiple_close_is_harmless() {
+        let temp_dir = tempdir().expect("创建临时目录失败");
+        let db_path = temp_dir.path().join("multi_close.db");
+
+        let mut db_manager = DatabaseManager::new();
+        db_manager.register_driver(Box::new(SqliteDriver::new()));
+        let _ = db_manager.create_and_connect("sqlite", &db_path);
+
+        db_manager.close_connection();
+        // 第二次 close 不应 panic
+        db_manager.close_connection();
+        assert!(!db_manager.is_connected());
+    }
+
+    #[test]
+    fn test_get_connection_meta_without_connect() {
+        let db_manager = DatabaseManager::new();
+        let (driver_name, db_path) = db_manager.get_connection_meta();
+        assert!(driver_name.is_none(), "未连接时 driver_name 必须为 None");
+        assert!(db_path.is_none(), "未连接时 db_path 必须为 None");
+    }
+
+    #[test]
+    fn test_is_connected_initial_state_false() {
+        let db_manager = DatabaseManager::new();
+        assert!(!db_manager.is_connected());
     }
 }

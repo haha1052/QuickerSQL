@@ -1,12 +1,10 @@
 import React from 'react';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+// P0-2 启动优化：ag-grid 懒加载
+import { AgGridLazy } from '../common/AgGridLazy';
 import { PlayIcon } from '../common/Icons';
 import { useImportStore, useAppStore } from '../../store';
 import { tauriService } from '../../services';
 import { useLocale } from '../../context/LocaleContext';
-
-ModuleRegistry.registerModules([AllCommunityModule]);
 
 interface DataPreviewProps {
   onImportComplete: () => void;
@@ -17,7 +15,7 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
     importItems, activeImportItemId, updateImportItem, setLoading,
   } = useImportStore();
   const { setMessage } = useAppStore();
-  const { t, locale, localeText } = useLocale();
+  const { t, localeText } = useLocale();
 
   const activeItem = importItems.find((item) => item.id === activeImportItemId);
 
@@ -109,27 +107,93 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
         fields: activeItem.fields,
       });
 
-      if (response.success) {
+      if (response && response.success) {
         updateImportItem(activeItem.id, { status: 'success' });
         setMessage(response.data || `${t('import.success')} ${activeItem.tableName}`, 'success');
         onImportComplete();
       } else {
-        updateImportItem(activeItem.id, { status: 'error', error: response.error });
-        setMessage(`${t('import.fail')}: ${response.error}`, 'error');
+        const errorMsg = response?.error || t('import.unknownError');
+        const friendlyError = getFriendlyErrorMessage(errorMsg);
+        updateImportItem(activeItem.id, { status: 'error', error: friendlyError });
+        setMessage(`${t('import.fail')}: ${friendlyError}`, 'error');
       }
     } catch (e) {
-      updateImportItem(activeItem.id, { status: 'error', error: String(e) });
-      setMessage(`${t('import.fail')}: ${String(e)}`, 'error');
+      const errorMsg = String(e || t('import.unknownError'));
+      const friendlyError = getFriendlyErrorMessage(errorMsg);
+      updateImportItem(activeItem.id, { status: 'error', error: friendlyError });
+      setMessage(`${t('import.fail')}: ${friendlyError}`, 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  const getSampleValue = (columnIndex: number) => {
-    const firstDataRow = activeItem.hasHeader 
-      ? activeItem.preview.rows[0] 
-      : activeItem.preview.rows[1];
+  const getFriendlyErrorMessage = (rawError: string): string => {
+    const errorLower = rawError.toLowerCase();
     
+    // 文件不存在或路径错误
+    if (errorLower.includes('no such file') || 
+        errorLower.includes('file not found') ||
+        errorLower.includes('cannot find') ||
+        errorLower.includes('路径不存在')) {
+      return t('import.errorFileNotFound');
+    }
+    
+    // 文件格式错误或损坏
+    if (errorLower.includes('invalid format') ||
+        errorLower.includes('corrupted') ||
+        errorLower.includes('parse error') ||
+        errorLower.includes('格式错误')) {
+      return t('import.errorFileCorrupted');
+    }
+    
+    // 表名已存在
+    if (errorLower.includes('table already exists') ||
+        errorLower.includes('duplicate table') ||
+        errorLower.includes('表已存在')) {
+      return t('import.errorTableExists');
+    }
+    
+    // 权限错误
+    if (errorLower.includes('permission denied') ||
+        errorLower.includes('access denied') ||
+        errorLower.includes('权限不足')) {
+      return t('import.errorPermissionDenied');
+    }
+    
+    // 连接超时或网络错误
+    if (errorLower.includes('timeout') ||
+        errorLower.includes('timed out') ||
+        errorLower.includes('超时')) {
+      return t('import.errorTimeout');
+    }
+    
+    // 内存不足
+    if (errorLower.includes('out of memory') ||
+        errorLower.includes('memory allocation') ||
+        errorLower.includes('内存不足')) {
+      return t('import.errorOutOfMemory');
+    }
+    
+    // 文件过大
+    if (errorLower.includes('file too large') ||
+        errorLower.includes('文件过大')) {
+      return t('import.errorFileTooLarge');
+    }
+    
+    // 编码错误
+    if (errorLower.includes('encoding') ||
+        errorLower.includes('utf') ||
+        errorLower.includes('gbk') ||
+        errorLower.includes('编码')) {
+      return t('import.errorEncoding');
+    }
+    
+    // 默认返回原始错误(但更友好)
+    return rawError.length > 100 ? rawError.substring(0, 100) + '...' : rawError;
+  };
+
+  const getSampleValue = (columnIndex: number) => {
+    const firstDataRow = activeItem.preview.rows[0];
     return firstDataRow?.[columnIndex] || '';
   };
 
@@ -164,13 +228,13 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
       <div style={styles.header}>
         <div style={styles.configRow}>
           <div style={styles.tableNameGroup}>
-            <span style={styles.label}>Table:</span>
+            <span style={styles.label}>{t('import.tableName')}:</span>
             <input
               type="text"
               value={activeItem.tableName}
               onChange={handleTableNameChange}
               style={styles.tableNameInput}
-              placeholder="Enter table name"
+              placeholder={t('import.tableName')}
             />
           </div>
 
@@ -181,32 +245,48 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
               checked={activeItem.hasHeader}
               onChange={handleHasHeaderChange}
             />
-            <label htmlFor="hasHeader">CSV includes header</label>
+            <label htmlFor="hasHeader">{t('import.withHeader')}</label>
           </div>
 
           <button
             style={styles.inferBtn}
             onClick={inferFieldTypes}
           >
-            🔮 Auto infer
+            🔮 {t('import.autoInfer')}
           </button>
 
           <button
-            style={styles.importBtn}
+            style={{
+              ...styles.importBtn,
+              ...(activeItem.status === 'importing' ? styles.importBtnLoading : {}),
+              ...(activeItem.status === 'success' ? styles.importBtnSuccess : {}),
+              ...(activeItem.status === 'error' ? styles.importBtnError : {}),
+            }}
             onClick={handleSingleImport}
             disabled={activeItem.status === 'importing' || activeItem.status === 'success'}
           >
             <PlayIcon size={16} />
             <span>
-              {activeItem.status === 'importing' ? t('import.importing') : t('import.import')}
+              {activeItem.status === 'importing' ? t('import.importing') : 
+               activeItem.status === 'success' ? t('import.importSuccess') :
+               activeItem.status === 'error' ? t('import.importFailed') :
+               t('import.button')}
             </span>
           </button>
+          
+          {activeItem.status === 'success' && (
+            <span style={styles.statusSuccess}>✓</span>
+          )}
+          
+          {activeItem.status === 'error' && activeItem.error && (
+            <span style={styles.statusError}>✗</span>
+          )}
         </div>
       </div>
 
       <div style={styles.fieldsSection}>
         <div style={styles.fieldsHeader}>
-          <span style={styles.sectionTitle}>Field Configuration</span>
+          <span style={styles.sectionTitle}>{t('import.fieldConfiguration')}</span>
         </div>
         <div style={styles.fieldsTableContainer}>
           <table style={styles.fieldsTable}>
@@ -261,12 +341,12 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
             {t('import.preview')} ({rowData.length} rows × {activeItem.fields.length} cols)
           </span>
           {activeItem.hasHeader && (
-            <span style={styles.previewHint}>(first row as header)</span>
+            <span style={styles.previewHint}>({t('import.firstRowAsHeader')})</span>
           )}
         </div>
         <div style={styles.gridContainer} className="ag-theme-alpine">
-          <AgGridReact
-            key={locale}
+          <AgGridLazy
+            key={`${activeItem.id}-${rowData.length}-${JSON.stringify(columnDefs)}`}
             columnDefs={columnDefs}
             rowData={rowData}
             localeText={localeText}
@@ -362,6 +442,32 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: '13px',
     marginLeft: 'auto',
+    transition: 'all 0.2s ease',
+  },
+  importBtnLoading: {
+    background: 'var(--text-tertiary)',
+    cursor: 'not-allowed',
+    opacity: 0.7,
+  },
+  importBtnSuccess: {
+    background: 'var(--success)',
+    cursor: 'default',
+  },
+  importBtnError: {
+    background: 'var(--error)',
+    cursor: 'pointer',
+  },
+  statusSuccess: {
+    fontSize: '18px',
+    color: 'var(--success)',
+    marginLeft: '8px',
+    fontWeight: 'bold',
+  },
+  statusError: {
+    fontSize: '18px',
+    color: 'var(--error)',
+    marginLeft: '8px',
+    fontWeight: 'bold',
   },
   fieldsSection: {
     borderBottom: '1px solid var(--border-primary)',
@@ -385,6 +491,7 @@ const styles: Record<string, React.CSSProperties> = {
   fieldsTable: {
     width: '100%',
     borderCollapse: 'collapse',
+    tableLayout: 'fixed',
   },
   th: {
     padding: '8px 12px',
@@ -394,6 +501,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: 'var(--text-secondary)',
     borderBottom: '1px solid var(--border-primary)',
+    width: '80px',
   },
   tr: {
     borderBottom: '1px solid var(--border-primary)',
@@ -411,17 +519,19 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
     background: 'var(--bg-primary)',
     color: 'var(--text-primary)',
+    boxSizing: 'border-box',
   },
   fieldTypeSelect: {
+    width: '100%',
     padding: '6px 10px',
     border: '1px solid var(--border-primary)',
     borderRadius: '4px',
     fontSize: '13px',
     outline: 'none',
     cursor: 'pointer',
-    minWidth: '120px',
     background: 'var(--bg-primary)',
     color: 'var(--text-primary)',
+    boxSizing: 'border-box',
   },
   sampleValue: {
     fontSize: '13px',
@@ -454,5 +564,7 @@ const styles: Record<string, React.CSSProperties> = {
   gridContainer: {
     flex: 1,
     overflow: 'hidden',
+    minHeight: '200px',
+    height: '100%',
   },
 };

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useDashboardStore } from '../../store/dashboardStore';
-import { useToastStore } from '../../store/toastStore';
+import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
 
 interface AddChartModalProps {
@@ -21,12 +20,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    console.log('[AddChartModal] 正在加载 savedCharts...');
-    loadSavedCharts().then(() => {
-      const { savedCharts } = useDashboardStore.getState();
-      console.log('[AddChartModal] 加载完成，图表数量:', savedCharts.length);
-      console.log('[AddChartModal] savedCharts 内容:', savedCharts);
-    });
+    loadSavedCharts();
   }, []);
 
   const filtered = savedCharts

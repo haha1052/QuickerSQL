@@ -6,7 +6,7 @@ import type { SqlStatementResult } from '../../../types';
 
 export const useQueryExecution = () => {
   const { t } = useLocale();
-  const { sqlQueries, activeQueryId, setQueryLoading, setQueryResult, setBatchResults, addToHistory } = useQueryStore();
+  const { sqlQueries, activeQueryId, setQueryLoading, setBatchResults, addToHistory } = useQueryStore();
   const { setMessage } = useAppStore();
 
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
@@ -21,29 +21,30 @@ export const useQueryExecution = () => {
     try {
       const response = await tauriService.executeSql(activeQuery.sql);
       
+      console.log('[useQueryExecution] Response:', response);
+      
       if (response.success && response.data) {
         const batchResults = response.data.results as SqlStatementResult[];
         
-        setBatchResults(activeQueryId, batchResults);
+        console.log('[useQueryExecution] batchResults:', batchResults);
         
-        const successResults = batchResults.filter(r => r.success);
-        const lastQueryResult = successResults.length > 0 ? successResults[successResults.length - 1] : null;
-        
-        if (lastQueryResult && lastQueryResult.columns && lastQueryResult.rows) {
-          setQueryResult(activeQueryId, {
-            columns: lastQueryResult.columns,
-            rows: lastQueryResult.rows,
-          });
+        if (!batchResults || !Array.isArray(batchResults)) {
+          console.error('[useQueryExecution] Invalid batchResults format:', response.data);
+          setMessage('查询结果格式错误', 'error');
+          return;
         }
         
-        // 添加到查询历史
-        const successCount = successResults.length;
-        const hasSuccess = successCount > 0;
-        const rowCount = lastQueryResult?.rows?.length;
-        addToHistory(activeQuery.sql, hasSuccess, rowCount);
+        // 唯一数据源写入，无异步时序冲突
+        setBatchResults(activeQueryId, batchResults);
+        
+        // 添加到查询历史（基于批量结果）
+        const successResults = batchResults.filter(r => r.success);
+        const totalRows = successResults.reduce((sum, item) => sum + (item.rows?.length || 0), 0);
+        const hasSuccess = successResults.length > 0;
+        addToHistory(activeQuery.sql, hasSuccess, totalRows);
         
         if (hasSuccess) {
-          setMessage(`${t('hooks.querySuccess').replace('{count}', String(successCount))}`, 'success');
+          setMessage(`${t('hooks.querySuccess').replace('{count}', String(successResults.length))}`, 'success');
         } else {
           setMessage(t('hooks.queryFail'), 'error');
         }
@@ -59,7 +60,7 @@ export const useQueryExecution = () => {
     } finally {
       setQueryLoading(null);
     }
-  }, [t, activeQuery, activeQueryId, setQueryLoading, setQueryResult, setBatchResults, addToHistory, setMessage]);
+  }, [t, activeQuery, activeQueryId, setQueryLoading, setBatchResults, addToHistory, setMessage]);
 
   return {
     executeQuery,

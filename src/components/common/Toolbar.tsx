@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { TabType } from '../../types';
 import {
@@ -13,18 +13,48 @@ import {
   CheckSquareIcon,
   GridIcon,
   TrashIcon,
-  BarChart2Icon
+  ChevronDownIcon
 } from './Icons';
 import { useAppStore, useWorkspaceStore, useImportStore, useQueryStore } from '../../store';
 import { tauriService } from '../../services';
 import type { WorkspaceTabType, ImportItem } from '../../types';
 import { useLocale } from '../../context/LocaleContext';
 
+interface LayoutMenuItemProps {
+  label: string;
+  onClick: () => void;
+  isFirst?: boolean;
+  isLast?: boolean;
+}
+
+const LayoutMenuItem: React.FC<LayoutMenuItemProps> = ({ label, onClick }) => {
+  const [isHovered, setIsHovered] = useState(false);
+
+  return (
+    <div
+      style={{
+        padding: '8px 12px',
+        fontSize: '12px',
+        color: 'var(--text-primary)',
+        cursor: 'pointer',
+        background: isHovered ? 'var(--bg-tertiary)' : 'transparent',
+        transition: 'background 0.15s',
+      }}
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      {label}
+    </div>
+  );
+};
+
 interface ToolbarProps {
   activeTab: TabType;
   onAddFile?: () => void;
   onBatchImport?: () => void;
   onClearQueue?: () => void;
+  compact?: boolean;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
@@ -32,9 +62,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onAddFile: _onAddFile, // 未使用的参数
   onBatchImport,
   onClearQueue,
+  compact = false,
 }) => {
   const { setMessage, setAllDatabaseStatus } = useAppStore();
-  const { addTab } = useWorkspaceStore();
+  const { tabs, addTab } = useWorkspaceStore();
   const { importItems, toggleAllSelected, hasHeader, setHasHeader, updateImportItem, addImportItems, setActiveImportItemId } = useImportStore();
   const { t } = useLocale();
 
@@ -193,14 +224,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
   const handleNewSqlTab = () => {
     addTab({
-      title: `SQL Query ${Date.now()}`,
+      title: `QUERY ${tabs.filter(t => t.type === 'sql').length + 1}`,
       type: 'sql' as WorkspaceTabType,
       panels: [
         {
           id: 'editor',
           type: 'sql_editor',
           title: 'SQL Editor',
-          size: 50,
+          size: 100,
           active: true,
           content: null,
         },
@@ -208,7 +239,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           id: 'results',
           type: 'results_grid',
           title: 'Results',
-          size: 50,
+          size: 0,
           active: true,
           content: null,
         },
@@ -409,42 +440,42 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     });
   };
 
-  // 添加图表功能（M3）
-  const handleAddChartPanel = () => {
-    const { sqlQueries, activeQueryId } = useQueryStore.getState();
-    const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
-    
-    if (!activeQuery || !activeQuery.batchResults || activeQuery.batchResults.length === 0) {
-      setMessage(t('toolbar.noDataToChart'), 'warning');
-      return;
-    }
+  const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
+  const layoutButtonRef = useRef<HTMLButtonElement>(null);
+  const layoutMenuRef = useRef<HTMLDivElement>(null);
 
-    const { tabs, activeTabId, addPanel } = useWorkspaceStore.getState();
-    const activeTab = tabs.find((t) => t.id === activeTabId);
-    
-    if (!activeTab) return;
+  const { activeTabId, updatePanel } = useWorkspaceStore();
 
-    // 检查是否已存在图表面板
-    const hasChartPanel = activeTab.panels.some((p) => p.type === 'chart');
-    if (hasChartPanel) {
-      setMessage(t('toolbar.chartAlreadyAdded'), 'warning');
-      return;
-    }
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        layoutButtonRef.current &&
+        !layoutButtonRef.current.contains(event.target as Node) &&
+        layoutMenuRef.current &&
+        !layoutMenuRef.current.contains(event.target as Node)
+      ) {
+        setLayoutMenuOpen(false);
+      }
+    };
 
-    // 动态调整面板大小
-    const panelCount = activeTab.panels.length;
-    const newSize = Math.max(25, Math.floor(80 / (panelCount + 1)));
-    
-    addPanel(activeTabId, {
-      type: 'chart',
-      title: t('chart.title'),
-      size: newSize,
-      active: true,
-      content: null,
-    });
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
-    setMessage(t('toolbar.chartAdded'), 'success');
+  const handleLayoutChange = (editorSize: number, resultsSize: number) => {
+    updatePanel(activeTabId, 'editor', { size: editorSize });
+    updatePanel(activeTabId, 'results', { size: resultsSize });
+    setLayoutMenuOpen(false);
   };
+
+  const layoutOptions = [
+    { label: '100% 编辑器', editorSize: 100, resultsSize: 0 },
+    { label: '80% 编辑器 / 20% 结果', editorSize: 80, resultsSize: 20 },
+    { label: '50% 编辑器 / 50% 结果', editorSize: 50, resultsSize: 50 },
+    { label: '20% 编辑器 / 80% 结果', editorSize: 20, resultsSize: 80 },
+  ];
 
   if (activeTab === 'csv') {
     return (
@@ -526,62 +557,89 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     );
   }
 
+  const toolbarStyle = compact ? styles.toolbarCompact : styles.sqlToolbar;
+  const toolbarBtnStyle = compact ? styles.toolbarBtnCompact : styles.sqlToolbarBtn;
+  const toolbarBtnPrimaryStyle = compact ? styles.toolbarBtnPrimaryCompact : styles.sqlToolbarBtnPrimary;
+  const dividerStyle = compact ? styles.divider : styles.sqlDivider;
+  const iconSize = compact ? 14 : 14;
+
   return (
-    <div style={styles.toolbar}>
+    <div style={toolbarStyle}>
       <div style={styles.toolbarLeft}>
         <button
-          style={styles.toolbarBtn}
+          style={toolbarBtnStyle}
           onClick={handleNewSqlTab}
           title={t('toolbar.newSQL')}
         >
-          <PlusIcon size={18} />
-          <span style={styles.btnText}>{t('toolbar.new')}</span>
+          <PlusIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('toolbar.new')}</span>}
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleOpenFile} title={t('toolbar.openSQLFile')}>
-          <FolderOpenIcon size={18} />
-          <span style={styles.btnText}>{t('toolbar.open')}</span>
+        <button style={toolbarBtnStyle} onClick={handleOpenFile} title={t('toolbar.openSQLFile')}>
+          <FolderOpenIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('toolbar.open')}</span>}
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleSaveFile} title={t('toolbar.saveSQLFile')}>
-          <SaveIcon size={18} />
-          <span style={styles.btnText}>{t('toolbar.save')}</span>
+        <button style={toolbarBtnStyle} onClick={handleSaveFile} title={t('toolbar.saveSQLFile')}>
+          <SaveIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('toolbar.save')}</span>}
         </button>
 
-        <div style={styles.divider} />
+        {!compact && <div style={dividerStyle} />}
 
-        <button style={styles.toolbarBtnPrimary} onClick={handleRunQuery} title={t('toolbar.runQuery')}>
-          <PlayIcon size={18} />
-          <span style={styles.btnText}>{t('toolbar.run')}</span>
+        <button style={toolbarBtnPrimaryStyle} onClick={handleRunQuery} title={t('toolbar.runQuery')}>
+          <PlayIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('toolbar.run')}</span>}
         </button>
 
-        <div style={styles.divider} />
+        {!compact && <div style={dividerStyle} />}
 
         <button
-          style={styles.toolbarBtn}
+          style={toolbarBtnStyle}
           onClick={handleRefresh}
           title={t('toolbar.refreshDBStatus')}
         >
-          <RefreshCwIcon size={18} />
-          <span style={styles.btnText}>{t('common.refresh')}</span>
+          <RefreshCwIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('common.refresh')}</span>}
         </button>
 
-        <button style={styles.toolbarBtn} onClick={handleExportResults} title={t('toolbar.exportResult')}>
-          <DownloadIcon size={18} />
-          <span style={styles.btnText}>{t('toolbar.export')}</span>
+        <button style={toolbarBtnStyle} onClick={handleExportResults} title={t('toolbar.exportResult')}>
+          <DownloadIcon size={iconSize} />
+          {!compact && <span style={styles.btnText}>{t('toolbar.export')}</span>}
         </button>
 
-        <div style={styles.divider} />
+        {!compact && <div style={dividerStyle} />}
 
-        <button style={styles.toolbarBtn} onClick={handleAddChartPanel} title={t('toolbar.addChart')}>
-          <BarChart2Icon size={18} />
-          <span style={styles.btnText}>{t('toolbar.chart')}</span>
-        </button>
+        <div style={{ position: 'relative' }}>
+          <button
+            ref={layoutButtonRef}
+            style={toolbarBtnStyle}
+            onClick={() => setLayoutMenuOpen(!layoutMenuOpen)}
+            title="布局"
+          >
+            <GridIcon size={iconSize} />
+            {!compact && <span style={styles.btnText}>布局</span>}
+            <ChevronDownIcon size={12} />
+          </button>
+          {layoutMenuOpen && (
+            <div ref={layoutMenuRef} style={styles.layoutDropdown}>
+              {layoutOptions.map((option, index) => (
+                <LayoutMenuItem
+                  key={option.label}
+                  label={option.label}
+                  onClick={() => handleLayoutChange(option.editorSize, option.resultsSize)}
+                  isFirst={index === 0}
+                  isLast={index === layoutOptions.length - 1}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={styles.toolbarRight}>
-        <button style={styles.toolbarBtn} title={t('toolbar.databaseInfo')}>
-          <DatabaseIcon size={18} />
+        <button style={toolbarBtnStyle} title={t('toolbar.databaseInfo')}>
+          <DatabaseIcon size={iconSize} />
         </button>
       </div>
     </div>
@@ -596,6 +654,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     borderBottom: '1px solid var(--border-primary)',
     background: 'var(--bg-tertiary)',
+  },
+  toolbarCompact: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    padding: '2px 8px',
+    background: 'transparent',
+    gap: '2px',
   },
   toolbarLeft: {
     display: 'flex',
@@ -632,6 +698,31 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: '13px',
   },
+  toolbarBtnCompact: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4px 8px',
+    background: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    color: 'var(--text-primary)',
+    transition: 'all 0.2s',
+  },
+  toolbarBtnPrimaryCompact: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4px 8px',
+    background: 'var(--primary)',
+    color: 'white',
+    border: '1px solid var(--primary)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+  },
   toolbarBtnActive: {
     background: 'var(--primary-bg)',
     borderColor: 'var(--primary)',
@@ -658,5 +749,67 @@ const styles: Record<string, React.CSSProperties> = {
     height: '24px',
     background: 'var(--border-primary)',
     margin: '0 8px',
+  },
+  sqlToolbar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    height: '32px',
+    padding: '0 12px',
+    borderBottom: '1px solid var(--border-primary)',
+    background: 'var(--bg-tertiary)',
+  },
+  sqlToolbarBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    height: '24px',
+    padding: '0 10px',
+    background: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    color: 'var(--text-primary)',
+    transition: 'all 0.2s',
+  },
+  sqlToolbarBtnPrimary: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    height: '24px',
+    padding: '0 10px',
+    background: 'var(--primary)',
+    color: 'white',
+    border: '1px solid var(--primary)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+  },
+  sqlDivider: {
+    width: '1px',
+    height: '20px',
+    background: 'var(--border-primary)',
+    margin: '0 8px',
+  },
+  layoutDropdown: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    marginTop: '4px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-primary)',
+    borderRadius: '4px',
+    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+    zIndex: 1000,
+    minWidth: '200px',
+    overflow: 'hidden',
+  },
+  layoutMenuItem: {
+    padding: '8px 12px',
+    fontSize: '12px',
+    color: 'var(--text-primary)',
+    cursor: 'pointer',
+    transition: 'background 0.15s',
   },
 };

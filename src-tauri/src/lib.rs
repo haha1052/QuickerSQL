@@ -15,11 +15,34 @@ use tauri::Manager;
 // 类型从 models/database.rs 导入
 pub use models::database::{DatabaseStatus, SqlStatementResult, BatchExecuteResult, ProjectInfo, SheetInfo, ExcelPreview, CsvPreview, FieldMeta, ImportRequest, ImportRequestV2, DatabaseInfo, TableInfo, ColumnInfo};
 
+/// 系统表 ensure 函数签名：接收数据库连接，返回 Result<(), String>
+type EnsureFn = fn(&crate::database::MutexGuardConnection<'_>) -> Result<(), String>;
+
+/// 系统表 ensure 函数表：(ensure 函数, 表描述)
+/// 用于在应用启动时统一初始化 SQLite 中的 8 张系统表
+const SYSTEM_TABLE_ENSURE_FNS: &[(EnsureFn, &str)] = &[
+    (crate::services::AuditLogService::ensure_audit_log_table_exists, "审计日志表"),
+    (crate::services::TrashService::ensure_trash_table_exists, "回收站表"),
+    (crate::services::SettingsService::ensure_settings_table_exists, "设置表"),
+    (crate::services::QueryHistoryService::ensure_query_history_table_exists, "查询历史表"),
+    (crate::services::TaskService::ensure_tables_exists, "自动化任务表"),
+    (crate::services::DashboardService::ensure_tables_exist, "仪表盘/图表表"),
+    (crate::services::AppStateService::ensure_app_state_table_exists, "应用状态表"),
+    (crate::services::AppStateService::ensure_workspace_tables_exist, "工作区表"),
+];
+
 pub struct TauriAppState {
-    db_manager: SharedDatabaseManager,
+    pub db_manager: SharedDatabaseManager,
     db_path: Mutex<PathBuf>,
     duckdb_conn: Mutex<Option<Arc<Mutex<Box<dyn database::DatabaseConnection>>>>>,
     temp_file: Mutex<Option<tempfile::NamedTempFile>>,
+    pub init_timestamp_ms: i64,
+    // v9.3: Rust 初始化各阶段耗时（毫秒，Option<f64>，None = 未记录）
+    pub app_init_ms: Mutex<Option<f64>>,          // TauriAppState::new() 总耗时
+    pub system_tables_init_ms: Mutex<Option<f64>>, // 系统表初始化耗时
+    pub sqlite_connect_ms: Mutex<Option<f64>>,     // SQLite 建立连接耗时
+    // M7.2: 只读查询缓存服务（LRU + TTL，默认开启，容量 100，TTL 5 分钟）
+    pub query_cache: Arc<crate::services::QueryCacheService>,
 }
 
 impl TauriAppState {
@@ -48,11 +71,17 @@ impl TauriAppState {
         let t2 = std::time::Instant::now();
 
         let manager = Arc::new(db_manager);
+        let query_cache = Arc::new(crate::services::QueryCacheService::new());
         let state = TauriAppState {
             db_manager: manager.clone(),
             db_path: Mutex::new(db_path.clone()),
             duckdb_conn: Mutex::new(None),
             temp_file: Mutex::new(None),
+            init_timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            app_init_ms: Mutex::new(None),
+            system_tables_init_ms: Mutex::new(None),
+            sqlite_connect_ms: Mutex::new(None),
+            query_cache: query_cache.clone(),
         };
 
         // 处理 Mutex poison：如果 db_path 被 poison，回退到 poison 前的值继续初始化
@@ -73,16 +102,7 @@ impl TauriAppState {
             }
 
             // 2) 批量 ensure 所有系统表
-            let ensure_fns: &[(fn(&crate::database::MutexGuardConnection<'_>) -> Result<(), String>, &str)] = &[
-                (crate::services::AuditLogService::ensure_audit_log_table_exists, "审计日志表"),
-                (crate::services::TrashService::ensure_trash_table_exists, "回收站表"),
-                (crate::services::SettingsService::ensure_settings_table_exists, "设置表"),
-                (crate::services::QueryHistoryService::ensure_query_history_table_exists, "查询历史表"),
-                (crate::services::TaskService::ensure_tables_exists, "自动化任务表"),
-                (crate::services::DashboardService::ensure_tables_exist, "仪表盘/图表表"),
-                (crate::services::AppStateService::ensure_app_state_table_exists, "应用状态表"),
-                (crate::services::AppStateService::ensure_workspace_tables_exist, "工作区表"),
-            ];
+            let ensure_fns = SYSTEM_TABLE_ENSURE_FNS;
 
             if conn.begin_transaction().is_ok() {
                 let mut all_ok = true;
@@ -111,15 +131,46 @@ impl TauriAppState {
         }
         let t4 = std::time::Instant::now();
 
+        // v9.3: 记录 Rust 初始化总耗时（毫秒，保留 2 位小数）
+        //        供前端 startup: get_startup_status 读取，让计时真正覆盖全链路
+        let app_init_ms = (t4 - t0).as_secs_f64() * 1000.0;
+        // 用 match 模式处理 Mutex PoisonError（替代 unwrap()，避免 panic 导致崩溃）
+        match state.app_init_ms.lock() {
+            Ok(mut guard) => *guard = Some(app_init_ms),
+            Err(poisoned) => {
+                log::warn!("app_init_ms Mutex poisoned，使用前值");
+                *poisoned.into_inner() = Some(app_init_ms);
+            }
+        }
+        match state.system_tables_init_ms.lock() {
+            Ok(mut guard) => *guard = Some((t4 - t3).as_secs_f64() * 1000.0),
+            Err(poisoned) => {
+                log::warn!("system_tables_init_ms Mutex poisoned，使用前值");
+                *poisoned.into_inner() = Some((t4 - t3).as_secs_f64() * 1000.0);
+            }
+        }
+        match state.sqlite_connect_ms.lock() {
+            Ok(mut guard) => *guard = Some((t3 - t2).as_secs_f64() * 1000.0),
+            Err(poisoned) => {
+                log::warn!("sqlite_connect_ms Mutex poisoned，使用前值");
+                *poisoned.into_inner() = Some((t3 - t2).as_secs_f64() * 1000.0);
+            }
+        }
+
         log::info!(
             "[启动计时] TauriAppState 总耗时: {:.2} ms (DB driver: {:.2} | path: {:.2} | SQLite connect: {:.2} | 系统表 init: {:.2})",
-            (t4 - t0).as_secs_f64() * 1000.0,
+            app_init_ms,
             (t1 - t0).as_secs_f64() * 1000.0,
             (t2 - t1).as_secs_f64() * 1000.0,
             (t3 - t2).as_secs_f64() * 1000.0,
             (t4 - t3).as_secs_f64() * 1000.0
         );
         log::info!("[启动计时] DuckDB 已推迟到首次使用时懒加载（用户首次 SQL 时才启动）");
+        log::info!(
+            "[查询缓存] 默认已启用：capacity={}, ttl={}s（可通过 settings 项 cache.enabled/cache.capacity/cache.ttl 调整）",
+            query_cache.stats().capacity,
+            300
+        );
 
         state
     }
@@ -308,7 +359,6 @@ pub fn run() {
             commands::file::load_csv,
             commands::file::get_excel_sheets,
             commands::file::load_excel_sheet,
-            commands::file::import_data,
             commands::file::import_data_v2,
             commands::file::write_text_file,
             // SQL 命令
@@ -359,6 +409,8 @@ pub fn run() {
             commands::app_state::update_app_state_cmd,
             commands::app_state::save_workspace_cmd,
             commands::app_state::load_workspace_cmd,
+            // 启动状态汇总命令（P0-2 优化：合并 5+ 次 IPC 为 1 次）
+            commands::startup::get_startup_status,
             // 仪表盘命令
             commands::dashboard::get_saved_charts,
             commands::dashboard::create_saved_chart,
@@ -373,7 +425,10 @@ pub fn run() {
             commands::dashboard::add_chart_to_dashboard,
             commands::dashboard::update_dashboard_item,
             commands::dashboard::remove_chart_from_dashboard,
+            commands::profile::profile_table,
+            commands::profile::profile_result,
             // 自动化任务命令
+            commands::sql::clear_query_cache,
             commands::automation::list_automation_tasks,
             commands::automation::get_automation_task,
             commands::automation::create_automation_task,
@@ -384,12 +439,15 @@ pub fn run() {
             commands::automation::run_automation_task_now,
             commands::automation::get_automation_task_runs,
             commands::automation::ensure_automation_tables,
+            // 启动辅助命令
+            commands::startup::window_resize_to_main,
+            commands::startup::get_startup_diagnostics,
         ])
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             log::info!("setup hook 启动");
+
             // 启动自动化任务调度器（后台线程，应用关闭时通过 AtomicBool 停止）
-            // P0 优化：调度器独立线程，不阻塞窗口第一帧显示
             let handle = app.handle();
             let state: tauri::State<'_, TauriAppState> = handle.state();
             let db_manager = state.db_manager.clone();
@@ -397,24 +455,82 @@ pub fn run() {
             crate::services::TaskScheduleEngine::run_forever(db_manager, shutdown);
             log::info!("自动化任务调度器已启动（独立线程）");
 
-            if let Some(window) = app.get_webview_window("main") {
-                match window.url() {
-                    Ok(url) => {
-                        let elapsed = app_boot_t0.elapsed();
-                        log::info!(
-                            "[启动计时] webview 窗口已启动，URL: {}（距 Rust 启动 {:.2} ms）",
-                            url,
-                            elapsed.as_secs_f64() * 1000.0
-                        );
+            // ==== v13：用 WebviewWindowBuilder 代码驱动创建透明窗口 ====
+            //
+            // ★ 根因修复：tauri.conf.json 中的 backgroundColor: "#00000000"
+            // 无法确保 WebView2 控件层面的背景完全透明。
+            // WebView2 初始化时有默认白色背景，CSS 的 transparent 仅能
+            // 覆盖 html/body/#root 元素，无法触及 WebView2 底层控件的默认底色。
+            //
+            // 解决方案：用代码显式调用 with_background_color(None) 让
+            // Tauri 把 WebView2 的 DefaultBackgroundColor 设置为全透明，
+            // 再配合 DwmExtendFrameIntoClientArea(-1) 消除 Win32 边框。
+            let window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::default()
+            )
+                .title("QuickerSQL")
+                .inner_size(400.0, 400.0)
+                .center()
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .resizable(false)
+                // ★ 核心修复：显式告知 Tauri 让 WebView2 背景完全透明
+                // Color(u8, u8, u8, u8) = (r, g, b, a)；a=0 表示完全透明
+                .background_color(tauri::utils::config::Color(0, 0, 0, 0))
+                .build()
+                .map_err(|e| format!("创建主窗口失败: {}", e))?;
+
+            // ==== 透明窗口边框消除（Win32 层面） ====
+            #[cfg(windows)]
+            {
+                match window.hwnd() {
+                    Ok(hwnd) => {
+                        let hwnd_ptr = hwnd.0 as *mut std::ffi::c_void;
+                        log::info!("[透明窗口] 获取到 HWND: {:?}, 立即应用 DWM 扩展帧", hwnd);
+                        commands::startup::apply_borderless_to_hwnd(hwnd_ptr);
                     }
-                    Err(e) => log::warn!("webview 窗口 URL 获取失败: {}", e),
+                    Err(e) => {
+                        log::warn!("[透明窗口] 获取 HWND 失败: {}, 退化到 GetForegroundWindow", e);
+                        commands::startup::apply_borderless();
+                    }
                 }
-            } else {
-                let elapsed = app_boot_t0.elapsed();
-                log::warn!(
-                    "未找到 webview 窗口名为 'main'（距 Rust 启动 {:.2} ms），可能尚未完成初始化",
-                    elapsed.as_secs_f64() * 1000.0
-                );
+            }
+
+            // 窗口置顶短时间（确保 splash 阶段可见）
+            let _ = window.set_always_on_top(true);
+            let w = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let _ = w.set_always_on_top(false);
+            });
+
+            // 延迟 150ms 二次边框消除（应对 webview 初始化后样式位回填）
+            #[cfg(windows)]
+            {
+                let w2 = window.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    if let Ok(hwnd) = w2.hwnd() {
+                        let hwnd_ptr = hwnd.0 as *mut std::ffi::c_void;
+                        commands::startup::apply_borderless_to_hwnd(hwnd_ptr);
+                        log::info!("[透明窗口] 延迟二次边框消除完成");
+                    }
+                });
+            }
+
+            match window.url() {
+                Ok(url) => {
+                    let elapsed = app_boot_t0.elapsed();
+                    log::info!(
+                        "[启动计时] webview 窗口已启动，URL: {}（距 Rust 启动 {:.2} ms）",
+                        url,
+                        elapsed.as_secs_f64() * 1000.0
+                    );
+                }
+                Err(e) => log::warn!("webview 窗口 URL 获取失败: {}", e),
             }
 
             Ok(())

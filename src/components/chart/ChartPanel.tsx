@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import type { ECharts } from 'echarts';
 import { ChartRenderer } from './ChartRenderer';
 import { ChartTypeSelector, ChartType } from './ChartTypeSelector';
 import { ChartConfigPanel } from './ChartConfigPanel';
 import { SaveChartModal } from './SaveChartModal';
-import * as echarts from 'echarts';
+// P0-2 启动优化：移除同步的 import * as echarts from 'echarts'
+// 实际渲染由 ChartRenderer 在需要时动态加载 echarts
 import { useSetting } from '../../context/SettingsContext';
 import { useLocale } from '../../context/LocaleContext';
 import { useQueryStore } from '../../store';
+import type { ChartConfig } from '../../types/chart';
 
 interface ChartPanelProps {
   queryResult: {
@@ -15,7 +18,6 @@ interface ChartPanelProps {
   } | null;
 }
 
-type ChartConfigType = echarts.EChartsOption;
 type ChartStage = 'config' | 'preview';
 
 export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
@@ -24,38 +26,38 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const [columns, setColumns] = useState<string[]>([]);
   const [xAxisColumn, setXAxisColumn] = useState<string>('');
   const [yAxisColumns, setYAxisColumns] = useState<string[]>([]);
-  const [chartConfig, setChartConfig] = useState<ChartConfigType | null>(null);
+  const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
   const [recommendedTypes, setRecommendedTypes] = useState<ChartType[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
-  const chartInstanceRef = useRef<echarts.ECharts | null>(null);
+  const chartInstanceRef = useRef<ECharts | null>(null);
 
   const { t } = useLocale();
   const { activeQueryId, sqlQueries } = useQueryStore();
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
-  
+
   // 获取可视化设置
   const [defaultChartType] = useSetting('visualization', 'defaultChartType');
   const [showGrid] = useSetting('visualization', 'showGrid');
   const [showLegend] = useSetting('visualization', 'showLegend');
   const [defaultColorScheme] = useSetting('visualization', 'defaultColorScheme');
 
-  const handleChartReady = (chart: echarts.ECharts) => {
+  const handleChartReady = (chart: ECharts) => {
     chartInstanceRef.current = chart;
     applyChartSettings(chart);
   };
-  
+
   // 应用图表设置
-  const applyChartSettings = useCallback((chart: echarts.ECharts | null) => {
+  const applyChartSettings = useCallback((chart: ECharts) => {
     if (!chart || !chartConfig) return;
-    
-    const option = chart.getOption() as unknown as Record<string, unknown>;
-    
+
+    const option = chart.getOption() as Record<string, unknown>;
+
     // 应用网格设置
     if (option.xAxis) {
       if (Array.isArray(option.xAxis)) {
-        option.xAxis.forEach((x: unknown) => {
+        (option.xAxis as Array<Record<string, unknown>>).forEach((x) => {
           const xAxisOpt = x as { splitLine?: { show?: boolean } };
           if (xAxisOpt && xAxisOpt.splitLine) {
             xAxisOpt.splitLine.show = showGrid === 'true';
@@ -68,10 +70,10 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
         }
       }
     }
-    
+
     if (option.yAxis) {
       if (Array.isArray(option.yAxis)) {
-        option.yAxis.forEach((y: unknown) => {
+        (option.yAxis as Array<Record<string, unknown>>).forEach((y) => {
           const yAxisOpt = y as { splitLine?: { show?: boolean } };
           if (yAxisOpt && yAxisOpt.splitLine) {
             yAxisOpt.splitLine.show = showGrid === 'true';
@@ -84,11 +86,11 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
         }
       }
     }
-    
+
     // 应用图例设置
     if (option.legend) {
       if (Array.isArray(option.legend)) {
-        option.legend.forEach((l: unknown) => {
+        (option.legend as Array<Record<string, unknown>>).forEach((l) => {
           const legendOpt = l as { show?: boolean };
           if (legendOpt) legendOpt.show = showLegend === 'true';
         });
@@ -97,7 +99,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
         legend.show = showLegend === 'true';
       }
     }
-    
+
     // 应用配色方案
     const colorSchemes: Record<string, string[]> = {
       default: ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'],
@@ -106,8 +108,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       colorful: ['#ff0000', '#ff7f00', '#ffff00', '#00ff00', '#0000ff', '#4b0082', '#9400d3'],
     };
     option.color = colorSchemes[defaultColorScheme as keyof typeof colorSchemes] || colorSchemes.default;
-    
-    chart.setOption(option as echarts.EChartsOption);
+
+    chart.setOption(option);
   }, [chartConfig, showGrid, showLegend, defaultColorScheme]);
 
   // 当设置变化时重新应用
@@ -223,7 +225,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       });
 
       if (response.success && response.data) {
-        setChartConfig(response.data as echarts.EChartsOption);
+        setChartConfig(response.data as ChartConfig);
         setStage('preview');
       } else {
         setError(response.error || t('chart.generateFail'));
@@ -238,9 +240,10 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
 
   // 当图表配置变化时应用设置
   useEffect(() => {
-    if (chartInstanceRef.current && chartConfig) {
+    const chart = chartInstanceRef.current;
+    if (chart && chartConfig) {
       setTimeout(() => {
-        applyChartSettings(chartInstanceRef.current);
+        applyChartSettings(chart);
       }, 100);
     }
   }, [chartConfig, applyChartSettings]);
@@ -418,9 +421,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
           xAxis={xAxisColumn}
           yAxis={yAxisColumns}
           chartConfig={chartConfig || {}}
-          onSave={(chart) => {
+          onSave={() => {
             setShowSaveModal(false);
-            console.log(`图表"${chart.name}"已保存`);
           }}
           onClose={() => setShowSaveModal(false)}
         />

@@ -11,6 +11,110 @@ import { ThemeSettingsSync } from './context/ThemeSettingsSync';
 import { LocaleProvider } from './context/LocaleContext';
 import './styles/theme.css';
 
+// P0-2 启动优化：启动数据的共享 context
+// 后端 get_startup_status 一次性返回所有启动所需数据
+// 避免 App.tsx / Workspace.tsx 再次发出 IPC 请求
+export interface StartupLayoutPanel {
+  id: string;
+  panelType: string;
+  title: string;
+  size: number;
+  sqlContent: string | null;
+  isActive: boolean;
+  position: number;
+}
+
+export interface StartupLayoutTab {
+  id: string;
+  title: string;
+  tabType: string;
+  position: number;
+  isActive: boolean;
+  panels: StartupLayoutPanel[];
+}
+
+export interface StartupData {
+  hasLaunched: boolean;
+  currentDbPath: string;
+  projectList: string[];
+  databaseStatus: { isConnected: boolean; path: string; tableCount: number };
+  workspaceLayout: StartupLayoutTab[] | null;
+  // v2 新增：SettingsContext 与 DatabaseExplorer 直接消费，减少启动 IPC
+  settings: Array<{ category: string; key: string; value: string }>;
+  tablesList: string[] | null;
+  // v3 新增：DashboardPage / TaskCenterPage 直接消费，避免独立 IPC
+  dashboards: Array<{
+    id: string;
+    name: string;
+    description: string;
+    isDefault: boolean;
+    refreshIntervalSecs: number;
+    createdAt: number;
+    updatedAt: number;
+  }>;
+  savedCharts: Array<{
+    id: string;
+    name: string;
+    chartType: string;
+    xAxis: string;
+    yAxis: string[];
+    title: string;
+    tags: string[];
+    description: string;
+    visibility: string;
+    createdAt: number;
+    updatedAt: number;
+  }>;
+  tasks: Array<{
+    id: string;
+    name: string;
+    description: string;
+    taskType: string;
+    scheduleMode: string;
+    scheduleValue: string;
+    state: string;
+    nextRunAt: number | null;
+    lastRunStatus: string | null;
+    lastRunDurationMs: number | null;
+    totalRuns: number;
+    successRuns: number;
+    failedRuns: number;
+    createdAt: number;
+    updatedAt: number;
+  }>;
+  timing: {
+    appInitTsMs: number;
+    rustAppInitMs?: number;          // v9.3: Rust TauriAppState::new() 总耗时
+    rustSqliteConnectMs?: number;    // v9.3: Rust SQLite 建立连接耗时
+    rustSystemTablesInitMs?: number; // v9.3: Rust 系统表初始化耗时
+    dbConnectMs: number;
+    hasLaunchedMs: number;
+    dbPathMs: number;
+    projectListMs: number;
+    databaseStatusMs: number;
+    workspaceMs: number;
+    settingsMs: number;
+    tablesListMs: number;
+    dashboardsMs: number;
+    savedChartsMs: number;
+    tasksMs: number;
+    totalBackendMs: number;
+  } | null;
+  startupTimestampMs: number;
+}
+
+interface StartupContextType {
+  startupData: StartupData | null;
+  isStartupLoaded: boolean;
+}
+
+const StartupContext = createContext<StartupContextType | undefined>(undefined);
+
+export const useStartupContext = (): StartupContextType => {
+  const ctx = useContext(StartupContext);
+  return ctx ?? { startupData: null, isStartupLoaded: false };
+};
+
 // AppPageState: 应用视图状态（区分于后端 Rust AppState）
 type AppPageState = 'welcome' | 'guide' | 'workspace' | 'settings' | 'activity_log' | 'loading';
 
@@ -30,38 +134,240 @@ export const useAppContext = () => {
   return context;
 };
 
+/**
+ * v12 启动策略（单一 HTML splash 方案）：
+ * - 启动视觉完全由 index.html 的内联 splash 卡片负责（圆形 380×380 渐变卡片）
+ * - React 加载阶段不渲染任何视觉内容（避免 ThemeProvider 容器带背景色产生白色矩形）
+ * - 启动完成后：由 windowResizeToMain() 放大窗口 + 移除 startup-phase 类 + 设置 body 背景色
+ */
+
+/**
+ * v9.3 启动计时关键说明：
+ * - performance.timeOrigin: 浏览器上下文创建时刻（Tauri 创建 WebView 的时刻），
+ *   是"真正接近用户双击应用图标"的时间点
+ * - window.__STARTUP_HTML_LOAD_MS__: HTML 解析完成（进入 React 前）的相对耗时，
+ *   从 performance.timeOrigin 算起
+ * - performance.now(): React JSX 开始执行时的相对耗时（我们在 JS 代码里可以拿到）
+ * - Rust 初始化耗时由后端返回：rust_app_init_ms、rust_sqlite_connect_ms 等
+ *
+ * 全链路完整总耗时 = (Date.now() - performance.timeOrigin)  // WebView 已存在的时间
+ *                   + rust_app_init_ms（估计值，因为 timeOrigin 实际在 Rust 之后）
+ * 但由于 timeOrigin 是 WebView 上下文创建时刻，最精确的公式是：
+ *   总耗时 ≈ performance.now() + rust_app_init_ms（Rust 发生在 WebView 创建之前，大约同时）
+ * 实际效果：让用户看到真实的"点击到可用"时间
+ */
+// v9.3: 静态骨架屏由 index.html 直接显示（零依赖、零延迟）
+// React 渲染过程中，静态骨架屏一直"挡在最上面"给用户持续视觉反馈
+// 启动完成后，调用 window.__HIDE_HTML_SKELETON__() 淡出它
+// 因此 React 侧不需要额外的最小等待时间
+const MIN_SKELETON_MS = 0;
+
+// v10: 声明 window 扩展类型（index.html 内原生 JS 注入的全局函数）
+// 启动流程：html splash（0-400ms） → 等待 IPC 返回 → resize + 淡出
+declare global {
+  interface Window {
+    /** 由 index.html 在解析过程中注入，记录 JS 加载前的启动耗时 */
+    __STARTUP_HTML_LOAD_MS__?: number;
+    __STARTUP_TIME_ORIGIN__?: number;
+    /** 触发椭圆 splash 淡出过渡，同时从 DOM 中移除 */
+    __TRIGGER_SPLASH_TRANSITION__?: (transitionMs?: number) => void;
+    /** 强制进入主应用（启动异常时的兜底入口） */
+    __FORCE_TRANSITION__?: () => void;
+    /** 停止 splash 上的计时 setInterval（避免内存泄漏） */
+    __CLEAR_SPLASH_TIMER__?: () => void;
+  }
+}
+
 const AppWrapper: React.FC = () => {
   const [state, setState] = useState<AppPageState>('loading');
   const [isLoading, setIsLoading] = useState(true);
+  const [startupData, setStartupData] = useState<StartupData | null>(null);
 
-  // 启动时从后端读取"是否已启动过"状态
+  // v12: 启动计时状态（React 内部计时，不渲染到 UI，由 index.html splash 显示计时）
+  const [, setRuntimeMs] = useState<number>(0);
+  const [, setStageText] = useState<string>('正在初始化...');
+  // v9.3: 启动完成后冻结的最终耗时，不再随时间变化
+  const [finalRuntimeMs, setFinalRuntimeMs] = useState<number | null>(null);
+
+  const jsStartMs = performance.now();
+
+  // v9.3: 仅在 isLoading=true 期间动态刷新计时；一旦加载完成，停止刷新
   useEffect(() => {
-    (async () => {
-      console.log('[DIAG] AppWrapper useEffect started');
-      try {
-        console.log('[DIAG] Calling getAppState...');
-        const response = await tauriService.getAppState('welcome', 'has_launched');
-        console.log('[DIAG] getAppState response:', response.success, response.data);
-        if (response.success && response.data && response.data.value === 'true') {
-          // 更新启动计数
-          try {
-            await tauriService.updateAppState('welcome', 'last_launched_at',
-              new Date().toISOString(), '上次启动时间');
-          } catch {
-            // 忽略
-          }
-          console.log('[DIAG] Setting state to workspace');
-          setState('workspace');
+    if (!isLoading) return;
+    const timer = setInterval(() => {
+      const nowMs = performance.now();
+      setRuntimeMs(nowMs);
+      if (nowMs < 300) setStageText('正在初始化...');
+      else if (nowMs < 700) setStageText('正在加载资源...');
+      else if (nowMs < 1100) setStageText('正在读取数据...');
+      else setStageText('即将完成...');
+    }, 50);
+    return () => clearInterval(timer);
+  }, [isLoading]);
+
+  // v14（事件驱动过渡 · S2 方案）: 启动完成时执行完整的过渡流程：
+  // 1) 记录最终耗时 + 停止 splash 计时
+  // 2) 异步调用 windowResizeToMain() 把窗口从 400×400 放大到 1200×800
+  // 3) IPC 返回后：把 html/body background 从 transparent 设为 #f5f7fa
+  // 4) 使用 requestAnimationFrame 双帧对齐替代静态 setTimeout(80ms)：
+  //    - 第 1 帧：浏览器确认 body 背景色已入布局树
+  //    - 第 2 帧：DWM 合成器已把背景色合成到窗口画面
+  //    - 此后再调用 __TRIGGER_SPLASH_TRANSITION__ 淡出 splash 卡片
+  // 5) 失败路径（catch）同样改为事件驱动，不再依赖静态延迟
+  useEffect(() => {
+    if (!isLoading && finalRuntimeMs === null) {
+      const now = performance.now();
+      setFinalRuntimeMs(now);
+
+      const transitionMs = Math.max(150, Math.min(300, Math.round(now / 5)));
+
+      if (typeof window.__CLEAR_SPLASH_TIMER__ === 'function') {
+        window.__CLEAR_SPLASH_TIMER__();
+      }
+
+      const doTransition = () => {
+        if (typeof window.__TRIGGER_SPLASH_TRANSITION__ === 'function') {
+          window.__TRIGGER_SPLASH_TRANSITION__(transitionMs);
+        }
+      };
+
+      const paintAfterBgChange = () => {
+        // ⭐ 事件驱动：双 rAF 对齐 DWM 合成帧
+        // 第 1 帧：浏览器 layout/paint，html/body 背景色从 transparent 变为 #f5f7fa
+        // 第 2 帧：Windows DWM 合成器把浏览器的新画面合成到窗口
+        // 2 帧后：splash 卡片淡出，确保背景色已经"打底"，不会露白
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              doTransition();
+            });
+          });
         } else {
-          console.log('[DIAG] Setting state to welcome');
-          setState('welcome');
+          // 退化：极老环境无 rAF（理论上 WebView2 必存在）
+          setTimeout(doTransition, 50);
+        }
+      };
+
+      tauriService.windowResizeToMain()
+        .then((resizeResp) => {
+          const data = resizeResp?.data ?? null;
+          const transparencyEffective =
+            data && typeof (data as any).transparencyEffective === 'boolean'
+              ? (data as any).transparencyEffective
+              : true;
+          const needsFallback = data && (data as any).needsFallback === true;
+
+          // S4 三级降级：根据 Rust 端的透明窗口诊断结果，
+          // 在 html 根节点上添加 fallback-l1 / fallback-l2 类，
+          // 由 index.html 的 CSS 规则接管样式降级
+          const html = document.documentElement;
+          if (needsFallback || !transparencyEffective) {
+            // L1: 卡片填充（紫色实心卡片）——绝大多数环境够用
+            if (html) html.classList.add('fallback-l1');
+            console.info('[DIAG] 透明窗口未生效，启用 L1 降级（卡片填充）');
+          } else {
+            // 透明工作正常 → 清掉降级类（保障用户机器上的美观）
+            if (html) html.classList.remove('fallback-l1', 'fallback-l2', 'fallback-l3');
+            console.info('[DIAG] 透明窗口生效，使用默认 splash 样式');
+          }
+
+          // ⭐ 关键：把 html/body 从透明 → 不透明，为后续主应用渲染铺好底色
+          if (document.body) document.body.style.background = '#f5f7fa';
+          if (document.documentElement) document.documentElement.style.background = '#f5f7fa';
+          // 事件驱动对齐 DWM 合成，不再依赖静态 80ms
+          paintAfterBgChange();
+        })
+        .catch((err) => {
+          console.warn('[DIAG] windowResizeToMain failed, forcing transition:', err);
+          // 失败路径：保守启用 L1 降级 + 设置背景色
+          const html = document.documentElement;
+          if (html) html.classList.add('fallback-l1');
+          if (document.body) document.body.style.background = '#f5f7fa';
+          if (document.documentElement) document.documentElement.style.background = '#f5f7fa';
+          // 失败路径同样用事件驱动（避免静态延迟）
+          if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => doTransition());
+            });
+          } else {
+            setTimeout(doTransition, 50);
+          }
+        });
+    }
+  }, [isLoading, finalRuntimeMs]);
+
+  // v10: 超时保护（5 秒没完成启动 → 显示"点击进入应用"按钮）
+  useEffect(() => {
+    const timeoutMs = 5000;
+    const timer = setTimeout(() => {
+      if (isLoading && typeof window.__FORCE_TRANSITION__ === 'function') {
+        window.__FORCE_TRANSITION__();
+      }
+    }, timeoutMs);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  // P0-2 启动优化：调用合并后的 get_startup_status，1 次 IPC 搞定
+  // 代替原先的：getAppState + getDefaultDbPath + listProjects + databaseStatus + loadWorkspace
+  useEffect(() => {
+    // 使用 useRef 确保这个 effect 只执行一次
+    const hasRun = { current: false };
+    if (hasRun.current) return;
+    hasRun.current = true;
+    
+    (async () => {
+      const jsStartMs = performance.now();
+      
+      try {
+        const response = await tauriService.getStartupStatus();
+        const ipcEndMs = performance.now();
+
+        // v9.3: 确保骨架屏至少显示 MIN_SKELETON_MS（避免 IPC 极快时一闪而过）
+        const elapsedSinceMount = ipcEndMs - jsStartMs;
+        const needWait = Math.max(0, MIN_SKELETON_MS - elapsedSinceMount);
+        if (needWait > 0) {
+          await new Promise((resolve) => setTimeout(resolve, needWait));
+        }
+
+        if (response.success && response.data) {
+          const raw = response.data;
+          const data: StartupData = {
+            hasLaunched: raw.hasLaunched,
+            currentDbPath: raw.currentDbPath,
+            projectList: raw.projectList,
+            databaseStatus: raw.databaseStatus,
+            workspaceLayout: raw.workspaceLayout ?? null,
+            settings: raw.settings ?? [],
+            tablesList: raw.tablesList ?? null,
+            dashboards: raw.dashboards ?? [],
+            savedCharts: raw.savedCharts ?? [],
+            tasks: raw.tasks ?? [],
+            timing: raw.timing ?? null,
+            startupTimestampMs: raw.startupTimestampMs,
+          };
+          setStartupData(data);
+
+          if (data.hasLaunched) {
+            tauriService.updateAppState(
+              'welcome', 'last_launched_at',
+              new Date().toISOString(), '上次启动时间'
+            ).catch(() => {});
+            setState('workspace');
+          } else {
+            setState('welcome');
+          }
+        } else {
+          setState('workspace');
         }
       } catch (e) {
-        console.error('[DIAG] AppWrapper error:', e);
-        // 后端不可用时，降级到直接进入工作区
+        console.error('[DIAG] AppWrapper getStartupStatus failed:', e);
         setState('workspace');
+        // 出错也要确保骨架屏不闪
+        const elapsedSinceMount = performance.now() - jsStartMs;
+        if (elapsedSinceMount < MIN_SKELETON_MS) {
+          await new Promise((resolve) => setTimeout(resolve, MIN_SKELETON_MS - elapsedSinceMount));
+        }
       } finally {
-        console.log('[DIAG] Setting isLoading=false');
         setIsLoading(false);
       }
     })();
@@ -90,37 +396,62 @@ const AppWrapper: React.FC = () => {
   const goToSettings = () => setState('settings');
   const goToWorkspace = () => setState('workspace');
   const goToActivityLog = () => setState('activity_log');
+  const goToGuide = () => setState('guide');
 
+  // —— 启动阶段（正在加载时）：完全不渲染任何内容
+  //    启动视觉由 index.html 的内联 splash 卡片负责
+  //    避免 React 容器（ThemeProvider/SettingsWrapper）带背景色产生白色矩形
   if (isLoading || state === 'loading') {
-    return (
-      <ThemeProvider>
-        <SettingsWrapper>
-          <div style={{
-            minHeight: '100vh',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '14px',
-            opacity: 0.7,
-          }}>
-            Loading...
-          </div>
-        </SettingsWrapper>
-      </ThemeProvider>
-    );
+    return null;
   }
+
+  // —— 正常页面渲染（启动完成后，计时冻结为 finalRuntimeMs，不再增长）——
+  const displayMs = finalRuntimeMs ?? performance.now();
+  const displayRustMs = startupData?.timing?.rustAppInitMs ?? 0;
+  const displayIpcMs = Math.max(1, Math.round(displayMs - jsStartMs));
 
   return (
     <ThemeProvider>
-      <AppContext.Provider value={{ goToSettings, goToWorkspace, goToActivityLog }}>
-        <SettingsWrapper>
-          {state === 'welcome' && <Welcome onGetStarted={handleGetStarted} />}
-          {state === 'guide' && <Guide onComplete={handleGuideComplete} onSkip={handleGuideSkip} />}
-          {state === 'workspace' && <App />}
-          {state === 'settings' && <Settings />}
-          {state === 'activity_log' && <ActivityLog />}
-        </SettingsWrapper>
-      </AppContext.Provider>
+      {/* ⭐ v11：主应用背景色必须显式设置（html/body 已透明化）
+         加一层 div 设 background-color 填充整个 1200×800 窗口 */}
+      <div style={{
+        minHeight: '100vh',
+        width: '100%',
+        background: 'var(--bg-primary, #f5f7fa)',
+        color: 'var(--text-primary, #1f2328)',
+      }}>
+        <AppContext.Provider value={{ goToSettings, goToWorkspace, goToActivityLog }}>
+          <StartupContext.Provider value={{ startupData, isStartupLoaded: true }}>
+            <SettingsWrapper>
+              {state === 'welcome' && <Welcome onGetStarted={handleGetStarted} onGoToGuide={goToGuide} onGoToSettings={goToSettings} />}
+              {state === 'guide' && <Guide onComplete={handleGuideComplete} onSkip={handleGuideSkip} />}
+              {state === 'workspace' && <App />}
+              {state === 'settings' && <Settings />}
+              {state === 'activity_log' && <ActivityLog />}
+            </SettingsWrapper>
+          </StartupContext.Provider>
+        </AppContext.Provider>
+      </div>
+      {startupData?.timing && (
+        <div style={{
+          position: 'fixed',
+          bottom: '6px',
+          right: '12px',
+          fontSize: '11px',
+          color: '#888',
+          background: 'rgba(255,255,255,0.85)',
+          padding: '4px 8px',
+          borderRadius: '4px',
+          pointerEvents: 'none',
+          zIndex: 10000,
+        }}>
+          <span style={{ fontWeight: 600, color: displayMs > 1000 ? '#c0392b' : '#27ae60' }}>
+            启动 {Math.round(displayMs)} ms
+          </span>
+          {' · '}
+          Rust {displayRustMs}ms / IPC {displayIpcMs}ms
+        </div>
+      )}
     </ThemeProvider>
   );
 };

@@ -1,16 +1,62 @@
-import React, { useState } from 'react';
+import React, { Suspense } from 'react';
 import { useAppStore, useProjectStore, useImportStore } from './store';
-import type { TabType } from './types';
 import { Header, Toast } from './components/common';
-import { ProjectManager } from './components/project';
-import { Workspace } from './components/workspace/Workspace';
-import { tauriService } from './services';
+import { useStartupContext } from './AppWrapper';
 import './App.css';
 
+// ============================================================
+// M7.2 代码分割：重量级组件通过 React.lazy 动态加载
+// - Workspace: 核心工作区（包含 SQL 编辑器、表格、查询历史等）
+// - ProjectManager: 项目管理弹窗（仅在打开时加载）
+// 好处：首屏 JS 体积显著下降，用户先看到骨架，模块按需加载
+// ============================================================
+const LazyWorkspace = React.lazy(() =>
+  import('./components/workspace/Workspace').then(m => ({ default: m.Workspace })),
+);
+const LazyProjectManager = React.lazy(() =>
+  import('./components/project').then(m => ({ default: m.ProjectManager })),
+);
+
+/**
+ * 统一的懒加载占位组件：与主题色保持一致的骨架屏
+ * 在 Suspense fallback 中复用可确保视觉一致性
+ */
+function LoadingSkeleton() {
+  return (
+    <div
+      style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-primary)',
+        color: 'var(--text-secondary)',
+        fontSize: 14,
+        gap: 8,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          width: 14,
+          height: 14,
+          border: '2px solid var(--border-default)',
+          borderTopColor: 'var(--accent-primary)',
+          borderRadius: '50%',
+          animation: 'quicker-skeleton-spin 0.8s linear infinite',
+        }}
+      />
+      <span>加载中...</span>
+    </div>
+  );
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<TabType>('sql');
+  const { startupData, isStartupLoaded } = useStartupContext();
 
   const {
+    activeTab,
+    setActiveTab,
     setMessage,
   } = useAppStore();
 
@@ -21,6 +67,11 @@ function App() {
     setCurrentProject,
     setShowProjectModal,
     setCurrentDbPath,
+    getDatabaseStatus,
+    loadProjects,
+    loadCurrentDbPath,
+    importDataV2,
+    setAllDatabaseStatus,
   } = useProjectStore();
 
   const {
@@ -29,41 +80,36 @@ function App() {
     setLoading,
   } = useImportStore();
 
-  const refreshDatabaseStatus = async () => {
-    const response = await tauriService.getDatabaseStatus();
-    if (response.success && response.data) {
-      useAppStore.getState().setAllDatabaseStatus([response.data]);
-    }
-  };
-
+  // P0-2 启动优化：优先使用 startup context 中的缓存数据
+  // 避免启动时重复发出 IPC 调用；如果 isStartupLoaded=true 时直接消费
   React.useEffect(() => {
-    console.log('[DIAG] App useEffect started');
-    loadProjects();
-    loadCurrentDbPath();
-    refreshDatabaseStatus();
-  }, []);
-
-  const loadProjects = async () => {
-    console.log('[DIAG] loadProjects start');
-    const response = await tauriService.listProjects();
-    console.log('[DIAG] loadProjects done:', response.success);
-    if (response.success && response.data) {
-      setProjects(response.data);
+    if (!isStartupLoaded || !startupData) return;
+    // 直接消费 startupData，不触发任何 fallback IPC
+    if (startupData.projectList?.length) {
+      setProjects(startupData.projectList);
     }
-  };
-
-  const loadCurrentDbPath = async () => {
-    console.log('[DIAG] loadCurrentDbPath start');
-    const response = await tauriService.getCurrentDbPath();
-    console.log('[DIAG] loadCurrentDbPath done:', response.success);
-    if (response.success && response.data) {
-      setCurrentDbPath(response.data);
-      const parts = response.data.split(/[\\/]/);
+    if (startupData.currentDbPath) {
+      setCurrentDbPath(startupData.currentDbPath);
+      const parts = startupData.currentDbPath.split(/[\\/]/);
       const projectName = parts[parts.length - 2];
       if (projectName && projectName !== 'quickersql') {
         setCurrentProject(projectName);
       }
     }
+    if (startupData.databaseStatus) {
+      setAllDatabaseStatus([{
+        db_type: 'sqlite',
+        tables: [],
+        row_count: [],
+        is_connected: startupData.databaseStatus.isConnected,
+        path: startupData.databaseStatus.path,
+        tableCount: startupData.databaseStatus.tableCount,
+      }]);
+    }
+  }, [isStartupLoaded, startupData]);
+
+  const refreshDatabaseStatus = () => {
+    void getDatabaseStatus();
   };
 
   const handleImportComplete = () => {
@@ -80,40 +126,30 @@ function App() {
     setLoading(true);
     let successCount = 0;
     let failCount = 0;
-    const successDetails: string[] = [];
-    const failDetails: string[] = [];
 
     try {
       for (const item of selectedItems) {
-        try {
-          useImportStore.getState().updateImportItem(item.id, { status: 'importing' });
-          
-          const response = await tauriService.importDataV2({
-            file_path: item.filePath,
-            sheet_name: item.sheetName,
-            table_name: item.tableName,
-            has_header: item.hasHeader,
-            fields: item.fields,
-          });
+        useImportStore.getState().updateImportItem(item.id, { status: 'importing' });
 
-          if (response.success) {
-            useImportStore.getState().updateImportItem(item.id, { status: 'success' });
-            successCount++;
-            successDetails.push(`${item.tableName}: ${response.data || '成功'}`);
-          } else {
-            useImportStore.getState().updateImportItem(item.id, { status: 'error', error: response.error });
-            failCount++;
-            failDetails.push(`${item.tableName}: ${response.error || '未知错误'}`);
-          }
-        } catch (e) {
-          useImportStore.getState().updateImportItem(item.id, { status: 'error', error: String(e) });
+        const ok = await importDataV2({
+          file_path: item.filePath,
+          sheet_name: item.sheetName,
+          table_name: item.tableName,
+          has_header: item.hasHeader,
+          fields: item.fields,
+        });
+
+        if (ok) {
+          useImportStore.getState().updateImportItem(item.id, { status: 'success' });
+          successCount++;
+        } else {
+          useImportStore.getState().updateImportItem(item.id, { status: 'error' });
           failCount++;
-          failDetails.push(`${item.tableName}: ${String(e)}`);
         }
       }
 
       if (successCount > 0) {
-        const message = failCount > 0 
+        const message = failCount > 0
           ? `成功导入 ${successCount} 个文件，失败 ${failCount} 个`
           : `成功导入 ${successCount} 个文件`;
         setMessage(message, failCount > 0 ? 'warning' : 'success');
@@ -136,34 +172,32 @@ function App() {
         currentProject={currentProject}
         activeTab={activeTab}
         onProjectClick={() => setShowProjectModal(true)}
-        onTabChange={(tab) => setActiveTab(tab as TabType)}
+        onTabChange={setActiveTab}
       />
 
-      {/* {message && (
-        <Message
-          message={message}
-          type={messageType}
-          onClose={clearMessage}
+      {/* Workspace 是最大的子树之一，懒加载以降低首屏体积 */}
+      <Suspense fallback={<LoadingSkeleton />}>
+        <LazyWorkspace
+          activeTab={activeTab}
+          onImportComplete={handleImportComplete}
+          onAddFile={() => {}}
+          onBatchImport={handleBatchImport}
+          onClearQueue={handleClearQueue}
         />
-      )} */}
+      </Suspense>
 
-      <Workspace
-        activeTab={activeTab}
-        onImportComplete={handleImportComplete}
-        onAddFile={() => {}}
-        onBatchImport={handleBatchImport}
-        onClearQueue={handleClearQueue}
-      />
-
+      {/* 项目管理弹窗仅在打开时动态加载，平时不占用首屏体积 */}
       {showProjectModal && (
-        <ProjectManager
-          onClose={() => setShowProjectModal(false)}
-          onProjectSwitch={() => {
-            loadProjects();
-            loadCurrentDbPath();
-            refreshDatabaseStatus();
-          }}
-        />
+        <Suspense fallback={<LoadingSkeleton />}>
+          <LazyProjectManager
+            onClose={() => setShowProjectModal(false)}
+            onProjectSwitch={() => {
+              void loadProjects();
+              void loadCurrentDbPath();
+              refreshDatabaseStatus();
+            }}
+          />
+        </Suspense>
       )}
 
       <Toast />

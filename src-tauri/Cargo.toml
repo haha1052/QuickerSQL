@@ -16,26 +16,29 @@ name = "tv_sc_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+# v2.6.1 已在 Cargo.lock 中 —— 与 tauri 2.11.1 匹配
+tauri-build = { version = "=2.6.1", features = [] }
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tauri = { version = "2.0", features = [] }
-tauri-plugin-dialog = "2.0"
-# tauri-plugin-fs = "2.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
-specta = { version = "2.0.0-rc.25", features = ["derive"] }
-encoding_rs = "0.8.34"
-dirs = "5.0"
-thiserror = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-async-trait = "0.1"
-tempfile = "3.8"
-duckdb = { version = "1.105", features = ["bundled", "vtab-full"] }
-regex = "1.10"
-log = "0.4"
-calamine = "0.26"
-base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.0", features = ["v4"] }
+# 精确版本锁定（根据 Cargo.lock 解析的版本）
+# 防止未来升级引起启动动画等关键行为变化
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+tauri = { version = "=2.11.1", features = [] }
+tauri-plugin-dialog = "=2.7.1"
+# tauri-plugin-fs = "=2.0.0"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+encoding_rs = "=0.8.35"
+dirs = "=5.0.1"
+thiserror = "=1.0.69"
+tokio = { version = "=1.52.2", features = ["full"] }
+async-trait = "=0.1.89"
+tempfile = "=3.27.0"
+duckdb = { version = "=1.10502.0", features = ["bundled", "vtab-full"] }
+regex = "=1.12.3"
+log = "=0.4.29"
+calamine = "=0.26.1"
+base64 = "=0.22.1"
+chrono = { version = "=0.4.44", features = ["serde"] }
+uuid = { version = "=1.23.1", features = ["v4"] }

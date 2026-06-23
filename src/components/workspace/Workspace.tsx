@@ -5,10 +5,22 @@ import { Sidebar } from '../common/Sidebar';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { WorkspaceTabs } from './WorkspaceTabs';
 import { PanelManager } from './PanelManager';
-import { DataImport } from '../import/DataImport';
-import { DashboardPage } from '../dashboard/DashboardPage';
-import { TaskCenterPage } from '../automation/TaskCenterPage';
 import { useWorkspaceStore, useQueryStore, SIDEBAR_DEFAULT_WIDTH } from '../../store';
+import { useStartupContext } from '../../AppWrapper';
+import { useQueryExecution } from '../sql/hooks';
+import { useLocale } from '../../context/LocaleContext';
+
+// v2 启动优化：非 SQL Tab 的页面组件改为 React.lazy，减少首屏 bundle 体积
+// DataImport / DashboardPage / TaskCenterPage 在用户切换到对应 tab 时才加载
+const DataImport = React.lazy(() =>
+  import('../import/DataImport').then((m) => ({ default: m.DataImport })),
+);
+const DashboardPage = React.lazy(() =>
+  import('../dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
+);
+const TaskCenterPage = React.lazy(() =>
+  import('../automation/TaskCenterPage').then((m) => ({ default: m.TaskCenterPage })),
+);
 
 interface WorkspaceProps {
   activeTab: TabType;
@@ -25,14 +37,23 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onBatchImport,
   onClearQueue,
 }) => {
-  const { tabs, activeTabId, loadFromBackend, sidebar } = useWorkspaceStore();
+  const { tabs, activeTabId, loadFromBackend, setTabsFromStartup, sidebar } = useWorkspaceStore();
   const { setActiveQueryId, sqlQueries, addSqlQuery } = useQueryStore();
+  const startupCtx = useStartupContext();
+  const { t } = useLocale();
+  const { executeQuery, isLoading } = useQueryExecution();
   const activeTabData = tabs.find(t => t.id === activeTabId);
 
-  // 挂载时尝试从后端数据库加载工作区布局
+  // v2 优化：优先消费 StartupContext 已返回的 workspaceLayout
+  // 只有当它为 null/空数组时才发起独立 IPC
   React.useEffect(() => {
+    if (!startupCtx.isStartupLoaded) return;
+    if (startupCtx.startupData?.workspaceLayout && startupCtx.startupData.workspaceLayout.length > 0) {
+      setTabsFromStartup(startupCtx.startupData.workspaceLayout);
+      return;
+    }
     loadFromBackend();
-  }, []);
+  }, [startupCtx.isStartupLoaded, startupCtx.startupData?.workspaceLayout?.length]);
 
   // 初始化时确保查询和标签页正确关联（基于 SqlQuery.id 精确匹配，不依赖数组索引）
   React.useEffect(() => {
@@ -86,9 +107,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           onClearQueue={onClearQueue}
         />
         <div style={styles.importContent}>
-          <DataImport
-            onImportComplete={handleImportComplete}
-          />
+          <React.Suspense fallback={<div style={styles.lazyFallback}>加载数据导入模块...</div>}>
+            <DataImport onImportComplete={handleImportComplete} />
+          </React.Suspense>
         </div>
       </div>
     );
@@ -105,7 +126,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           onClearQueue={onClearQueue}
         />
         <div style={styles.dashboardContent}>
-          <DashboardPage />
+          <React.Suspense fallback={<div style={styles.lazyFallback}>加载仪表盘模块...</div>}>
+            <DashboardPage />
+          </React.Suspense>
         </div>
       </div>
     );
@@ -122,7 +145,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           onClearQueue={onClearQueue}
         />
         <div style={styles.dashboardContent}>
-          <TaskCenterPage />
+          <React.Suspense fallback={<div style={styles.lazyFallback}>加载自动化任务模块...</div>}>
+            <TaskCenterPage />
+          </React.Suspense>
         </div>
       </div>
     );
@@ -131,12 +156,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   // SQL 查询 Tab：显示 Sidebar（数据库浏览器/查询历史/回收站）
   return (
     <div style={styles.container}>
-      <Toolbar
-        activeTab={activeTab}
-        onAddFile={onAddFile}
-        onBatchImport={onBatchImport}
-        onClearQueue={onClearQueue}
-      />
       <div style={styles.mainContent}>
         <div
           id="sidebar-container"
@@ -156,7 +175,34 @@ export const Workspace: React.FC<WorkspaceProps> = ({
           {!sidebar.collapsed && <SidebarResizeHandle />}
         </div>
         <div style={styles.workspaceArea}>
-          <WorkspaceTabs />
+          {/* 第一行：工具栏 */}
+          <Toolbar
+            activeTab={activeTab}
+            onAddFile={onAddFile}
+            onBatchImport={onBatchImport}
+            onClearQueue={onClearQueue}
+          />
+          {/* 第二行：标签栏 + 执行栏 */}
+          <div style={styles.tabsAndExecutionRow}>
+            <div style={styles.tabsSection}>
+              <WorkspaceTabs />
+            </div>
+            <div style={styles.executeButtonSection}>
+              <button
+                style={{
+                  ...styles.executeButton,
+                  opacity: isLoading ? 0.7 : 1,
+                  cursor: isLoading ? 'not-allowed' : 'pointer',
+                }}
+                onClick={executeQuery}
+                disabled={isLoading}
+              >
+                <span style={styles.executeIcon}>▶</span>
+                {isLoading ? t('sqlEditor.executing') : `${t('query.execute')} SQL`}
+              </button>
+            </div>
+          </div>
+          {/* 第三行：编辑器 */}
           <div style={styles.workspaceContent}>
             {activeTabData && (
               <PanelManager
@@ -195,6 +241,55 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     overflow: 'hidden',
   },
+  tabsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
+    flexShrink: 0,
+  },
+  tabsAndExecutionRow: {
+    display: 'flex',
+    alignItems: 'center',
+    background: 'var(--bg-tertiary)',
+    borderBottom: '1px solid var(--border-primary)',
+    flexShrink: 0,
+    height: '32px',
+  },
+  tabsSection: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    overflow: 'hidden',
+    height: '100%',
+  },
+  executeButtonSection: {
+    display: 'flex',
+    alignItems: 'center',
+    paddingRight: '12px',
+    paddingLeft: '8px',
+    flexShrink: 0,
+  },
+  executeButton: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '4px',
+    height: '24px',
+    padding: '0 10px',
+    background: 'var(--primary)',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    fontWeight: 500,
+    transition: 'opacity 0.15s ease',
+  },
+  executeIcon: {
+    fontSize: '10px',
+  },
   workspaceContent: {
     flex: 1,
     display: 'flex',
@@ -219,6 +314,15 @@ const styles: Record<string, React.CSSProperties> = {
   dashboardIcon: {
     fontSize: '64px',
     marginBottom: '8px',
+  },
+  lazyFallback: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    color: 'var(--text-secondary)',
+    fontSize: 13,
+    opacity: 0.7,
   },
   dashboardTitle: {
     fontSize: '24px',

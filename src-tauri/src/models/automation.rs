@@ -118,3 +118,24 @@ pub struct TaskListResponse {
     pub enabled_count: i64,
     pub failed_tasks_count: i64,
 }
+
+/// Task 精简信息（用于启动聚合返回，供前端 TaskCenter 页面首屏展示）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskLite {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub task_type: String,
+    pub schedule_mode: String,
+    pub schedule_value: String,
+    pub state: String,
+    pub next_run_at: Option<i64>,
+    pub last_run_status: Option<String>,
+    pub last_run_duration_ms: Option<i64>,
+    pub total_runs: i64,
+    pub success_runs: i64,
+    pub failed_runs: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

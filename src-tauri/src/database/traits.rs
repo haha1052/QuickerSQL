@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -36,7 +38,13 @@ pub enum DatabaseError {
     
     #[error("数据库已关闭")]
     DatabaseClosed,
-    
+
+    #[error("数据库连接未初始化")]
+    ConnectionNotInitialized,
+
+    #[error("数据库连接占用超时，请关闭其他查询再重试")]
+    ConnectionTimeout,
+
     #[error("未知错误: {0}")]
     Unknown(String),
 }
@@ -225,6 +233,34 @@ impl DatabaseManager {
         Ok(MutexGuardConnection { guard })
     }
 
+    /// 获取主连接（带超时）——使用 try_lock + sleep 实现超时逻辑
+    /// 默认超时 5 秒，超时返回 ConnectionTimeout 错误
+    pub fn get_connection_with_timeout(&self, timeout: Duration) -> Result<MutexGuardConnection<'_>> {
+        let start = Instant::now();
+        
+        loop {
+            match self.active_connection.try_lock() {
+                Ok(guard) => {
+                    let _ = guard.as_ref().ok_or_else(|| DatabaseError::DatabaseClosed)?;
+                    return Ok(MutexGuardConnection { guard });
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if start.elapsed() >= timeout {
+                        return Err(DatabaseError::ConnectionTimeout);
+                    }
+                    // 短暂休眠后重试，避免 CPU 空转
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    log::warn!("DB Mutex 被 poison（上一命令可能 panic），自动恢复到 poison 前状态");
+                    let guard = poisoned.into_inner();
+                    let _ = guard.as_ref().ok_or_else(|| DatabaseError::DatabaseClosed)?;
+                    return Ok(MutexGuardConnection { guard });
+                }
+            }
+        }
+    }
+
     /// 打开一条独立的临时连接（通过同一名 driver 再 connect 一次到同一路径），
     /// 用于"长 SQL / 自动化任务中的用户脚本"，避免持有主连接锁阻塞前端短命令。
     /// 该连接由调用方负责释放（Box<dyn DatabaseConnection> 自身 drop 时会关闭）。
@@ -265,31 +301,43 @@ pub struct MutexGuardConnection<'a> {
 
 impl<'a> MutexGuardConnection<'a> {
     pub fn get_database_type(&self) -> &'static str {
-        self.guard.as_ref().unwrap().get_database_type()
+        match self.guard.as_ref() {
+            Some(conn) => conn.get_database_type(),
+            None => {
+                log::warn!("MutexGuardConnection: 数据库连接未初始化");
+                "unknown"
+            }
+        }
     }
-    
+
     pub fn execute(&self, sql: &str, params: &[&dyn ToSql]) -> Result<u64> {
-        self.guard.as_ref().unwrap().execute(sql, params)
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.execute(sql, params)
     }
-    
+
     pub fn query(&self, sql: &str, params: &[&dyn ToSql]) -> Result<QueryResult> {
-        self.guard.as_ref().unwrap().query(sql, params)
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.query(sql, params)
     }
-    
+
     pub fn begin_transaction(&self) -> Result<()> {
-        self.guard.as_ref().unwrap().begin_transaction()
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.begin_transaction()
     }
-    
+
     pub fn commit_transaction(&self) -> Result<()> {
-        self.guard.as_ref().unwrap().commit_transaction()
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.commit_transaction()
     }
-    
+
     pub fn rollback_transaction(&self) -> Result<()> {
-        self.guard.as_ref().unwrap().rollback_transaction()
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.rollback_transaction()
     }
-    
+
     pub fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
-        self.guard.as_ref().unwrap().batch_insert(table, columns, rows, batch_size)
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.batch_insert(table, columns, rows, batch_size)
     }
 }
 

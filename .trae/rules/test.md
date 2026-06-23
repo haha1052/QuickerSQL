@@ -1,7 +1,8 @@
-# QuickerSQL 测试规则 v7.0
+# QuickerSQL 测试规则 v10.0
 
 > 优先级：高（与 coding.md 并列）。
 > 适用：所有"新建业务 Service / 数据库层 / 前端 store"场景。
+> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；所有测试命令可通过 Windows CLI MCP 自动化执行，编译验证门禁明确）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
@@ -46,15 +47,34 @@
 - ✅ 新建复杂 `{Feature}Panel.tsx`（含超过 3 个 state 变量）时，至少用 Vitest 写 1 个 render 测试，或在 PR 描述中说明"已在应用中手动验证"
 - ✅ **不强制覆盖率门槛**（见 §3 说明）
 
-### 2.3 编译验证门禁（必须每次通过）
+### 2.3 编译验证门禁（必须每次通过，PowerShell 环境执行）
 
-```bash
+```powershell
+# Rust 编译检查
 cd src-tauri
 cargo check --quiet            # 0 errors 才能提交
 cargo test --quiet             # 0 failing 才能提交
 cd ..
-# 如果 npx tsc 可用
+
+# TypeScript 类型检查
 npx tsc --noEmit --pretty      # 0 errors 才能提交
+```
+
+### 2.4 代码变更后的验证流程
+
+每次代码修改完成后，按以下顺序执行验证：
+
+```
+1. cargo check --quiet   （Rust 编译）
+   └─失败 → 修复后重新执行
+2. cargo test --quiet    （Rust 测试）
+   └─失败 → 修复后重新执行
+3. npx tsc --noEmit      （TypeScript 类型检查）
+   └─失败 → 修复后重新执行
+4. 敏感字符串检测         （见 security.md §3 PowerShell 命令）
+   └─发现 → 修复后重新执行
+5. SQL 注入检测           （见 security.md §1 PowerShell 命令）
+   └─发现 → 修复后重新执行
 ```
 
 ---
@@ -148,8 +168,25 @@ describe("taskStore", () => {
 
 ---
 
-## 五、版本与变更记录
+## 五、补充：测试失败的最小修复原则
 
-| 版本 | 日期 | 变更内容 |
-|------|------|---------|
-| v7.0 | 2026-06-20 | 初版。分层测试要求（Rust Service 层强制内联 mod tests；commands 层依赖 Service 测试；前端 Store 层需 smoke test）、编译门禁命令、不设百分比覆盖率的理由、推荐目录规范、模板示例 |
+- 测试失败 → **不要跳过测试**（禁止 `#[ignore]` 批量使用）
+- 测试中的 `unwrap()` / `.expect()` 改为有意义的错误消息
+- 为了达到覆盖率而写的"断言 true"空测试 → **禁止**
+
+---
+
+### 四、如何用 MCP 工具验证本规则
+
+| 验证项 | 命令（PowerShell 环境） | 期望结果 |
+|--------|------------------------|---------|
+| Rust 编译通过 | `cd src-tauri; cargo check --quiet 2>&1 \| Select-Object -Last 5` | 输出中无 error |
+| Rust 测试通过 | `cd src-tauri; cargo test --quiet 2>&1 \| Select-Object -Last 10` | 所有测试 passed；无 FAIL |
+| TypeScript 类型检查 | `npx tsc --noEmit --pretty 2>&1 \| Select-Object -Last 10` | 0 errors |
+| 测试文件存在性 | `Test-Path src-tauri/src/database/tests.rs; Get-ChildItem -Path src-tauri/src/services -Include *.rs -Recurse \| Select-String -Pattern '#\[cfg(test)\]' \| Measure-Object` | 至少有 1 个测试模块 |
+| SQL 注入门禁（安全规则联动） | `cd src-tauri; Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'format!.*SELECT\|format!.*INSERT' -CaseSensitive:$false \| Measure-Object \| Select-Object Count` | **Count = 0** |
+| 敏感字符串门禁（安全规则联动） | `Get-ChildItem -Path src-tauri/src,src -Include *.rs,*.ts,*.tsx -Recurse \| Select-String -Pattern 'sk-\|Bearer \|ghp_\|eyJ' \| Measure-Object \| Select-Object Count` | **Count = 0** |
+
+> **门禁规则**：cargo check / cargo test / npx tsc 三项必须全部通过，否则代码不能提交。
+
+> 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

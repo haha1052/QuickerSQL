@@ -54,8 +54,11 @@ export const DataImport: React.FC<DataImportProps> = ({
         }
         
         const hasHeader = firstRowAsHeader === 'true';
-        let headers = hasHeader ? (rows[0] || []) : rows[0]?.map((_, i) => `column_${i + 1}`) || [];
-        let dataRows = hasHeader ? rows.slice(1) : rows;
+        let headers = hasHeader 
+          ? (response.data.headers || []) 
+          : (response.data.headers.length > 0 
+              ? response.data.headers.map((_, i) => `column_${i + 1}`) 
+              : rows[0]?.map((_, i) => `column_${i + 1}`) || []);
         
         return {
           id,
@@ -63,13 +66,13 @@ export const DataImport: React.FC<DataImportProps> = ({
           filePath,
           fileName,
           preview: {
-            headers,
-            rows: dataRows,
+            headers: response.data.headers || [],
+            rows,
           },
           hasHeader,
           tableName: generateTableName(fileName),
           fields: headers.map((name: string) => ({
-            name,
+            name: name || `col_${headers.indexOf(name) + 1}`,
             dataType: 'TEXT' as const,
           })),
           selected: true,

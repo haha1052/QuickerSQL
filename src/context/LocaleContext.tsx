@@ -231,6 +231,9 @@ const zhCNTranslations: Record<string, string> = {
   'query.fail': '失败',
   'query.running': '正在执行查询...',
   'query.clickToRun': '点击执行按钮运行查询',
+  'query.noResults': '查询结果为空',
+  'query.totalRows': '总行数',
+  'query.page': '页码',
   'query.affectedRows': '影响行数',
   'query.exportCSV': '导出 CSV',
   'query.exportJSON': '导出 JSON',
@@ -298,8 +301,20 @@ const zhCNTranslations: Record<string, string> = {
   'import.unknownError': '未知错误',
   'import.field': '字段',
   'import.sample': '示例',
+  'import.autoInfer': '自动推断',
+  'import.fieldConfiguration': '字段配置',
+  'import.importSuccess': '导入成功',
+  'import.importFailed': '导入失败',
+  'import.errorFileNotFound': '文件不存在或路径错误',
+  'import.errorFileCorrupted': '文件格式错误或文件已损坏',
+  'import.errorTableExists': '表名已存在，请更换表名',
+  'import.errorPermissionDenied': '文件权限不足，无法读取',
+  'import.errorTimeout': '导入超时，请尝试减少数据量',
+  'import.errorOutOfMemory': '内存不足，请尝试减少数据量',
+  'import.errorFileTooLarge': '文件过大，超出导入限制',
+  'import.errorEncoding': '文件编码错误，请检查文件编码格式',
 
-  // 图表
+  // Settings图表
   'chart.title': '图表',
   'chart.generateFail': '生成图表失败',
   'chart.generateError': '生成图表时出错',
@@ -439,12 +454,15 @@ const zhCNTranslations: Record<string, string> = {
   'settings.category.import': '数据导入',
   'settings.category.visualization': '可视化',
   'settings.category.trash': '回收站',
+  'settings.category.performance': '性能',
   'settings.category.database': '数据库',
   'settings.category.cache': '缓存',
   'settings.category.security': '安全',
   'settings.category.advanced': '高级',
   'settings.category.shortcuts': '快捷键',
   'settings.category.locale': '语言与区域',
+  'settings.category.automation': '自动化任务',
+  'settings.category.query-cache': '查询缓存',
 
   // 外观设置项
   'settings.appearance.theme': '界面主题',
@@ -546,6 +564,11 @@ const zhCNTranslations: Record<string, string> = {
   'settings.trash.maxTrashSize': '回收站最大占用（MB）',
   'settings.trash.confirmBeforeDelete': '删除前确认',
 
+  // 性能设置项
+  'settings.performance.large_table_threshold': '大表阈值（行数，超过则使用分页加载）',
+  'settings.performance.query_timeout': '查询超时时间（秒）',
+  'settings.performance.result_page_size': '结果分页大小（每页行数）',
+
   // 数据库设置项
   'settings.database.autoConnect': '启动时自动连接最近使用的数据库',
   'settings.database.connectionTimeout': '连接超时时间（秒）',
@@ -625,6 +648,21 @@ const zhCNTranslations: Record<string, string> = {
   'settings.locale.firstDayOfWeek.sunday': '星期日',
   'settings.locale.firstDayOfWeek.monday': '星期一',
   'settings.locale.timezone': '时区',
+  'settings.locale.timezone.local': '本地时区',
+  'settings.locale.timezone.UTC': '协调世界时 (UTC)',
+  'settings.locale.timezone.Asia/Shanghai': '中国标准时间 (Asia/Shanghai)',
+  'settings.locale.timezone.Asia/Tokyo': '东京时间 (Asia/Tokyo)',
+  'settings.locale.timezone.America/New_York': '纽约时间 (America/New_York)',
+  'settings.locale.timezone.Europe/London': '伦敦时间 (Europe/London)',
+
+  // 自动化任务设置项
+  'settings.automation.engineEnabled': '启用调度引擎',
+  'settings.automation.defaultRetryOnFail': '默认失败重试次数',
+  'settings.automation.defaultTimeoutSecs': '默认执行超时秒数',
+  'settings.automation.scheduleIntervalSecs': '调度扫描间隔秒数',
+  'settings.automation.logRetentionDays': '运行日志保留天数',
+  'settings.automation.notifyOnFailure': '任务失败时通知',
+  'settings.automation.maxConcurrentTasks': '最大并发任务数',
 
   // DatabaseExplorer
   'databaseExplorer.searchPlaceholder': '搜索表...',
@@ -717,6 +755,10 @@ const zhCNTranslations: Record<string, string> = {
   'sqlEditor.autoSaveEvery30': '每30秒自动保存',
   'sqlEditor.executing': '执行中...',
   'sqlEditor.inputSql': '输入 SQL 查询...',
+  'sqlEditor.save': '保存',
+  'sqlEditor.saved': '已保存',
+  'sqlEditor.saving': '保存中...',
+  'sqlEditor.unsaved': '未保存',
 
   // StatusBar
   'status.connected': '已连接',
@@ -797,6 +839,9 @@ const enUSTranslations: Record<string, string> = {
   'query.fail': 'Failed',
   'query.running': 'Executing query...',
   'query.clickToRun': 'Click Run to execute the query',
+  'query.noResults': 'No results',
+  'query.totalRows': 'Total rows',
+  'query.page': 'Page',
   'query.affectedRows': 'Affected rows',
   'query.exportCSV': 'Export CSV',
   'query.exportJSON': 'Export JSON',
@@ -862,6 +907,18 @@ const enUSTranslations: Record<string, string> = {
   'import.unknownError': 'Unknown error',
   'import.field': 'Field',
   'import.sample': 'Sample',
+  'import.autoInfer': 'Auto infer',
+  'import.fieldConfiguration': 'Field Configuration',
+  'import.importSuccess': 'Import Successful',
+  'import.importFailed': 'Import Failed',
+  'import.errorFileNotFound': 'File not found or invalid path',
+  'import.errorFileCorrupted': 'File format error or file is corrupted',
+  'import.errorTableExists': 'Table name already exists, please use a different name',
+  'import.errorPermissionDenied': 'Permission denied, cannot read file',
+  'import.errorTimeout': 'Import timeout, please try reducing data size',
+  'import.errorOutOfMemory': 'Out of memory, please try reducing data size',
+  'import.errorFileTooLarge': 'File too large, exceeds import limit',
+  'import.errorEncoding': 'File encoding error, please check file encoding format',
 
   'chart.title': 'Chart',
   'chart.generateFail': 'Failed to generate chart',
@@ -978,12 +1035,15 @@ const enUSTranslations: Record<string, string> = {
   'settings.category.import': 'Data Import',
   'settings.category.visualization': 'Visualization',
   'settings.category.trash': 'Trash',
+  'settings.category.performance': 'Performance',
   'settings.category.database': 'Database',
   'settings.category.cache': 'Cache',
   'settings.category.security': 'Security',
   'settings.category.advanced': 'Advanced',
   'settings.category.shortcuts': 'Shortcuts',
   'settings.category.locale': 'Language & Region',
+  'settings.category.automation': 'Automation',
+  'settings.category.query-cache': 'Query Cache',
 
   // Appearance settings
   'settings.appearance.theme': 'Theme',
@@ -1085,6 +1145,11 @@ const enUSTranslations: Record<string, string> = {
   'settings.trash.maxTrashSize': 'Max Trash Size (MB)',
   'settings.trash.confirmBeforeDelete': 'Confirm Before Delete',
 
+  // Performance settings
+  'settings.performance.large_table_threshold': 'Large Table Threshold (rows, use pagination above)',
+  'settings.performance.query_timeout': 'Query Timeout (seconds)',
+  'settings.performance.result_page_size': 'Result Page Size (rows per page)',
+
   // Database settings
   'settings.database.autoConnect': 'Auto Connect to Last Used Database',
   'settings.database.connectionTimeout': 'Connection Timeout (seconds)',
@@ -1164,6 +1229,21 @@ const enUSTranslations: Record<string, string> = {
   'settings.locale.firstDayOfWeek.sunday': 'Sunday',
   'settings.locale.firstDayOfWeek.monday': 'Monday',
   'settings.locale.timezone': 'Timezone',
+  'settings.locale.timezone.local': 'Local',
+  'settings.locale.timezone.UTC': 'UTC (Coordinated Universal Time)',
+  'settings.locale.timezone.Asia/Shanghai': 'China Standard Time (Asia/Shanghai)',
+  'settings.locale.timezone.Asia/Tokyo': 'Japan Standard Time (Asia/Tokyo)',
+  'settings.locale.timezone.America/New_York': 'Eastern Time (America/New_York)',
+  'settings.locale.timezone.Europe/London': 'London Time (Europe/London)',
+
+  // Automation settings
+  'settings.automation.engineEnabled': 'Enable Scheduler Engine',
+  'settings.automation.defaultRetryOnFail': 'Default Retry on Failure',
+  'settings.automation.defaultTimeoutSecs': 'Default Execution Timeout (seconds)',
+  'settings.automation.scheduleIntervalSecs': 'Schedule Scan Interval (seconds)',
+  'settings.automation.logRetentionDays': 'Run Log Retention (days)',
+  'settings.automation.notifyOnFailure': 'Notify on Task Failure',
+  'settings.automation.maxConcurrentTasks': 'Max Concurrent Tasks',
 
   // DatabaseExplorer
   'databaseExplorer.searchPlaceholder': 'Search tables...',
@@ -1256,6 +1336,10 @@ const enUSTranslations: Record<string, string> = {
   'sqlEditor.autoSaveEvery30': 'Every 30 seconds',
   'sqlEditor.executing': 'Executing...',
   'sqlEditor.inputSql': 'Enter SQL query...',
+  'sqlEditor.save': 'Save',
+  'sqlEditor.saved': 'Saved',
+  'sqlEditor.saving': 'Saving...',
+  'sqlEditor.unsaved': 'Unsaved',
 
   // StatusBar
   'status.connected': 'Connected',
@@ -1291,7 +1375,11 @@ export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [languageSetting]);
 
   const t = useCallback((key: string, vars?: Record<string, string | number>): string => {
-    let result = translations[key] || key;
+    const hasTranslation = key in translations;
+    let result = hasTranslation ? translations[key] : key;
+    if (!hasTranslation && import.meta.env.DEV) {
+      console.warn(`[i18n] Missing translation key: "${key}"`);
+    }
     if (vars) {
       for (const [k, v] of Object.entries(vars)) {
         result = result.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
@@ -1314,6 +1402,9 @@ export const useLocale = (): LocaleContextValue => {
       locale: 'zh-CN',
       t: (key: string, vars?: Record<string, string | number>) => {
         let result = key;
+        if (import.meta.env.DEV) {
+          console.warn(`[i18n] Missing translation key (fallback): "${key}"`);
+        }
         if (vars) {
           for (const [k, v] of Object.entries(vars)) {
             result = result.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));

@@ -140,3 +140,33 @@ pub struct Dashboard {
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
 }
+
+/// Dashboard 精简信息（用于启动聚合返回，供前端 Dashboard 页面首屏展示）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardLite {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub is_default: bool,
+    pub refresh_interval_secs: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// SavedChart 精简信息（用于启动聚合返回，供前端 Dashboard 页面首屏展示）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedChartLite {
+    pub id: String,
+    pub name: String,
+    pub chart_type: String,
+    pub x_axis: String,
+    pub y_axis: Vec<String>,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub description: String,
+    pub visibility: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

@@ -7,7 +7,7 @@
 //! 避免拼接标识符导致的 SQL 注入。
 
 use crate::database::{SqlIdentifier, MutexGuardConnection};
-use crate::models::database::{ColumnInfo, TableInfo};
+use crate::models::database::{ColumnInfo, TableInfo, TableMetaInfo};
 
 /// 数据库表元信息服务
 pub struct DatabaseService;
@@ -136,6 +136,51 @@ impl DatabaseService {
     }
 
     // ============================================================
+    // A-3: 启动汇总辅助方法（Startup 聚合调用）
+    // ============================================================
+
+    /// 获取数据库状态的精简版（仅 sqlite_master 表类型计数）
+    ///
+    /// - 使用参数化查询（SQL 字面量 `'table'` 直接写入，无拼接）
+    /// - 返回 `(is_connected, path, table_count)`
+    pub fn get_database_status_lite(
+        conn: &MutexGuardConnection,
+        db_path: &str,
+    ) -> Result<(bool, String, i64), String> {
+        let table_count = conn
+            .query(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?",
+                &[&"table"],
+            )
+            .map_err(|e| format!("查询数据库状态失败: {}", e))?
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        Ok((true, db_path.to_string(), table_count))
+    }
+
+    /// 查询所有用户表名（排除系统表）
+    ///
+    /// - 在 SQL 内通过 `NOT LIKE` 过滤 `__%` / `sqlite_%`
+    /// - 按 name 排序
+    pub fn list_user_tables(
+        conn: &MutexGuardConnection,
+    ) -> Result<Vec<String>, String> {
+        let result = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' \
+                 AND name NOT LIKE ? AND name NOT LIKE ? ORDER BY name",
+                &[&"__%", &"sqlite_%"],
+            )
+            .map_err(|e| format!("查询用户表名失败: {}", e))?;
+
+        Ok(result.rows.iter().map(|row| row.first().cloned().unwrap_or_default()).collect())
+    }
+
+    // ============================================================
     // B-1: 表管理方法集
     // ============================================================
 
@@ -196,6 +241,59 @@ impl DatabaseService {
             column_count,
             is_system_table: ident.is_system(),
         })
+    }
+
+    /// 查询表的扩展元信息（索引数量 + 估算存储大小）。
+    ///
+    /// 大小估算逻辑：`page_size × (page_count − freelist_count) ÷ table_count`
+    /// （每张表平均占用的磁盘字节数，粗粒度估算）。
+    pub fn get_table_performance_info(
+        conn: &MutexGuardConnection,
+        table_name: &str,
+    ) -> Result<TableMetaInfo, String> {
+        let ident = SqlIdentifier::new(table_name)?;
+
+        // 1) 索引数量：PRAGMA index_list
+        let index_sql = format!("PRAGMA index_list({})", ident.quoted());
+        let index_count = match conn.query(&index_sql, &[]) {
+            Ok(result) => result.rows.len() as i64,
+            Err(_) => 0,
+        };
+
+        // 2) 估算大小：数据库实际使用空间 / 表数量的粗略平均值
+        let size_bytes = {
+            let page_size = conn
+                .query("PRAGMA page_size", &[])
+                .ok()
+                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
+                .unwrap_or(4096);
+            let page_count = conn
+                .query("PRAGMA page_count", &[])
+                .ok()
+                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
+                .unwrap_or(0);
+            let freelist_count = conn
+                .query("PRAGMA freelist_count", &[])
+                .ok()
+                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
+                .unwrap_or(0);
+
+            let used_pages = page_count.saturating_sub(freelist_count);
+            let total_used_size = page_size.saturating_mul(used_pages);
+
+            let table_count = conn
+                .query("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", &[])
+                .ok()
+                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
+                .unwrap_or(1);
+            if table_count > 0 {
+                total_used_size / table_count.max(1)
+            } else {
+                0
+            }
+        };
+
+        Ok(TableMetaInfo { index_count, size_bytes })
     }
 
     /// 删除表（返回表名+删除前记录的行数）。
@@ -361,17 +459,11 @@ impl DatabaseService {
             quoted_cols.push(col_ident.quoted());
         }
 
-        let placeholders: Vec<&str> = std::iter::repeat("?")
-            .take(columns.len())
-            .collect();
-        let sql = format!(
-            "INSERT INTO {} ({}) VALUES ({})",
-            table_ident.quoted(),
-            quoted_cols.join(", "),
-            placeholders.join(", ")
-        );
+        if rows.is_empty() {
+            return Ok(0);
+        }
 
-        let mut total = 0usize;
+        // 验证所有行的列数一致
         for (idx, row) in rows.iter().enumerate() {
             if row.len() != columns.len() {
                 return Err(format!(
@@ -381,13 +473,81 @@ impl DatabaseService {
                     columns.len()
                 ));
             }
-            let param_refs: Vec<&dyn crate::database::ToSql> =
-                row.iter().map(|s| s as &dyn crate::database::ToSql).collect();
-            conn.execute(&sql, &param_refs)
-                .map_err(|e| format!("第 {} 行插入失败: {}", idx + 1, e))?;
-            total += 1;
         }
+
+        // 使用批量插入：一次插入多行，显著提升性能
+        let batch_size = 100;
+        let mut total = 0usize;
+
+        for batch in rows.chunks(batch_size) {
+            // 构建批量插入的 SQL: INSERT INTO table (cols) VALUES (row1), (row2), ...
+            let row_placeholders: Vec<String> = std::iter::repeat(format!(
+                "({})",
+                std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(", ")
+            ))
+            .take(batch.len())
+            .collect();
+
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                table_ident.quoted(),
+                quoted_cols.join(", "),
+                row_placeholders.join(", ")
+            );
+
+            // 扁平化参数
+            let params: Vec<&dyn crate::database::ToSql> = batch
+                .iter()
+                .flat_map(|row| row.iter().map(|s| s as &dyn crate::database::ToSql))
+                .collect();
+
+            conn.execute(&sql, &params)
+                .map_err(|e| format!("批量插入失败: {}", e))?;
+            total += batch.len();
+        }
+
         Ok(total)
+    }
+
+    /// 使用 DuckDB COPY 命令快速导入 CSV 文件
+    /// 
+    /// COPY 命令是 DuckDB 原生支持的最快导入方式，直接从文件读取数据，无需先加载到内存
+    pub fn fast_import_csv(
+        conn: &MutexGuardConnection,
+        table_name: &str,
+        file_path: &str,
+        has_header: bool,
+    ) -> Result<usize, String> {
+        let table_ident = SqlIdentifier::new(table_name)?;
+        
+        // 处理 Windows 路径（需要转义反斜杠）
+        let escaped_path = file_path.replace('\\', "\\\\");
+        
+        // DuckDB COPY 命令格式
+        // COPY table_name FROM 'file_path' WITH (FORMAT CSV, HEADER, DELIMITER ',')
+        let sql = if has_header {
+            format!(
+                "COPY {} FROM '{}' WITH (FORMAT CSV, HEADER, DELIMITER ',', QUOTE '\"', ESCAPE '\"')",
+                table_ident.quoted(),
+                escaped_path
+            )
+        } else {
+            format!(
+                "COPY {} FROM '{}' WITH (FORMAT CSV, DELIMITER ',', QUOTE '\"', ESCAPE '\"')",
+                table_ident.quoted(),
+                escaped_path
+            )
+        };
+        
+        log::info!("执行 COPY 命令: {}", sql);
+        
+        conn.execute(&sql, &[])
+            .map_err(|e| format!("COPY 命令执行失败: {}", e))?;
+        
+        // 获取插入的行数
+        Self::get_row_count(conn, table_name)
+            .map(|count| count as usize)
+            .map_err(|e| format!("获取行数失败: {}", e))
     }
 }
 

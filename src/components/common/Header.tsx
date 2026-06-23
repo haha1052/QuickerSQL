@@ -21,6 +21,10 @@ export const Header: React.FC<HeaderProps> = ({
   const { goToSettings } = useAppContext();
   const { t } = useLocale();
 
+  const handleGoToSettings = () => {
+    goToSettings();
+  };
+
   const handleMinimize = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -92,7 +96,7 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="header-drag-spacer" />
 
       <div className="header-right">
-        <button className="header-settings-button" onClick={goToSettings} title={t('header.settings')}>
+        <button className="header-settings-button" onClick={handleGoToSettings} title={t('header.settings')}>
           <SettingsIcon size={18} />
         </button>
 

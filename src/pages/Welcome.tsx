@@ -3,9 +3,11 @@ import './Welcome.css';
 
 interface WelcomeProps {
   onGetStarted: () => void;
+  onGoToGuide: () => void;
+  onGoToSettings: () => void;
 }
 
-const Welcome: React.FC<WelcomeProps> = ({ onGetStarted }) => {
+const Welcome: React.FC<WelcomeProps> = ({ onGetStarted, onGoToGuide, onGoToSettings }) => {
   return (
     <div className="welcome-container">
       <div className="welcome-content">
@@ -21,10 +23,10 @@ const Welcome: React.FC<WelcomeProps> = ({ onGetStarted }) => {
           </button>
 
           <div className="secondary-buttons">
-            <button className="btn-secondary">
+            <button className="btn-secondary" onClick={onGoToGuide}>
               📚 观看教程
             </button>
-            <button className="btn-secondary">
+            <button className="btn-secondary" onClick={onGoToSettings}>
               ⚙️ 打开设置
             </button>
           </div>

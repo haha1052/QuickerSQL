@@ -1,30 +1,485 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" style="background:transparent;margin:0;padding:0;min-height:100vh;min-width:100%;">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>QuickerSQL - 本地轻量高性能数据分析工具</title>
+    <title>QuickerSQL</title>
+
+    <style>
+      /* ============================================================
+         ⚠️ 启动阶段透明锁（最高优先级，最高 specificity）
+         - 覆盖 WebView2 默认白色背景
+         - 覆盖 theme.css 的 * { transition: background-color 0.3s } 延迟
+         - 覆盖任何第三方 CSS 对 html/body/#root 的背景色设置
+         启动完成后由 AppWrapper.tsx 移除 startup-phase 类 + 设置 body.style.background
+         ============================================================ */
+      html.startup-phase,
+      body.startup-phase,
+      #root.startup-phase,
+      html, body, #root {
+        background-color: transparent !important;
+        background: transparent !important;
+        /* ⭐ 关键：禁止 0.3s 过渡延迟（theme.css 的 * { transition } 会产生白屏闪烁） */
+        transition: none !important;
+        -webkit-transition: none !important;
+      }
+
+      /* ==== S3: startup-phase 期间，子元素也禁止过渡/动画（防止 300ms 白闪） ==== */
+      html.startup-phase *,
+      body.startup-phase *,
+      #root.startup-phase * {
+        transition: none !important;
+        -webkit-transition: none !important;
+        animation: none !important;
+        -webkit-animation: none !important;
+      }
+
+      /* splash 卡片本身需要保留动画，所以在子元素禁止规则之后单独豁免 */
+      html.startup-phase .splash-card,
+      body.startup-phase .splash-card {
+        /* splash 卡片的淡入动画来自 CSS 的 splash-card-appear keyframes，
+           这里显式恢复其动画 */
+        animation: splash-card-appear 350ms ease-out !important;
+        -webkit-animation: splash-card-appear 350ms ease-out !important;
+      }
+
+      /* ==== S4 三级降级：L1 透明未生效 → 卡片背景纯色填充 ==== */
+      /* 当透明窗口未生效（DWM 扩展失败 / Win10 老版本）时，
+         splash 卡片由"透明背景 + 外发光"降级为"实心卡片"，
+         避免出现"卡片轮廓之外透出白色底色"的问题 */
+      html.fallback-l1 .splash-card,
+      body.fallback-l1 .splash-card,
+      #splash-screen.fallback-l1 .splash-card {
+        /* 紫色主题色作为实心底色 */
+        background: linear-gradient(135deg, #6a5acd 0%, #8b7dd9 100%) !important;
+        /* 去除外发光，改用常规卡片阴影（避免和白色底冲突） */
+        filter: none !important;
+        -webkit-filter: none !important;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18),
+                    0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+        /* 给文本设置白色，提升可读性 */
+        color: #ffffff !important;
+      }
+      html.fallback-l1 .splash-title,
+      body.fallback-l1 .splash-title,
+      #splash-screen.fallback-l1 .splash-title {
+        color: #ffffff !important;
+      }
+      html.fallback-l1 .splash-subtitle,
+      body.fallback-l1 .splash-subtitle,
+      #splash-screen.fallback-l1 .splash-subtitle {
+        color: rgba(255, 255, 255, 0.85) !important;
+      }
+
+      /* ==== S4: L2 WebView2 底色异常 → 整屏填充卡片色 ==== */
+      /* 若 L1 仍出现白底，进一步把 #splash-screen 自身也设置成卡片色，
+         覆盖整屏 WebView2 底色 */
+      html.fallback-l2 #splash-screen,
+      body.fallback-l2 #splash-screen {
+        background: linear-gradient(135deg, #f7f5ff 0%, #eae4ff 100%) !important;
+      }
+      html.fallback-l2 .splash-card,
+      body.fallback-l2 .splash-card {
+        background: linear-gradient(135deg, #6a5acd 0%, #8b7dd9 100%) !important;
+        filter: none !important;
+        -webkit-filter: none !important;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18),
+                    0 0 0 1px rgba(255, 255, 255, 0.1) !important;
+        color: #ffffff !important;
+      }
+      html.fallback-l2 .splash-title,
+      body.fallback-l2 .splash-title {
+        color: #ffffff !important;
+      }
+      html.fallback-l2 .splash-subtitle,
+      body.fallback-l2 .splash-subtitle {
+        color: rgba(255, 255, 255, 0.85) !important;
+      }
+
+      /* ==== S4: L3 Win11 1px 白边 → 用内阴影压盖 ==== */
+      /* 如果最终还残留 1px 白边（DWMWA 新属性在某些驱动版本下不生效），
+         给 #splash-screen 添加 inset 内阴影或 1px outline 压盖 */
+      html.fallback-l3 #splash-screen,
+      body.fallback-l3 #splash-screen {
+        /* 1px 内描边压盖 Win11 白边；颜色与卡片主色一致 */
+        outline: 1px solid #6a5acd !important;
+        outline-offset: -1px !important;
+      }
+
+      /* ========== 基础样式：html/body 全透明，周围区域透出桌面 ========== */
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100vh;
+        color: #1f2328;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+        overflow: hidden;
+      }
+
+      /* 防止任何浏览器默认边框、高亮环 */
+      * {
+        outline: none !important;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      /* ========== Splash 容器：覆盖整个窗口区域，透明背景 ========== */
+      #splash-screen {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent !important;
+        z-index: 2147483647;
+        transition: opacity 200ms ease-out;
+      }
+
+      #splash-screen.splash-fade-out {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      /* ========== 椭圆形浮动卡片（核心视觉） ========== */
+      /*
+       * 关键：使用 filter: drop-shadow() 替代 box-shadow！
+       * box-shadow 的外框是矩形——会在卡片四周产生"矩形阴影边"，
+       * 而 drop-shadow 会跟随卡片的实际 border-radius 形状，产生真正的"圆形/椭圆形阴影"。
+       *
+       * 卡片尺寸 380×380，窗口 400×400 —— 各边留 10px 作为阴影空间。
+       * border-radius 50% 让卡片是完美的圆形，彻底消除"上边缘扁平"的视觉缺陷。
+       */
+      .splash-card {
+        width: 380px;
+        height: 380px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%,
+          #f3eeff 0%,
+          #eaf1ff 45%,
+          #e5e6ff 100%);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        /* drop-shadow 跟随圆形形状，不会产生矩形边缘 */
+        filter:
+          drop-shadow(0 18px 40px rgba(59, 130, 246, 0.28))
+          drop-shadow(0 6px 14px rgba(139, 92, 246, 0.18));
+        animation: splash-card-appear 350ms ease-out;
+        /* 让卡片内部有一个细微的"光泽"边框，但不产生矩形边缘 */
+        -webkit-mask-image: radial-gradient(circle, #000 99.5%, transparent 100%);
+        mask-image: radial-gradient(circle, #000 99.5%, transparent 100%);
+      }
+
+      @keyframes splash-card-appear {
+        0% {
+          transform: scale(0.90);
+          opacity: 0;
+        }
+        60% {
+          transform: scale(1.01);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1.0);
+          opacity: 1;
+        }
+      }
+
+      /* ========== Logo 方块 ========== */
+      .splash-logo {
+        width: 84px;
+        height: 84px;
+        border-radius: 22px;
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 18px;
+        position: relative;
+        filter: drop-shadow(0 6px 18px rgba(59, 130, 246, 0.40));
+      }
+
+      .splash-logo-text {
+        font-size: 40px;
+        font-weight: 800;
+        color: #fff;
+        letter-spacing: -1px;
+      }
+
+      /* ========== Logo 外圈旋转光环 ========== */
+      .splash-spinner {
+        position: absolute;
+        top: -10px;
+        left: -10px;
+        right: -10px;
+        bottom: -10px;
+        border-radius: 26px;
+        border: 3px solid transparent;
+        border-top-color: #3b82f6;
+        border-right-color: #8b5cf6;
+        animation: splash-spin 1.1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+        pointer-events: none;
+      }
+
+      @keyframes splash-spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      /* ========== 标题 + 副标题 ========== */
+      .splash-title {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+        margin-bottom: 4px;
+        color: #1e293b;
+      }
+
+      .splash-subtitle {
+        font-size: 12px;
+        opacity: 0.6;
+        margin-bottom: 26px;
+        color: #475569;
+      }
+
+      /* ========== 进度条 ========== */
+      .splash-progress-track {
+        width: 180px;
+        height: 4px;
+        border-radius: 4px;
+        background: rgba(59, 130, 246, 0.12);
+        overflow: hidden;
+        margin-bottom: 16px;
+      }
+
+      .splash-progress-bar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%);
+        border-radius: 4px;
+        animation: splash-progress 1.6s ease-out forwards;
+      }
+
+      @keyframes splash-progress {
+        0% { width: 0%; }
+        20% { width: 15%; }
+        50% { width: 45%; }
+        80% { width: 75%; }
+        100% { width: 100%; }
+      }
+
+      /* ========== 阶段文字 + 计时 ========== */
+      .splash-stage {
+        font-size: 12px;
+        opacity: 0.65;
+        margin-bottom: 4px;
+        min-height: 16px;
+        color: #334155;
+      }
+
+      .splash-timer {
+        font-size: 11px;
+        opacity: 0.4;
+        font-family: ui-monospace, monospace;
+        color: #64748b;
+      }
+
+      /* ========== 超时提示按钮（默认隐藏，5s 后显示） ========== */
+      .splash-timeout-hint {
+        display: none;
+        margin-top: 12px;
+        padding: 6px 12px;
+        border-radius: 14px;
+        background: rgba(59, 130, 246, 0.12);
+        border: 1px solid rgba(59, 130, 246, 0.30);
+        color: #3b82f6;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .splash-timeout-hint.show {
+        display: inline-block;
+      }
+
+      .splash-timeout-hint:hover {
+        background: rgba(59, 130, 246, 0.20);
+      }
+
+      /* ========== 暗色模式（系统偏好） ========== */
+      @media (prefers-color-scheme: dark) {
+        html, body { color: #e6edf3; }
+        .splash-card {
+          background: radial-gradient(circle at 30% 30%,
+            #312e81 0%,
+            #1e293b 55%,
+            #4c1d95 100%);
+          filter:
+            drop-shadow(0 18px 40px rgba(139, 92, 246, 0.35))
+            drop-shadow(0 6px 14px rgba(139, 92, 246, 0.25));
+        }
+        .splash-title { color: #f1f5f9; }
+        .splash-subtitle { color: #cbd5e1; }
+        .splash-stage { color: #cbd5e1; }
+        .splash-timer { color: #94a3b8; }
+        .splash-progress-track { background: rgba(139, 92, 246, 0.22); }
+      }
+    </style>
   </head>
 
   <body>
+
+    <!-- 中心浮动圆形卡片：周围区域完全透明，可看到桌面 -->
+    <div id="splash-screen">
+      <div class="splash-card">
+        <div class="splash-logo">
+          <span class="splash-logo-text">Q</span>
+          <div class="splash-spinner"></div>
+        </div>
+        <div class="splash-title">QuickerSQL</div>
+        <div class="splash-subtitle">本地轻量高性能数据分析工具</div>
+        <div class="splash-progress-track">
+          <div class="splash-progress-bar"></div>
+        </div>
+        <div class="splash-stage" id="splash-stage">正在初始化...</div>
+        <div class="splash-timer" id="splash-timer">启动中 · 0 ms</div>
+        <button class="splash-timeout-hint" id="splash-timeout-btn" onclick="window.__FORCE_TRANSITION__()">
+          启动较慢？点击进入应用
+        </button>
+      </div>
+    </div>
+
+    <!-- React 挂载点（splash 淡出后，主应用渲染到这里） -->
     <div id="root"></div>
+
     <script>
-      // 全局错误捕获 - 诊断启动卡死问题
-      window.addEventListener('error', function(e) {
-        var d = document.createElement('div');
-        d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:red;color:white;padding:12px;font-size:14px;font-family:monospace;white-space:pre-wrap;';
-        d.textContent = '[DIAG-JS-ERROR] ' + (e.message || 'unknown') + '\n' + (e.filename || '') + ':' + (e.lineno || '') + '\n' + (e.error && e.error.stack ? e.error.stack : '');
-        document.body.appendChild(d);
-      });
-      window.addEventListener('unhandledrejection', function(e) {
-        var d = document.createElement('div');
-        d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:darkred;color:white;padding:12px;font-size:14px;font-family:monospace;white-space:pre-wrap;';
-        d.textContent = '[DIAG-JS-REJECTION] ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason));
-        document.body.appendChild(d);
-      });
-      console.log('[DIAG-JS] index.html scripts loaded, waiting for main.tsx...');
+      window.__STARTUP_HTML_LOAD_MS__ = performance.now();
+      window.__STARTUP_TIME_ORIGIN__ = performance.timeOrigin;
+
+      // ★ 关键修复：在 JS 执行的第一时间给 html/body/#root 添加 .startup-phase 类
+      // 该类使用 !important 强制 transparent 背景，防止任何第三方 CSS 覆盖透明设置。
+      // 启动完成后由 AppWrapper 移除此类并设置主应用背景色。
+      (function() {
+        var root = document.getElementById('root');
+        document.documentElement.classList.add('startup-phase');
+        document.body.classList.add('startup-phase');
+        if (root) root.classList.add('startup-phase');
+        else {
+          // #root 可能还没创建（React 还没挂载），监听 DOM 变化补上
+          var observer = new MutationObserver(function() {
+            var r = document.getElementById('root');
+            if (r && !r.classList.contains('startup-phase')) {
+              r.classList.add('startup-phase');
+              observer.disconnect();
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: false });
+        }
+      })();
+
+      /**
+       * 触发 splash 淡出：主应用准备好后，调用此函数
+       * @param {number} transitionMs - 淡出时长，默认 200ms
+       */
+      window.__TRIGGER_SPLASH_TRANSITION__ = function(transitionMs) {
+        var ms = Math.max(150, Math.min(350, transitionMs || 200));
+        var el = document.getElementById('splash-screen');
+        if (!el) return;
+
+        // ★ 移除 .startup-phase 类（让 html/body/#root 恢复正常背景色控制）
+        document.documentElement.classList.remove('startup-phase');
+        document.body.classList.remove('startup-phase');
+        var root = document.getElementById('root');
+        if (root) root.classList.remove('startup-phase');
+
+        // ==== S4: DOM 层自检测 —— 在 transition 结束前主动发现白底 / 白边 ====
+        // 原理：在 splash 淡出前，用 requestAnimationFrame 读取一次实际计算样式，
+        // 若发现 html/body/splash-screen 底色是纯白色（255,255,255），则自动提升降级等级
+        (function() {
+          try {
+            var htmlStyle = window.getComputedStyle(document.documentElement);
+            var bodyStyle = window.getComputedStyle(document.body);
+            var bgHtml = htmlStyle.backgroundColor;
+            var bgBody = bodyStyle.backgroundColor;
+            var isWhite = function(c) {
+              return c === 'rgb(255, 255, 255)' || c === '#ffffff' || c === 'white';
+            };
+            var html = document.documentElement;
+
+            // 如果已经在 L1，但底色仍然是白色 → 升级为 L2（整屏填充）
+            if (html.classList.contains('fallback-l1') && (isWhite(bgHtml) || isWhite(bgBody))) {
+              html.classList.remove('fallback-l1');
+              html.classList.add('fallback-l2');
+              console.info('[DIAG] 检测到白底残留，L1 升级为 L2（整屏填充）');
+            }
+
+            // L2 下若仍能检测到 1px 白边（极少见）→ 升级为 L3（outline 压盖）
+            if (html.classList.contains('fallback-l2')) {
+              // 简单检测：卡片容器的边缘像素颜色是否接近白色
+              var card = document.querySelector('.splash-card');
+              if (card) {
+                var rect = card.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  html.classList.add('fallback-l3');
+                }
+              }
+            }
+          } catch (e) {
+            // 忽略检测失败，不影响主流程
+          }
+        })();
+
+        el.style.transition = 'opacity ' + ms + 'ms ease-out, transform ' + ms + 'ms ease-out';
+        el.style.opacity = '0';
+        el.classList.add('splash-fade-out');
+        setTimeout(function() {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        }, ms + 50);
+      };
+
+      /**
+       * 强制进入主应用（5s 超时兜底）
+       * 同时确保 body 变成主应用背景色
+       */
+      window.__FORCE_TRANSITION__ = function() {
+        window.dispatchEvent(new CustomEvent('splash-timeout'));
+        document.body.style.background = '#f5f7fa';
+        document.documentElement.style.background = '#f5f7fa';
+        if (typeof window.__TRIGGER_SPLASH_TRANSITION__ === 'function') {
+          window.__TRIGGER_SPLASH_TRANSITION__(200);
+        }
+        if (typeof window.__CLEAR_SPLASH_TIMER__ === 'function') {
+          window.__CLEAR_SPLASH_TIMER__();
+        }
+      };
+
+      /* 阶段文字 + 实时计时（每 50ms 更新） */
+      var stageEl = document.getElementById('splash-stage');
+      var timerEl = document.getElementById('splash-timer');
+      var timeoutBtn = document.getElementById('splash-timeout-btn');
+      var intervalId = setInterval(function() {
+        var now = performance.now();
+        if (timerEl) timerEl.textContent = '启动中 · ' + Math.round(now) + ' ms';
+        if (stageEl) {
+          if (now < 200) stageEl.textContent = '正在初始化...';
+          else if (now < 700) stageEl.textContent = '正在加载资源...';
+          else if (now < 1500) stageEl.textContent = '正在读取数据...';
+          else stageEl.textContent = '即将完成...';
+        }
+        if (timeoutBtn && now > 5000 && !timeoutBtn.classList.contains('show')) {
+          timeoutBtn.classList.add('show');
+        }
+        if (now > 30000) clearInterval(intervalId);
+      }, 50);
+
+      window.__CLEAR_SPLASH_TIMER__ = function() {
+        if (intervalId) clearInterval(intervalId);
+      };
     </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

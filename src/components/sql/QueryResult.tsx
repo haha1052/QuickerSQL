@@ -21,7 +21,7 @@ export const QueryResult: React.FC = () => {
         <div style={styles.loadingContainer}>
           <div style={styles.loadingText}>{t('query.running')}</div>
         </div>
-      ) : batchResults && batchResults.length > 0 ? (
+      ) : batchResults !== null && batchResults !== undefined ? (
         <div style={styles.resultsContainer}>
           {batchResults.map((result, index) => (
             <QueryResultItem key={index} result={result} index={index} />
@@ -41,6 +41,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
+    minHeight: 200,
     overflow: 'hidden',
     background: 'var(--bg-primary)',
   },
@@ -50,6 +51,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     padding: '40px',
     height: '100%',
+    minHeight: 200,
     background: 'var(--bg-primary)',
   },
   loadingText: {
@@ -58,8 +60,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   resultsContainer: {
     flex: 1,
-    minHeight: 0,
-    overflow: 'auto',
+    minHeight: 200,
+    overflowY: 'auto',
+    overflowX: 'hidden',
     padding: '12px',
     display: 'flex',
     flexDirection: 'column',
@@ -71,6 +74,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     padding: '40px',
     height: '100%',
+    minHeight: 200,
     background: 'var(--bg-primary)',
   },
   emptyText: {

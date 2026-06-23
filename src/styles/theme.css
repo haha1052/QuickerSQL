@@ -1,17 +1,31 @@
-/* ================================
-   QuickerSQL 主题系统
-   支持: 浅色/深色/跟随系统
-   ================================ */
+/* ============================================================
+   QuickerSQL 主题系统（浅色/深色/跟随系统）
+
+   ⚠️ 透明背景约定（修改前必读）：
+   - html / body / #root 三个元素必须保持 transparent 背景色
+   - 直到启动完成、由 AppWrapper.tsx 显式设置 body.style.background 之前
+   - 主应用背景色由 .app-shell 类或内联 style={{ background: 'var(--bg-primary)' }} 控制
+   - html/body/#root 的 transition 必须为 none（避免 0.3s 白屏闪烁）
+   - 禁止在任何 CSS 文件给 html/body/#root 设置非 transparent 背景色
+   - 禁止在 body 的 transition 中包含 background-color（启动时会产生白屏）
+   ============================================================ */
 
 /* 基础样式重置 */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
-  transition: background-color 0.3s ease, 
-              border-color 0.3s ease, 
-              color 0.3s ease, 
+  transition: border-color 0.3s ease,
+              color 0.3s ease,
               box-shadow 0.3s ease;
+}
+
+/* html/body/#root 保持 transparent，无任何背景色过渡（禁止白屏闪烁） */
+html, body, #root {
+  background-color: transparent !important;
+  background: transparent !important;
+  transition: none !important;
+  -webkit-transition: none !important;
 }
 
 body {
@@ -101,8 +115,19 @@ body {
 /* ================================
    全局基础样式
    ================================ */
+/* ⚠️ 重要：html/body/#root 的透明背景和 transition 已在文件顶部定义
+   这里只设置高度和默认文本颜色，避免重复规则 */
 html, body, #root {
   height: 100%;
+  margin: 0;
+  padding: 0;
+  color: var(--text-primary);
+}
+
+/* 主应用内容容器（启动完成后才显示背景色） */
+.app-shell {
+  min-height: 100vh;
+  width: 100%;
   background-color: var(--bg-primary);
   color: var(--text-primary);
 }

@@ -845,6 +845,41 @@ impl TaskService {
             updated_at: row[25].parse().unwrap_or(0),
         })
     }
+
+    /// 精简查询：获取所有任务的基本信息（启动聚合返回用）
+    pub fn list_tasks_lite(conn: &MutexGuardConnection<'_>) -> Result<Vec<TaskLite>, String> {
+        use crate::database::traits::ToSql;
+        let empty_params: [&dyn ToSql; 0] = [];
+        let rows = conn.query(
+            "SELECT id, name, description, task_type, schedule_mode, schedule_value, state, next_run_at,
+                    last_run_status, last_run_duration_ms, total_runs, success_runs, failed_runs, created_at, updated_at
+             FROM __automation_tasks ORDER BY updated_at DESC",
+            &empty_params
+        ).map_err(|e| format!("获取任务精简列表失败: {}", e))?;
+
+        let mut result = Vec::new();
+        for row in rows.rows {
+            if row.len() < 15 { continue; }
+            result.push(TaskLite {
+                id: row[0].clone(),
+                name: row[1].clone(),
+                description: row[2].clone(),
+                task_type: row[3].clone(),
+                schedule_mode: row[4].clone(),
+                schedule_value: row[5].clone(),
+                state: row[6].clone(),
+                next_run_at: row[7].parse().ok(),
+                last_run_status: if row[8].is_empty() { None } else { Some(row[8].clone()) },
+                last_run_duration_ms: row[9].parse().ok(),
+                total_runs: row[10].parse().unwrap_or(0),
+                success_runs: row[11].parse().unwrap_or(0),
+                failed_runs: row[12].parse().unwrap_or(0),
+                created_at: row[13].parse().unwrap_or(0),
+                updated_at: row[14].parse().unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
 }
 
 // ============================================================
@@ -861,6 +896,22 @@ impl TaskScheduleEngine {
     ) {
         std::thread::spawn(move || {
             log::info!("自动化任务调度器线程启动");
+            // P1-2 优化：应用启动前 5 秒内不与前端争抢数据库锁，
+            // 让前端顺利完成启动阶段的 IPC 调用。
+            let startup_grace_ms = 5_000u64;
+            let sleep_until = std::time::Instant::now()
+                + std::time::Duration::from_millis(startup_grace_ms);
+            log::info!(
+                "调度器进入启动宽限期：等待 {} ms 后再开始轮询任务",
+                startup_grace_ms
+            );
+            while std::time::Instant::now() < sleep_until {
+                if shutdown.load(Ordering::Relaxed) {
+                    log::info!("宽限期内收到停止信号，提前退出调度器");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
 
             loop {
                 if shutdown.load(Ordering::Relaxed) {
@@ -988,6 +1039,403 @@ impl TaskScheduleEngine {
 
         scan_interval_secs
         // ---- 锁已在执行循环前释放 ----
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::schedule::compute_next_run;
+
+    // ============================================================
+    // compute_next_run 行为覆盖
+    // ============================================================
+
+    #[test]
+    fn compute_next_run_interval_adds_value_to_now() {
+        let now = 1_700_000_000i64;
+        let result = compute_next_run(now, "interval", "3600");
+        assert_eq!(result, Some(now + 3600));
+    }
+
+    #[test]
+    fn compute_next_run_interval_min_floor_is_10_seconds() {
+        // 低于最小间隔 10 秒的值应当被夹到 10，避免过于频繁触发
+        let now = 1_700_000_000i64;
+        let result = compute_next_run(now, "interval", "1");
+        assert_eq!(result, Some(now + 10));
+    }
+
+    #[test]
+    fn compute_next_run_interval_invalid_value_falls_back_to_3600() {
+        let now = 1_700_000_000i64;
+        let result = compute_next_run(now, "interval", "not-a-number");
+        assert_eq!(result, Some(now + 3600));
+    }
+
+    #[test]
+    fn compute_next_run_manual_returns_none() {
+        assert_eq!(compute_next_run(0, "manual", ""), None);
+        assert_eq!(compute_next_run(1_700_000_000, "manual", "anything"), None);
+    }
+
+    #[test]
+    fn compute_next_run_unknown_mode_returns_none() {
+        assert_eq!(compute_next_run(0, "daily", "0 0 * * *"), None);
+        assert_eq!(compute_next_run(0, "cronn", "* * * * *"), None);
+        assert_eq!(compute_next_run(0, "", ""), None);
+    }
+
+    #[test]
+    fn compute_next_run_cron_valid_returns_some() {
+        // 标准 5 字段 cron 表达式应当在可搜索窗口内找到下一次时间
+        let now = 1_700_000_000i64;
+        let result = compute_next_run(now, "cron", "0 * * * *");
+        assert!(result.is_some());
+        assert!(result.unwrap() > now);
+    }
+
+    #[test]
+    fn compute_next_run_cron_invalid_field_count_returns_none() {
+        // 非 5 字段 cron 表达式应当返回 None 而不是 panic
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "cron", "0 *"), None);
+        assert_eq!(compute_next_run(now, "cron", ""), None);
+        assert_eq!(compute_next_run(now, "cron", "0 0 0 0 0 0"), None);
+    }
+
+    #[test]
+    fn compute_next_run_does_not_panic_on_garbage_input() {
+        // 各种异常输入都应优雅返回 None / Some，而不是 panic
+        let now = 1_700_000_000i64;
+        let cases = [
+            ("interval", "99999999999999999999"),
+            ("interval", "-100"),
+            ("interval", ""),
+            ("cron", "a b c d e"),
+            ("cron", "*/0 * * * *"),
+        ];
+        for (mode, value) in cases.iter() {
+            let _ = compute_next_run(now, mode, value);
+        }
+    }
+
+    // ============================================================
+    // Task 结构体字段可独立构造
+    // ============================================================
+
+    #[test]
+    fn task_struct_constructible_without_db() {
+        let task = Task {
+            id: "t1".to_string(),
+            name: "test".to_string(),
+            description: String::new(),
+            task_type: "sql".to_string(),
+            payload: "{}".to_string(),
+            schedule_mode: "interval".to_string(),
+            schedule_value: "3600".to_string(),
+            timezone: "local".to_string(),
+            state: "enabled".to_string(),
+            project_id: String::new(),
+            next_run_at: None,
+            last_run_at: None,
+            last_run_status: None,
+            last_run_duration_ms: None,
+            total_runs: 0,
+            success_runs: 0,
+            failed_runs: 0,
+            retry_on_fail: 2,
+            retry_interval_secs: 60,
+            timeout_secs: 300,
+            notify_on_success: false,
+            notify_on_failure: true,
+            tags: "[]".to_string(),
+            created_by: String::new(),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        assert_eq!(task.id, "t1");
+        assert_eq!(task.state, "enabled");
+        assert_eq!(task.total_runs, 0);
+        assert!(task.next_run_at.is_none());
+    }
+
+    #[test]
+    fn task_state_and_schedule_mode_combinations_no_panic() {
+        // 确认对各种 state / schedule_mode 组合构造 Task 不会 panic
+        let states = ["enabled", "disabled", "paused", ""];
+        let modes = ["interval", "manual", "cron", "daily", ""];
+        for s in states.iter() {
+            for m in modes.iter() {
+                let task = Task {
+                    id: "x".to_string(),
+                    name: "x".to_string(),
+                    description: String::new(),
+                    task_type: "sql".to_string(),
+                    payload: "{}".to_string(),
+                    schedule_mode: m.to_string(),
+                    schedule_value: "3600".to_string(),
+                    timezone: "local".to_string(),
+                    state: s.to_string(),
+                    project_id: String::new(),
+                    next_run_at: None,
+                    last_run_at: None,
+                    last_run_status: None,
+                    last_run_duration_ms: None,
+                    total_runs: 0,
+                    success_runs: 0,
+                    failed_runs: 0,
+                    retry_on_fail: 0,
+                    retry_interval_secs: 60,
+                    timeout_secs: 300,
+                    notify_on_success: false,
+                    notify_on_failure: true,
+                    tags: "[]".to_string(),
+                    created_by: String::new(),
+                    created_at: 0,
+                    updated_at: 0,
+                };
+                assert_eq!(task.state, s.to_string());
+                assert_eq!(task.schedule_mode, m.to_string());
+            }
+        }
+    }
+
+    // ============================================================
+    // CreateTaskRequest / UpdateTaskRequest 构造
+    // ============================================================
+
+    #[test]
+    fn create_task_request_default_state_and_retry() {
+        let req = CreateTaskRequest {
+            name: "backup".to_string(),
+            description: None,
+            task_type: "sql".to_string(),
+            payload: r#"{"sql":"SELECT 1"}"#.to_string(),
+            schedule_mode: "interval".to_string(),
+            schedule_value: "3600".to_string(),
+            state: None,
+            retry_on_fail: None,
+            timeout_secs: None,
+        };
+        assert_eq!(req.name, "backup");
+        assert!(req.state.is_none());
+        assert!(req.retry_on_fail.is_none());
+        assert!(req.timeout_secs.is_none());
+        assert!(req.payload.contains("SELECT 1"));
+    }
+
+    #[test]
+    fn create_task_request_with_empty_and_long_name() {
+        // 空字符串 / 长字符串都应可被 struct 接收，不产生 panic
+        let req = CreateTaskRequest {
+            name: "".to_string(),
+            description: Some("A".repeat(10_000)),
+            task_type: "sql".to_string(),
+            payload: "{}".to_string(),
+            schedule_mode: "interval".to_string(),
+            schedule_value: "100".to_string(),
+            state: Some("disabled".to_string()),
+            retry_on_fail: Some(3),
+            timeout_secs: Some(120),
+        };
+        assert_eq!(req.state.as_deref(), Some("disabled"));
+        assert_eq!(req.retry_on_fail, Some(3));
+        assert_eq!(req.timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn update_task_request_partial_fields() {
+        let patch = UpdateTaskRequest {
+            name: Some("new".to_string()),
+            description: None,
+            payload: Some(r#"{"sql":"SELECT 2"}"#.to_string()),
+            schedule_mode: None,
+            schedule_value: None,
+            state: Some("disabled".to_string()),
+            retry_on_fail: Some(0),
+            timeout_secs: Some(60),
+        };
+        assert_eq!(patch.name.as_deref(), Some("new"));
+        assert!(patch.description.is_none());
+        assert_eq!(patch.retry_on_fail, Some(0));
+        assert_eq!(patch.timeout_secs, Some(60));
+    }
+
+    // ============================================================
+    // TaskLite / TaskRun 构造
+    // ============================================================
+
+    #[test]
+    fn task_lite_constructible_and_fields_match() {
+        let lite = TaskLite {
+            id: "abc".to_string(),
+            name: "hello".to_string(),
+            description: String::new(),
+            task_type: "sql".to_string(),
+            schedule_mode: "interval".to_string(),
+            schedule_value: "60".to_string(),
+            state: "enabled".to_string(),
+            next_run_at: Some(1_700_000_060),
+            last_run_status: Some("success".to_string()),
+            last_run_duration_ms: Some(100),
+            total_runs: 5,
+            success_runs: 5,
+            failed_runs: 0,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        assert_eq!(lite.id, "abc");
+        assert!(lite.next_run_at.is_some());
+        assert_eq!(lite.failed_runs, 0);
+    }
+
+    #[test]
+    fn task_run_constructible_with_success_and_failed_state() {
+        let run_success = TaskRun {
+            id: "r1".to_string(),
+            task_id: "t1".to_string(),
+            status: "success".to_string(),
+            started_at: 1_700_000_000,
+            finished_at: Some(1_700_000_001),
+            duration_ms: Some(1000),
+            affected_rows: Some(5),
+            output: None,
+            retry_count: 0,
+            trigger_type: "manual".to_string(),
+            created_at: 1_700_000_000,
+        };
+        assert_eq!(run_success.status, "success");
+        assert_eq!(run_success.affected_rows, Some(5));
+
+        let run_failed = TaskRun {
+            id: "r2".to_string(),
+            task_id: "t1".to_string(),
+            status: "failed".to_string(),
+            started_at: 1_700_000_000,
+            finished_at: Some(1_700_000_001),
+            duration_ms: Some(200),
+            affected_rows: None,
+            output: Some("some error".to_string()),
+            retry_count: 1,
+            trigger_type: "schedule".to_string(),
+            created_at: 1_700_000_000,
+        };
+        assert_eq!(run_failed.status, "failed");
+        assert!(run_failed.output.is_some());
+    }
+
+    // ============================================================
+    // TaskListResponse 构造
+    // ============================================================
+
+    #[test]
+    fn task_list_response_sums_total_and_enabled() {
+        let task_a = Task {
+            id: "a".to_string(),
+            name: "A".to_string(),
+            description: String::new(),
+            task_type: "sql".to_string(),
+            payload: "{}".to_string(),
+            schedule_mode: "interval".to_string(),
+            schedule_value: "3600".to_string(),
+            timezone: "local".to_string(),
+            state: "enabled".to_string(),
+            project_id: String::new(),
+            next_run_at: None,
+            last_run_at: None,
+            last_run_status: None,
+            last_run_duration_ms: None,
+            total_runs: 0,
+            success_runs: 0,
+            failed_runs: 0,
+            retry_on_fail: 0,
+            retry_interval_secs: 60,
+            timeout_secs: 300,
+            notify_on_success: false,
+            notify_on_failure: true,
+            tags: "[]".to_string(),
+            created_by: String::new(),
+            created_at: 0,
+            updated_at: 0,
+        };
+        let mut task_b = task_a.clone();
+        task_b.id = "b".to_string();
+        task_b.state = "disabled".to_string();
+
+        let tasks = vec![task_a.clone(), task_b.clone()];
+        let enabled_count = tasks.iter().filter(|t| t.state == "enabled").count() as i64;
+        let failed_count = tasks
+            .iter()
+            .filter(|t| t.last_run_status.as_deref() == Some("failed"))
+            .count() as i64;
+
+        let resp = TaskListResponse {
+            total: tasks.len() as i64,
+            enabled_count,
+            failed_tasks_count: failed_count,
+            tasks,
+        };
+        assert_eq!(resp.total, 2);
+        assert_eq!(resp.enabled_count, 1);
+        assert_eq!(resp.failed_tasks_count, 0);
+    }
+
+    // ============================================================
+    // simplify_sql_error / split_sql_statements 纯函数行为
+    // ============================================================
+
+    #[test]
+    fn simplify_sql_error_maps_known_patterns() {
+        assert_eq!(simplify_sql_error("table test already exists"), "表已存在".to_string());
+        assert_eq!(simplify_sql_error("no such table: foo"), "表不存在".to_string());
+        assert_eq!(simplify_sql_error("no such column: x"), "列不存在".to_string());
+        assert_eq!(simplify_sql_error("syntax error near abc"), "SQL 语法错误".to_string());
+        assert_eq!(simplify_sql_error("unique constraint failed"), "约束冲突（重复主键或唯一键冲突）".to_string());
+        assert_eq!(simplify_sql_error("unable to open database file"), "数据库不可用".to_string());
+        assert_eq!(simplify_sql_error("database is locked"), "数据库被占用，请稍后重试".to_string());
+        assert_eq!(simplify_sql_error("out of memory"), "内存不足".to_string());
+        assert_eq!(simplify_sql_error("something else entirely"), "SQL 执行失败".to_string());
+    }
+
+    #[test]
+    fn simplify_sql_error_empty_and_unicode_input_no_panic() {
+        assert_eq!(simplify_sql_error(""), "SQL 执行失败".to_string());
+        // Unicode 输入不应导致 panic
+        let result = simplify_sql_error("错误：表 x 不存在 😀");
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn split_sql_statements_single_no_trailing_semicolon() {
+        let r = split_sql_statements("SELECT 1");
+        assert_eq!(r, vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn split_sql_statements_multiple_splits_correctly() {
+        let r = split_sql_statements("SELECT 1; SELECT 2; SELECT 3;");
+        assert_eq!(r, vec!["SELECT 1", "SELECT 2", "SELECT 3"]);
+    }
+
+    #[test]
+    fn split_sql_statements_quote_content_not_split() {
+        let r = split_sql_statements("INSERT INTO t VALUES ('a;b'); SELECT * FROM t;");
+        assert_eq!(r, vec!["INSERT INTO t VALUES ('a;b')", "SELECT * FROM t"]);
+    }
+
+    #[test]
+    fn split_sql_statements_empty_and_whitespace_returns_empty() {
+        assert!(split_sql_statements("").is_empty());
+        assert!(split_sql_statements("   \n\t  ").is_empty());
+        assert!(split_sql_statements(";;;").is_empty());
+    }
+
+    #[test]
+    fn split_sql_statements_double_quote_also_preserved() {
+        // 在 SQLite 中双引号常用于标识符，但 split 函数同样需要处理
+        let r = split_sql_statements("SELECT \"a;b\" FROM t; SELECT 2;");
+        assert_eq!(r, vec!["SELECT \"a;b\" FROM t", "SELECT 2"]);
     }
 }
 

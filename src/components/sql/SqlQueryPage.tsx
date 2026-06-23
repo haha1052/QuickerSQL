@@ -1,25 +1,21 @@
 import React, { useState } from 'react';
 import type { SqlQuery, SqlStatementResult } from '../../types';
 import { SQLEditor } from './SQLEditor';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+// P0-2 启动优化：ag-grid 懒加载（详见 ../common/AgGridLazy.tsx）
+import { AgGridLazy } from '../common/AgGridLazy';
 import { useLocale } from '../../context/LocaleContext';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
 
-ModuleRegistry.registerModules([AllCommunityModule]);
+// ModuleRegistry.registerModules([AllCommunityModule]);  // ← 已在 AgGridLazy 中动态处理
 
 interface SqlQueryPageProps {
   query: SqlQuery;
   onChange: (sql: string) => void;
-  onExecute: () => void;
-  isLoading: boolean;
 }
 
 export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
   query,
   onChange,
-  onExecute,
-  isLoading,
 }) => {
   const [editorSize, setEditorSize] = useState(50);
   const [isDragging, setIsDragging] = useState(false);
@@ -93,12 +89,16 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
               </div>
             ) : null}
 
-            {result.columns && result.rows ? (
-              <div style={{ height: '300px' }} className="ag-theme-alpine">
-                <AgGridReact<any>
+            {result.columns !== null && result.columns !== undefined && result.columns.length > 0 ? (
+              <div style={{ 
+                maxHeight: '400px',
+                minHeight: '100px',
+                height: Math.min(Math.max((result.rows?.length || 0) * 28 + 40, 100), 400)
+              }} className="ag-theme-alpine">
+                <AgGridLazy
                   key={locale}
-                  rowData={result.rows.map((row, rowIndex) => {
-                    const rowObj: Record<string, any> = { id: rowIndex };
+                  rowData={(result.rows ?? []).map((row, rowIndex) => {
+                    const rowObj: Record<string, string | number | boolean | null> = { id: rowIndex };
                     row.forEach((cell, colIndex) => {
                       rowObj[`col${colIndex}`] = cell;
                     });
@@ -116,6 +116,14 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
                     minWidth: 120,
                   }}
                 />
+              </div>
+            ) : result.success && result.affected_rows !== null ? (
+              <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                <span>{t('query.affectedRows')}: {result.affected_rows}</span>
+              </div>
+            ) : result.success ? (
+              <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                <span>{t('query.noResults')}</span>
               </div>
             ) : null}
           </>
@@ -140,8 +148,6 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
           <SQLEditor
             query={query}
             onChange={onChange}
-            onExecute={onExecute}
-            isLoading={isLoading}
           />
         </div>
       </div>
@@ -157,15 +163,21 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
 
       <div style={{ ...styles.panel, height: `${100 - editorSize}%` }}>
         <div style={styles.panelContent}>
-          {query?.batchResults && query.batchResults.length > 0 ? (
+          {query?.batchResults !== null && query?.batchResults !== undefined ? (
             <div style={styles.resultsStackedContainer}>
-              {query.batchResults.map((result, index) =>
-                renderSingleResult(result, index)
+              {query.batchResults.length > 0 ? (
+                query.batchResults.map((result, index) =>
+                  renderSingleResult(result, index)
+                )
+              ) : (
+                <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                  <span>查询执行成功，但未返回任何结果</span>
+                </div>
               )}
             </div>
           ) : query?.result ? (
             <div style={{ height: '100%' }} className="ag-theme-alpine">
-              <AgGridReact<any>
+              <AgGridLazy
                 key={locale}
                 rowData={query.result.rows.map((row, rowIndex) => {
                   const rowObj: Record<string, any> = { id: rowIndex };
@@ -209,16 +221,20 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
     flexDirection: 'column',
-    height: '100%',
+    height: '100vh',
+    minHeight: '600px',
     background: 'var(--bg-primary)',
+    position: 'relative',
   },
   toolbarContainer: {
     display: 'flex',
+    justifyContent: 'flex-end',
     alignItems: 'center',
     gap: '8px',
-    padding: '8px 12px',
+    padding: '6px 12px',
     borderBottom: '1px solid var(--border-primary)',
     background: 'var(--bg-secondary)',
+    flexShrink: 0,
   },
   scheduleBtn: {
     padding: '6px 12px',
@@ -234,6 +250,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    minHeight: '200px',
   },
   panelHeader: {
     padding: '8px 12px',
@@ -246,14 +263,19 @@ const styles: Record<string, React.CSSProperties> = {
   panelContent: {
     flex: 1,
     overflow: 'auto',
+    minHeight: '200px',
   },
   resizer: {
     height: '4px',
     width: '100%',
+    cursor: 'ns-resize',
     transition: 'background 0.2s',
+    background: 'var(--border-primary)',
+    flexShrink: 0,
   },
   placeholder: {
     height: '100%',
+    minHeight: '200px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -261,6 +283,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   resultsStackedContainer: {
     height: '100%',
+    minHeight: '200px',
     overflowY: 'auto',
     padding: '12px',
   },

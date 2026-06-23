@@ -17,7 +17,6 @@ body {
   line-height: 24px;
   font-weight: 400;
   color: var(--text-primary);
-  background-color: var(--bg-primary);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -298,6 +297,9 @@ button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(
   border-radius: 4px;
   transition: all 0.2s;
   -webkit-app-region: no-drag;
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
 }
 
 .header-settings-button:hover {
@@ -367,4 +369,14 @@ button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(
 .resize-handle-bottom:active {
   background: var(--primary) !important;
   opacity: 0.6;
+}
+
+/* ==================== 工作区标签栏样式 ==================== */
+.workspace-tabs-container::-webkit-scrollbar {
+  display: none;
+}
+
+.workspace-tabs-container {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }

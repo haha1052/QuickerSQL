@@ -12,7 +12,8 @@
  * 优势：无需额外依赖（html2canvas 等），直接利用 ECharts 内置能力
  */
 
-import * as echarts from 'echarts';
+// P0-2 启动优化：将 echarts 从同步 import 改为调用时动态 import
+// 本文件只有在用户点击"导出仪表盘"时才会执行，避免启动时加载大库
 import type { Dashboard } from '../types/dashboard';
 
 /** 画布网格参数（与 DashboardCanvas 保持一致） */
@@ -42,6 +43,9 @@ export async function exportDashboardToPng(
   }
 
   try {
+    // P0-2 启动优化：按需动态加载 echarts（仅在导出时才加载）
+    const echarts = await import('echarts');
+
     // 获取画布实际像素尺寸
     const canvasRect = canvasEl.getBoundingClientRect();
     const canvasWidth = Math.round(canvasRect.width);

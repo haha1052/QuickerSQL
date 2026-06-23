@@ -1,119 +1,74 @@
-# QuickerSQL 文件锁与并行修改冲突规则 v7.0
+# QuickerSQL 文件锁与并行修改冲突规则 v10.0
 
 > 优先级：高。
 > 适用：多任务并行开发、子 Agent 协同场景。
 > 目标：避免两个 Agent 同时修改 `lib.rs`、`tauri.conf.json` 等核心文件导致的 merge 冲突 / 覆盖。
+> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；明确 Tier-1 文件修改前必须用 Filesystem MCP 完整读取，避免并发冲突）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
-## 一、核心高冲突文件清单（Tier-1 Lock）
+## 一、核心文件清单（Tier-1）
 
-> 对 **同一次会话中多个并发任务**，以下文件**每次最多只能有一个任务修改**。
-> 若当前会话已有任务声明要改某文件，其他任务必须**等待它完成**后才能申请修改。
+| 文件 | 影响范围 |
+|------|---------|
+| `src-tauri/src/lib.rs` | Tauri 命令注册 / 状态初始化 |
+| `src-tauri/tauri.conf.json` | 应用配置 / bundle ID / 窗口设置 |
+| `src-tauri/capabilities/default.json` | Tauri 权限声明（新命令必须改这里） |
+| `src-tauri/Cargo.toml` | Rust 依赖 |
+| `package.json` | 前端依赖 + npm scripts |
+| `tsconfig.json` | TS 编译配置（strict / 路径别名等全局开关） |
+| `.gitignore` | Git 忽略清单 |
+| `src/App.tsx` | 顶层入口路由 |
+| `src/store/appStore.ts` | 全局状态（所有组件可能依赖） |
+| `src/services/tauri.ts` | 前端 invoke 统一封装 |
+| `.trae/rules/*.md` | 规则体系（所有 Agent 依赖读取） |
 
-| 文件 | 影响范围 | 冲突风险等级 |
-|------|---------|--------------|
-| `src-tauri/src/lib.rs` | Tauri 命令注册 / 状态初始化 / 全局路由 | 🔴 最高（任一命令改动都可能冲突） |
-| `src-tauri/tauri.conf.json` | 应用配置 / bundle ID / 窗口设置 | 🔴 最高 |
-| `src-tauri/capabilities/default.json` | Tauri 权限声明（新命令必须改这里） | 🔴 最高 |
-| `src-tauri/Cargo.toml` | Rust 依赖 | 🟠 高 |
-| `package.json` | 前端依赖 + npm scripts | 🟠 高 |
-| `tsconfig.json` | TS 编译配置（strict / 路径别名等全局开关） | 🟠 高 |
-| `.gitignore` | Git 忽略清单 | 🟡 中 |
-| `src/App.tsx` | 顶层入口路由 | 🟠 高 |
-| `src/store/appStore.ts` | 全局状态（所有组件可能依赖） | 🟠 高 |
-| `src/services/tauri.ts` | 前端 invoke 统一封装 | 🟠 高 |
-| `.trae/rules/architecture.md` / `coding.md` / `security.md` | 规则体系（所有 Agent 依赖读取） | 🔴 最高 |
+### 1.1 修改 Tier-1 文件的唯一强制规则
 
-**使用方法（多任务场景）：**
+> ❌ 禁止"只读取了需要改写的那几行"就直接 Edit
+> ✅ **修改 Tier-1 文件前必须先完整读取整个文件**
 
-1. 在启动任务前，把本次会话要修改的 Tier-1 文件写入"会话锁声明"（可写在会话开头，或在子任务 prompt 中明确）。
-2. 若检测到**另一个子任务已持有同一文件的修改权**，当前子任务必须：
-   - 改为**只读读取该文件**（不修改），或
-   - **等待先持有锁的子任务完成**后再开始，或
-   - **合并为单一任务**执行。
-3. 完成修改后，显式声明"释放锁"。
+原因：如果只读几行，会丢失该文件其他人刚刚写入的内容，也会破坏整个文件的结构完整性。
 
----
+### 1.2 修改时的实用规范
 
-## 二、次核心文件（Tier-2 Concurrent）
-
-> 这些文件**允许多个任务同时读取**，但修改时需**先读取最新版本再修改**，避免覆盖。
-
-| 文件 | 冲突风险等级 | 建议策略 |
-|------|--------------|---------|
-| `src-tauri/src/database/security.rs` | 🟠 高 | 修改前整文件读取，完成后立即提交变更 |
-| `src-tauri/src/database/traits.rs` | 🟠 高 | 同上 |
-| `src-tauri/src/services/*_service.rs` | 🟡 中 | 不同 *_service.rs 彼此独立；同一文件内建议串行修改 |
-| `src-tauri/src/commands/*.rs` | 🟡 中 | 不同领域 commands 彼此独立 |
-| `src/components/dashboard/*.tsx` | 🟡 中 | 各组件彼此独立 |
-| `src/store/*Store.ts` | 🟡 中 | 各 Store 彼此独立 |
-| `docs/架构现状.md` | 🟡 中 | 新增条目形式的追加通常无冲突；结构性修改需先读取最新版本 |
+- 同一 Tier-1 文件，建议同一对话内串行修改（避免前一次编辑覆盖后一次的预期）
+- 新 command 函数追加到 `lib.rs` 的列表末尾，不重排
+- 新权限追加到 `capabilities/default.json` 的数组末尾，不重排
+- 必须用"旧内容字符串匹配"定位修改位置（不按行号）
 
 ---
 
-## 三、非冲突文件（Tier-3 Free）
+## 二、次核心文件（Tier-2）
 
-> 以下文件彼此互不影响，允许完全并行：
+| 文件 | 建议策略 |
+|------|---------|
+| `src-tauri/src/services/*_service.rs` | 不同 *_service.rs 彼此独立；同一文件内建议串行修改 |
+| `src-tauri/src/commands/*.rs` | 不同领域 commands 彼此独立 |
+| `src/store/*Store.ts` | 各 Store 彼此独立 |
+| `docs/架构现状.md` | 新增条目形式的追加通常无冲突；结构性修改需先读取最新版本 |
+
+---
+
+## 三、非冲突文件（Tier-3）
+
+以下文件彼此互不影响，可并行修改：
 
 - 新创建的组件文件（如 `src/components/new-feature/*.tsx`）
 - 新创建的纯逻辑模块（如 `src/utils/*.ts`）
-- `docs/` 目录下的独立文档（彼此独立编辑）
+- `docs/` 目录下的独立文档
 - 图片资源文件
 - `.trae/specs/` 下的 spec 文件
 
 ---
 
-## 四、多任务冲突消解流程
+## 三、如何用 MCP 工具验证本规则
 
-```
-1. 启动任务时，明确本次将修改的 Tier-1 文件清单
-   └─ 方法：在任务计划列表中显式声明
-2. 与当前会话的其他任务清单对比
-3. 如果无交集 → 正常并发
-4. 如果有交集 → 以下三选一：
-   a. 串行化（先执行 A，再执行 B）
-   b. 合并为一个任务执行（减少往返）
-   c. 其中一方改为"只读"，不在本次改动该文件
-5. 任务结束后声明"释放锁"
-```
+| 验证项 | 命令（PowerShell 环境） | 说明 |
+|--------|------------------------|------|
+| Tier-1 文件清单完整性 | `Test-Path src-tauri/src/lib.rs; Test-Path src-tauri/tauri.conf.json; Test-Path src-tauri/Cargo.toml; Test-Path package.json; Test-Path src/App.tsx; Test-Path src/store/appStore.ts; Test-Path src/services/tauri.ts; Test-Path .gitignore` | 所有路径返回 True |
+| 修改前是否完整读取 | `Get-ChildItem -Path src-tauri/src/lib.rs \| Select-Object Length` | 修改前必须先用 Filesystem MCP `read_file` 完整读取 |
+| 三处版本号一致 | `Get-Content package.json \| Select-String '"version"'; Get-Content src-tauri/Cargo.toml \| Select-String '^version'; Get-Content src-tauri/tauri.conf.json \| Select-String '"version"'` | 三处版本号字符串完全相同 |
+| 命令注册与权限同步 | `Get-Content src-tauri/src/lib.rs \| Select-String '#\[tauri::command\]' \| Measure-Object; Get-Content src-tauri/capabilities/default.json \| Select-String '"commands"' \| Measure-Object` | command 函数数量应与 capabilities 中注册的命令数一致 |
 
----
-
-## 五、Agent 行为规范
-
-### 5.1 修改 Tier-1 文件前必须先完整读取
-
-> 禁止在"只读取了需要改写的那几行"的情况下直接 Edit，否则会：
-> - 丢失该文件其他人刚刚写入的内容
-> - 破坏整个文件的结构完整性
-
-正确流程：
-
-```
-Read 整个文件（如 lib.rs） → 决定要改哪一行 → 用旧内容做匹配 → Edit 写入
-```
-
-### 5.2 禁止"按行号"定位修改
-
-> 因为此前的其他任务可能已经在该文件中插入/删除行，导致行号偏移。
-> 必须用"旧内容字符串匹配"定位。
-
-### 5.3 新功能追加到 lib.rs 的规范
-
-- 新 command 函数必须追加到 `invoke_handler!` 的列表末尾
-- 新权限必须追加到 `capabilities/default.json` 的 `permissions` 数组末尾
-- 遵循"追加不重排"原则，将冲突降至最低
-
-### 5.4 对本文件的修改也要遵循自身约束
-
-- `file-lock.md` 本身属于 Tier-1（规则体系的一部分）
-- 每次只能有一个任务修改它；修改前必须完整读取最新版本
-
----
-
-## 六、版本与变更记录
-
-| 版本 | 日期 | 变更内容 |
-|------|------|---------|
-| v7.0 | 2026-06-20 | 初版。Tier-1/Tier-2/Tier-3 三级文件锁清单、多任务冲突消解流程、Agent 行为规范（修改前完整读取、禁止行号定位、追加不重排） |
+> 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

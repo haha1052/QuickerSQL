@@ -1,8 +1,9 @@
-# QuickerSQL 安全规则 v7.0
+# QuickerSQL 安全规则 v10.0
 
-> 优先级：最高（仅次于本地 `CLAUDE.local.md`）。
+> 优先级：最高（仅次于本地 `CLAUDE.local.md`）
 > 任何涉及数据库操作、用户输入拼接的代码修改，必须先完整阅读本文件。
 > 本文件任何一条被命中即"违规 → 必须回退或重新设计"。
+> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；SQL 注入/敏感字符串检测命令完善，所有检测都可通过 Windows CLI MCP 自动化执行）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
@@ -26,12 +27,15 @@ let sql = format!("SELECT * FROM {}", user_supplied_table);
 // ❌ 禁止 `executescript` / 多语句 SQL（本项目架构已禁止）
 ```
 
-**检测方法（代码审查时执行）：**
+**检测方法（Windows PowerShell 环境执行）：**
 
-```bash
-cd src-tauri/src
-grep -rn 'format!("' --include='*.rs' | grep -i 'select\|insert\|update\|delete\|create\|alter'
-grep -rn "replace.*\"'\"" --include='*.rs'
+```powershell
+# 检测 format! 拼接 SQL 的可疑写法
+cd src-tauri
+Get-ChildItem -Path src -Include *.rs -Recurse | Select-String -Pattern 'format!' | Select-String -Pattern 'select|insert|update|delete|create|alter' -CaseSensitive:$false
+
+# 检测手动转义引号（绕过参数化查询）
+Get-ChildItem -Path src -Include *.rs -Recurse | Select-String -Pattern 'replace.*["'\'']["'\'']'
 ```
 
 ### 1.2 参数化查询唯一合法写法
@@ -124,6 +128,12 @@ components → use*Store() → taskService.{listTasks, getTask, ...}
                                        └─ commands/automation.rs  (Rust 参数化查询)
 ```
 
+**前端 SQL 拼接检测（PowerShell）：**
+
+```powershell
+Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse | Select-String -Pattern 'SELECT|INSERT|UPDATE|DELETE' -CaseSensitive:$false
+```
+
 ### 2.2 禁止 any 类型 + 未校验的用户输入
 
 ```ts
@@ -161,14 +171,21 @@ function search(keyword: string): Promise<ApiResponse<Task[]>> {
 
 **如果 Agent 生成的代码中出现上述字符串，且非 `CLAUDE.local.md` 模板中的占位符，必须回退。**
 
-### 3.3 引入凭据时的强制路径
+**敏感字符串检测（PowerShell）：**
 
-未来若引入外部凭据（例如调用 LLM 服务、云数据库），必须：
+```powershell
+Get-ChildItem -Recurse -Include *.rs,*.ts,*.tsx | Select-String -Pattern 'sk-|password:|PRIVATE KEY|Bearer |ghp_|eyJ'
+```
 
-1. **新建文件** `src-tauri/.env.local` 或 `src-tauri/.env`，**立即加入 `.gitignore`**
-2. **Rust 代码读取** 使用 `std::env::var("QUICKERSQL_XXX_KEY")`，禁止硬编码
+### 3.3 引入凭据时的强制路径（从"事后检测"升级为"事前防范"）
+
+未来若引入外部凭据（例如调用 LLM 服务、云数据库），必须遵循以下路径（按优先级执行）：
+
+1. **新建文件** `src-tauri/.env.local` 或 `src-tauri/.env`，**立即加入 `.gitignore`**（确保不上传到 git）
+2. **Rust 代码读取** 使用 `std::env::var("QUICKERSQL_XXX_KEY")`，**禁止在代码中硬编码**
 3. **前端不可访问**：密钥不可通过 invoke 返回给前端 UI；前端只能拿到"已配置 / 未配置"布尔状态
-4. **用户输入的敏感数据**：不可写入 `__audit_logs`、不可写入 `console.error` 文本中
+4. **用户输入的敏感数据**：不可写入 `__audit_logs`，不可写入 `console.error` 文本中
+5. **首次使用前须验证**：运行前述敏感字符串检测命令确认无泄露
 
 ### 3.4 审计日志的脱敏规则
 
@@ -194,8 +211,27 @@ function search(keyword: string): Promise<ApiResponse<Task[]>> {
 
 ---
 
-## 五、版本与变更记录
+## 五、补充：安全事件处置流程（如发生违规时）
 
-| 版本 | 日期 | 变更内容 |
-|------|------|---------|
-| v7.0 | 2026-06-20 | 初版。参数化查询模板（3 种情形 A/B/C）、前端禁止拼接 SQL、敏感词清单、审计日志脱敏规则、路径穿越防范 |
+1. 如果 `cargo check` / `tsc` 编译报错 → **禁止提交**，先修复
+2. 如果检测到 `format!` 拼接 SQL → **必须改为参数化查询**
+3. 如果检测到硬编码敏感字符串 → **必须改为环境变量读取**
+4. 如果检测到前端文件包含 SQL 拼接 → **必须移至后端 service 层用参数化查询**
+
+---
+
+## 五、如何用 MCP 工具验证本规则（核心门禁，必须每次代码修改后执行）
+
+| 验证项 | 命令（PowerShell 环境，在项目根目录执行） | 期望结果 |
+|--------|----------------------------------------|---------|
+| **SQL 注入检测（Rust）** | `cd src-tauri; Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'format!.*SELECT\|format!.*INSERT\|format!.*UPDATE\|format!.*DELETE\|conn.execute(format!' -CaseSensitive:$false \| Measure-Object \| Select-Object Count` | **Count = 0**（0 个匹配才算通过） |
+| **手动转义引号检测** | `cd src-tauri; Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'replace.*["'\'']["'\'']' \| Measure-Object \| Select-Object Count` | **Count = 0** |
+| **TS 前端 SQL 拼接检测** | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse \| Select-String -Pattern 'SELECT\|INSERT\|UPDATE\|DELETE' -CaseSensitive:$false \| Measure-Object \| Select-Object Count` | **Count = 0** |
+| **敏感字符串检测** | `Get-ChildItem -Path src-tauri/src,src -Include *.rs,*.ts,*.tsx -Recurse \| Select-String -Pattern 'sk-\|Bearer \|ghp_\|eyJ\|password:\|pwd=\|PRIVATE KEY' \| Measure-Object \| Select-Object Count` | **Count = 0** |
+| **路径穿越风险（路径字符串硬编码）** | `Get-ChildItem -Path src-tauri/src -Include *.rs -Recurse \| Select-String -Pattern 'C:\\Users\|~/\|"\.\./"\|"\.\."\|\\\\' \| Measure-Object \| Select-Object Count` | 0 个或明确注释说明为何安全 |
+| **参数化查询使用（正面验证）** | `cd src-tauri; Get-ChildItem -Path src/services,src/database -Include *.rs -Recurse \| Select-String -Pattern '\?;"\|params!\|&\[&\w' \| Measure-Object \| Select-Object Count` | Count > 0（确保有使用参数化查询） |
+
+> **核心原则**：以上检测命令全部可在 Windows CLI MCP 中执行，不需要人工分析代码。
+> **门禁规则**：前 4 项必须全部为 0 才算通过。
+
+> 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

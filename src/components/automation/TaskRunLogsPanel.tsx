@@ -1,7 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
-import { useTaskStore } from '../../store/taskStore';
-import type { Task, TaskRun, TaskRunStatus } from '../../types/automation';
+import { useTaskStore } from '../../store';
+import { computeVisibleRange } from '../../utils/virtual';
+import type { Task, TaskRunStatus } from '../../types/automation';
+
+const ITEM_HEIGHT = 44;
+const VIEWPORT_HEIGHT = 400;
+const OVERSCAN = 5;
 
 interface TaskRunLogsPanelProps {
   task?: Task | null;
@@ -80,6 +85,12 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
   const { taskRuns, selectedTaskId, loadTaskRuns } = useTaskStore();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  const range = computeVisibleRange(scrollTop, VIEWPORT_HEIGHT, ITEM_HEIGHT, taskRuns.length, OVERSCAN);
+  const visibleRuns = taskRuns.slice(range.start, range.end);
+
   const handleRefresh = () => {
     if (selectedTaskId) {
       loadTaskRuns(selectedTaskId, 50);
@@ -157,36 +168,55 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
               <div style={{ ...styles.logCell, flex: 0.8 }}>耗时</div>
               <div style={{ ...styles.logCell, flex: 1 }}>触发</div>
             </div>
-            {taskRuns.map((run: TaskRun) => (
-              <div key={run.id} style={styles.logRowWrapper}>
-                <div
-                  style={{
-                    ...styles.logRow,
-                    ...(expandedId === run.id ? styles.logRowExpanded : {}),
-                  }}
-                  onClick={() => setExpandedId((prev) => (prev === run.id ? null : run.id))}
-                >
-                  <div style={{ ...styles.logCell, flex: 1.4 }}>{formatDateTime(run.startedAt)}</div>
-                  <div style={{ ...styles.logCell, flex: 0.8 }}>
-                    <span style={{ ...styles.badge, ...getStatusStyles(run.status) }}>
-                      {getStatusText(run.status)}
-                    </span>
+            <div
+              ref={scrollContainerRef}
+              style={{ height: VIEWPORT_HEIGHT, overflowY: 'auto', position: 'relative' }}
+              onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+            >
+              <div style={{ height: range.totalHeight, position: 'relative' }}>
+                {visibleRuns.map((run, idx) => (
+                  <div
+                    key={run.id}
+                    style={{
+                      position: 'absolute',
+                      top: (range.start + idx) * ITEM_HEIGHT,
+                      left: 0,
+                      right: 0,
+                      height: ITEM_HEIGHT,
+                    }}
+                  >
+                    <div style={styles.logRowWrapper}>
+                      <div
+                        style={{
+                          ...styles.logRow,
+                          ...(expandedId === run.id ? styles.logRowExpanded : {}),
+                        }}
+                        onClick={() => setExpandedId((prev) => (prev === run.id ? null : run.id))}
+                      >
+                        <div style={{ ...styles.logCell, flex: 1.4 }}>{formatDateTime(run.startedAt)}</div>
+                        <div style={{ ...styles.logCell, flex: 0.8 }}>
+                          <span style={{ ...styles.badge, ...getStatusStyles(run.status) }}>
+                            {getStatusText(run.status)}
+                          </span>
+                        </div>
+                        <div style={{ ...styles.logCell, flex: 0.8 }}>{formatDuration(run.durationMs)}</div>
+                        <div style={{ ...styles.logCell, flex: 1 }}>
+                          <span style={{ fontSize: FontSizes.caption, color: Colors.textSecondary }}>
+                            {getTriggerText(run.triggerType)}
+                          </span>
+                        </div>
+                      </div>
+                      {expandedId === run.id && run.output && (
+                        <div style={styles.outputPreview}>
+                          <div style={styles.outputLabel}>输出</div>
+                          <pre style={styles.outputContent}>{run.output}</pre>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ ...styles.logCell, flex: 0.8 }}>{formatDuration(run.durationMs)}</div>
-                  <div style={{ ...styles.logCell, flex: 1 }}>
-                    <span style={{ fontSize: FontSizes.caption, color: Colors.textSecondary }}>
-                      {getTriggerText(run.triggerType)}
-                    </span>
-                  </div>
-                </div>
-                {expandedId === run.id && run.output && (
-                  <div style={styles.outputPreview}>
-                    <div style={styles.outputLabel}>输出</div>
-                    <pre style={styles.outputContent}>{run.output}</pre>
-                  </div>
-                )}
+                ))}
               </div>
-            ))}
+            </div>
           </div>
         )}
       </div>

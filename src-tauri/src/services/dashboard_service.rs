@@ -10,14 +10,14 @@ pub struct DashboardService;
 
 impl DashboardService {
     /// 安全地转义 SQL 字符串字面量
-    fn escape_sql_string(s: &str) -> String {
+    pub(in crate::services) fn escape_sql_string(s: &str) -> String {
         s.replace('\'', "''")
     }
 
     /// 将可选的字符串转为 SQL 值（带引号或 NULL）
     /// 为将来参数化查询预留的辅助函数，当前未直接调用。
     #[allow(dead_code)]
-    fn to_sql_value(opt: Option<&str>) -> String {
+    pub(in crate::services) fn to_sql_value(opt: Option<&str>) -> String {
         match opt {
             Some(s) => format!("'{}'", Self::escape_sql_string(s)),
             None => "NULL".to_string(),
@@ -940,5 +940,365 @@ impl DashboardService {
             created_at: row[9].parse::<i64>().unwrap_or(0),
             updated_at: row[10].parse::<i64>().unwrap_or(0),
         })
+    }
+
+    /// 精简查询：获取所有仪表盘的基本信息（启动聚合返回用）
+    /// 不加载 layout 和 filters 的 JSON 解析，仅取基础字段
+    pub fn list_dashboards_lite(conn: &MutexGuardConnection<'_>) -> Result<Vec<DashboardLite>, String> {
+        use crate::database::traits::ToSql;
+        let empty_params: [&dyn ToSql; 0] = [];
+        let rows = conn.query(
+            "SELECT id, name, description, refresh_interval_secs, is_default, created_at, updated_at
+             FROM __dashboards ORDER BY updated_at DESC",
+            &empty_params
+        ).map_err(|e| format!("获取仪表盘精简列表失败: {}", e))?;
+
+        let mut result = Vec::new();
+        for row in rows.rows {
+            if row.len() < 7 { continue; }
+            result.push(DashboardLite {
+                id: row[0].clone(),
+                name: row[1].clone(),
+                description: row[2].clone(),
+                refresh_interval_secs: row[3].parse().unwrap_or(0),
+                is_default: row[4].parse::<i64>().unwrap_or(0) != 0,
+                created_at: row[5].parse().unwrap_or(0),
+                updated_at: row[6].parse().unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
+
+    /// 精简查询：获取所有图表的基本信息（启动聚合返回用）
+    /// 不解析 config / last_result 等大字段
+    pub fn list_saved_charts_lite(conn: &MutexGuardConnection<'_>) -> Result<Vec<SavedChartLite>, String> {
+        use crate::database::traits::ToSql;
+        let empty_params: [&dyn ToSql; 0] = [];
+        let rows = conn.query(
+            "SELECT id, name, chart_type, x_axis, y_axis, title, tags, description, visibility, created_at, updated_at
+             FROM __saved_charts ORDER BY updated_at DESC",
+            &empty_params
+        ).map_err(|e| format!("获取图表精简列表失败: {}", e))?;
+
+        let mut result = Vec::new();
+        for row in rows.rows {
+            if row.len() < 11 { continue; }
+            let y_axis: Vec<String> = serde_json::from_str(&row[4]).unwrap_or_default();
+            let tags: Vec<String> = serde_json::from_str(&row[6]).unwrap_or_default();
+            result.push(SavedChartLite {
+                id: row[0].clone(),
+                name: row[1].clone(),
+                chart_type: row[2].clone(),
+                x_axis: row[3].clone(),
+                y_axis,
+                title: row[5].clone(),
+                tags,
+                description: row[7].clone(),
+                visibility: row[8].clone(),
+                created_at: row[9].parse().unwrap_or(0),
+                updated_at: row[10].parse().unwrap_or(0),
+            });
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================
+    // escape_sql_string 单引号转义
+    // ============================================================
+
+    #[test]
+    fn escape_sql_string_basic_single_quote() {
+        assert_eq!(DashboardService::escape_sql_string("O'Neil"), "O''Neil");
+    }
+
+    #[test]
+    fn escape_sql_string_empty_and_plain_string() {
+        assert_eq!(DashboardService::escape_sql_string(""), "");
+        assert_eq!(DashboardService::escape_sql_string("hello world"), "hello world");
+    }
+
+    #[test]
+    fn escape_sql_string_multiple_single_quotes() {
+        assert_eq!(
+            DashboardService::escape_sql_string("it's a 'test' string"),
+            "it''s a ''test'' string"
+        );
+    }
+
+    #[test]
+    fn escape_sql_string_consecutive_single_quotes() {
+        // 连续的单引号也应正确转义
+        assert_eq!(DashboardService::escape_sql_string("''''"), "''''''''");
+    }
+
+    #[test]
+    fn escape_sql_string_other_quotes_untouched() {
+        // 双引号 / 反引号不应被此函数转义
+        assert_eq!(
+            DashboardService::escape_sql_string("\"test\" `col`"),
+            "\"test\" `col`"
+        );
+    }
+
+    #[test]
+    fn escape_sql_string_unicode_input_no_panic() {
+        let s = "用户'的内容 测试";
+        assert_eq!(DashboardService::escape_sql_string(s), "用户''的内容 测试");
+    }
+
+    // ============================================================
+    // to_sql_value 可选字符串 -> NULL / 字面量
+    // ============================================================
+
+    #[test]
+    fn to_sql_value_none_returns_null() {
+        assert_eq!(DashboardService::to_sql_value(None), "NULL");
+    }
+
+    #[test]
+    fn to_sql_value_some_wraps_in_quotes() {
+        assert_eq!(DashboardService::to_sql_value(Some("abc")), "'abc'");
+    }
+
+    #[test]
+    fn to_sql_value_some_with_single_quote_gets_escaped() {
+        // 内部单引号被 escape_sql_string 转义
+        assert_eq!(DashboardService::to_sql_value(Some("O'Neil")), "'O''Neil'");
+    }
+
+    #[test]
+    fn to_sql_value_empty_some_returns_empty_literal() {
+        // 空字符串不是 NULL，应当产生 ''
+        assert_eq!(DashboardService::to_sql_value(Some("")), "''");
+    }
+
+    // ============================================================
+    // DDL / SQL 文本拼装（仅验证纯字符串行为）
+    // ============================================================
+
+    #[test]
+    fn ddl_string_concatenation_produces_valid_substring() {
+        // 不实际连数据库，仅确认字符串拼接能正确产生所需片段
+        let table = "__test_charts";
+        let escaped = DashboardService::escape_sql_string("it's a chart");
+        let sql = format!("INSERT INTO {} (name) VALUES ('{}');", table, escaped);
+        assert!(sql.contains(table));
+        assert!(sql.contains("'it''s a chart'"));
+    }
+
+    #[test]
+    fn to_sql_value_inside_dynamic_dml() {
+        let name_sql = DashboardService::to_sql_value(Some("chart-1"));
+        let desc_sql = DashboardService::to_sql_value(None);
+        let dml = format!("INSERT INTO t (name, description) VALUES ({}, {});", name_sql, desc_sql);
+        assert_eq!(dml, "INSERT INTO t (name, description) VALUES ('chart-1', NULL);");
+    }
+
+    // ============================================================
+    // SavedChart / Dashboard 等结构体字段可独立构造
+    // ============================================================
+
+    #[test]
+    fn saved_chart_constructible_without_db() {
+        let chart = SavedChart {
+            id: "c1".to_string(),
+            name: "sales".to_string(),
+            query_id: "q1".to_string(),
+            sql: "SELECT 1".to_string(),
+            chart_type: "bar".to_string(),
+            x_axis: "month".to_string(),
+            y_axis: vec!["revenue".to_string(), "profit".to_string()],
+            title: "月度销售".to_string(),
+            filters: vec![],
+            tags: vec!["sales".to_string(), "monthly".to_string()],
+            description: String::new(),
+            thumbnail: None,
+            config: None,
+            visibility: "all".to_string(),
+            authorized_dashboard_ids: vec![],
+            last_result: None,
+            last_run_at: None,
+            created_by: String::new(),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        assert_eq!(chart.y_axis.len(), 2);
+        assert_eq!(chart.visibility, "all");
+        assert!(chart.last_result.is_none());
+    }
+
+    #[test]
+    fn dashboard_constructible_without_db() {
+        let dashboard = Dashboard {
+            id: "d1".to_string(),
+            name: "main".to_string(),
+            description: "主仪表盘".to_string(),
+            layout: vec![],
+            filters: vec![],
+            refresh_interval_secs: 60,
+            is_default: true,
+            created_by: String::new(),
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        assert!(dashboard.is_default);
+        assert_eq!(dashboard.refresh_interval_secs, 60);
+        assert!(dashboard.layout.is_empty());
+    }
+
+    #[test]
+    fn dashboard_item_geometry_fields_round_trip() {
+        let item = DashboardItem {
+            id: "i1".to_string(),
+            dashboard_id: "d1".to_string(),
+            chart_id: "c1".to_string(),
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+            config_overrides: None,
+            position: 7,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_000,
+        };
+        assert_eq!(item.x, 1.0);
+        assert_eq!(item.width, 3.0);
+        assert_eq!(item.position, 7);
+    }
+
+    #[test]
+    fn chart_filter_list_parses_from_json_vectors() {
+        // y_axis / tags 是 Vec<String>，可由列表构造并能正确访问字段
+        let y_axis: Vec<String> = vec!["a".to_string(), "b".to_string()];
+        let tags: Vec<String> = vec!["tag1".to_string()];
+        assert_eq!(y_axis.len(), 2);
+        assert_eq!(tags[0], "tag1");
+    }
+
+    #[test]
+    fn tags_y_axis_constructed_from_split() {
+        // 字符串 split 得到 iter -> Vec<String>，可直接用于构造 SavedChart
+        let raw_tags = "sales,monthly,2024";
+        let tags: Vec<String> = raw_tags.split(',').map(|s| s.to_string()).collect();
+        assert_eq!(tags, vec!["sales", "monthly", "2024"]);
+
+        let raw_y = "revenue|profit|cost";
+        let y_axis: Vec<String> = raw_y.split('|').map(|s| s.to_string()).collect();
+        assert_eq!(y_axis.len(), 3);
+    }
+
+    #[test]
+    fn y_axis_empty_json_is_empty_vec() {
+        // 空的 y_axis JSON 应当解析为空 Vec，不 panic
+        let y_axis: Vec<String> = serde_json::from_str("[]").unwrap_or_default();
+        assert!(y_axis.is_empty());
+    }
+
+    // ============================================================
+    // DashboardLite / SavedChartLite 构造
+    // ============================================================
+
+    #[test]
+    fn dashboard_lite_and_saved_chart_lite_round_trip_fields() {
+        let dl = DashboardLite {
+            id: "d1".to_string(),
+            name: "main".to_string(),
+            description: String::new(),
+            is_default: true,
+            refresh_interval_secs: 120,
+            created_at: 1,
+            updated_at: 2,
+        };
+        assert!(dl.is_default);
+
+        let cl = SavedChartLite {
+            id: "c1".to_string(),
+            name: "chart".to_string(),
+            chart_type: "bar".to_string(),
+            x_axis: "day".to_string(),
+            y_axis: vec!["count".to_string()],
+            title: String::new(),
+            tags: vec![],
+            description: String::new(),
+            visibility: "all".to_string(),
+            created_at: 1,
+            updated_at: 2,
+        };
+        assert_eq!(cl.y_axis.len(), 1);
+        assert_eq!(cl.visibility, "all");
+    }
+
+    // ============================================================
+    // QueryResult / QueryParam 数据结构
+    // ============================================================
+
+    #[test]
+    fn query_result_constructible_with_columns_and_rows() {
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![
+            vec!["1".to_string(), "a".to_string()],
+            vec!["2".to_string(), "b".to_string()],
+        ];
+        let qr = QueryResult {
+            columns: columns.clone(),
+            rows: rows.clone(),
+        };
+        assert_eq!(qr.columns, columns);
+        assert_eq!(qr.rows.len(), 2);
+    }
+
+    #[test]
+    fn query_param_struct_fields_held_correctly() {
+        let qp = QueryParam {
+            name: "limit".to_string(),
+            param_type: "integer".to_string(),
+            default: "100".to_string(),
+            options: None,
+            label: "Limit".to_string(),
+        };
+        assert_eq!(qp.name, "limit");
+        assert!(qp.options.is_none());
+
+        let qp2 = QueryParam {
+            options: Some(vec!["a".to_string(), "b".to_string()]),
+            ..qp.clone()
+        };
+        assert_eq!(qp2.options.unwrap().len(), 2);
+    }
+
+    // ============================================================
+    // ChartFilter / DashboardFilter 数据结构
+    // ============================================================
+
+    #[test]
+    fn chart_filter_holds_field_operator_value() {
+        let f = ChartFilter {
+            field: "status".to_string(),
+            operator: "=".to_string(),
+            value: "active".to_string(),
+        };
+        assert_eq!(f.field, "status");
+        assert_eq!(f.operator, "=");
+        assert_eq!(f.value, "active");
+    }
+
+    #[test]
+    fn dashboard_filter_default_value_serialization() {
+        let df = DashboardFilter {
+            id: "f1".to_string(),
+            field: "status".to_string(),
+            label: "Status".to_string(),
+            filter_type: "select".to_string(),
+            default_value: serde_json::json!("active"),
+            options: Some(vec!["active".to_string(), "inactive".to_string()]),
+        };
+        assert_eq!(df.default_value, serde_json::json!("active"));
+        assert!(df.options.is_some());
+        assert_eq!(df.options.unwrap().len(), 2);
     }
 }

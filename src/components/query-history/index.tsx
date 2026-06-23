@@ -1,12 +1,17 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { QueryHistoryItem } from '../../types';
 import { useLocale } from '../../context/LocaleContext';
+import { computeVisibleRange } from '../../utils/virtual';
 import './QueryHistory.css';
 
 interface QueryHistoryProps {
   onBack?: () => void;
   onExecuteSql?: (sql: string) => void;
 }
+
+const ITEM_HEIGHT = 96;
+const VIEWPORT_HEIGHT = 520;
+const OVERSCAN = 5;
 
 const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => {
   const { t } = useLocale();
@@ -15,6 +20,12 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState<string>('');
   const [onlyFavorites, setOnlyFavorites] = useState<boolean>(false);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  const range = computeVisibleRange(scrollTop, VIEWPORT_HEIGHT, ITEM_HEIGHT, historyItems.length, OVERSCAN);
+  const visibleItems = historyItems.slice(range.start, range.end);
 
   const formatDate = (dateStr: string): string => {
     try {
@@ -151,59 +162,76 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
         )}
 
         {historyItems.length > 0 && (
-          <div className="history-list">
-            {historyItems.map((item) => (
-              <div key={item.id} className={`history-item ${!item.success ? 'failed' : ''}`}>
-                <div className="history-item-main">
-                  <div className="history-item-header">
-                    <div className="status-badge">
-                      {item.success ? `✅ ${t('queryHistory.success')}` : `❌ ${t('queryHistory.failed')}`}
+          <div
+            ref={scrollContainerRef}
+            style={{ height: VIEWPORT_HEIGHT, overflowY: 'auto', position: 'relative' }}
+            onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+          >
+            <div style={{ height: range.totalHeight, position: 'relative' }}>
+              {visibleItems.map((item, idx) => (
+                <div
+                  key={item.id}
+                  style={{
+                    position: 'absolute',
+                    top: (range.start + idx) * ITEM_HEIGHT,
+                    left: 0,
+                    right: 0,
+                    height: ITEM_HEIGHT,
+                  }}
+                >
+                  <div className={`history-item ${!item.success ? 'failed' : ''}`}>
+                    <div className="history-item-main">
+                      <div className="history-item-header">
+                        <div className="status-badge">
+                          {item.success ? `✅ ${t('queryHistory.success')}` : `❌ ${t('queryHistory.failed')}`}
+                        </div>
+                        <button
+                          className={`btn-favorite ${item.is_favorite ? 'active' : ''}`}
+                          onClick={() => handleToggleFavorite(item)}
+                          title={item.is_favorite ? t('queryHistory.unfavorite') : t('queryHistory.favorite')}
+                        >
+                          {item.is_favorite ? '⭐' : '☆'}
+                        </button>
+                      </div>
+                      <div className="history-item-sql">
+                        <pre>{item.sql}</pre>
+                      </div>
+                      <div className="history-item-meta">
+                        <span className="meta-item">🕐 {formatDate(item.executed_at)}</span>
+                        {item.execution_time_ms != null && (
+                          <span className="meta-item">⏱️ {formatDuration(item.execution_time_ms)}</span>
+                        )}
+                        {item.row_count != null && (
+                          <span className="meta-item">📊 {item.row_count} {t('queryHistory.rows')}</span>
+                        )}
+                      </div>
+                      {item.error_message && (
+                        <div className="history-item-error">
+                          <strong>{t('queryHistory.error')}:</strong>
+                          {item.error_message}
+                        </div>
+                      )}
                     </div>
-                    <button
-                      className={`btn-favorite ${item.is_favorite ? 'active' : ''}`}
-                      onClick={() => handleToggleFavorite(item)}
-                      title={item.is_favorite ? t('queryHistory.unfavorite') : t('queryHistory.favorite')}
-                    >
-                      {item.is_favorite ? '⭐' : '☆'}
-                    </button>
-                  </div>
-                  <div className="history-item-sql">
-                    <pre>{item.sql}</pre>
-                  </div>
-                  <div className="history-item-meta">
-                    <span className="meta-item">🕐 {formatDate(item.executed_at)}</span>
-                    {item.execution_time_ms != null && (
-                      <span className="meta-item">⏱️ {formatDuration(item.execution_time_ms)}</span>
-                    )}
-                    {item.row_count != null && (
-                      <span className="meta-item">📊 {item.row_count} {t('queryHistory.rows')}</span>
-                    )}
-                  </div>
-                  {item.error_message && (
-                    <div className="history-item-error">
-                      <strong>{t('queryHistory.error')}:</strong>
-                      {item.error_message}
+                    <div className="history-item-actions">
+                      <button
+                        className="btn-action btn-execute"
+                        onClick={() => handleExecute(item)}
+                        disabled={loading}
+                      >
+                        {t('queryHistory.execute')}
+                      </button>
+                      <button
+                        className="btn-action btn-delete"
+                        onClick={() => handleDelete(item)}
+                        disabled={loading}
+                      >
+                        {t('common.delete')}
+                      </button>
                     </div>
-                  )}
+                  </div>
                 </div>
-                <div className="history-item-actions">
-                  <button
-                    className="btn-action btn-execute"
-                    onClick={() => handleExecute(item)}
-                    disabled={loading}
-                  >
-                    {t('queryHistory.execute')}
-                  </button>
-                  <button
-                    className="btn-action btn-delete"
-                    onClick={() => handleDelete(item)}
-                    disabled={loading}
-                  >
-                    {t('common.delete')}
-                  </button>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
       </div>

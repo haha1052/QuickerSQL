@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocale } from '../../context/LocaleContext';
+import { computeVisibleRange, indexToOffset } from '../../utils/virtual';
 import './TrashPanel.css';
 
 interface TrashItem {
@@ -12,6 +13,8 @@ interface TrashItem {
   deleted_at: string;
   deleted_by?: string;
 }
+
+const TRASH_ITEM_HEIGHT = 110;
 
 
 
@@ -26,6 +29,24 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<TrashItem | null>(null);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(500);
+
+  const visibleRange = computeVisibleRange(
+    scrollTop,
+    viewportHeight,
+    TRASH_ITEM_HEIGHT,
+    trashItems.length,
+    4,
+  );
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+    if (e.currentTarget.clientHeight !== viewportHeight) {
+      setViewportHeight(e.currentTarget.clientHeight);
+    }
+  }, [viewportHeight]);
 
   const formatDate = (dateStr: string): string => {
     try {
@@ -148,54 +169,72 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
         )}
 
         {trashItems.length > 0 && (
-          <div className="trash-list">
-            {trashItems.map((item) => (
-              <div
-                key={item.id}
-                className={`trash-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
-                onClick={() => setSelectedItem(item)}
-              >
-                <div className="trash-item-info">
-                  <div className="trash-item-name">
-                    📊 {item.original_table_name}
-                  </div>
-                  <div className="trash-item-meta">
-                    <span className="meta-item">
-                      {t('trash.rowCount')} {item.row_count.toLocaleString()}
-                    </span>
-                    <span className="meta-item">
-                      {t('trash.deletedAt')} {formatDate(item.deleted_at)}
-                    </span>
-                    <span className={`meta-tag ${item.strategy.toLowerCase()}`}>
-                      {item.strategy === 'Rename' ? t('trash.rename') : t('trash.parquet')}
-                    </span>
-                  </div>
-                </div>
+          <div
+            className="trash-list"
+            ref={listContainerRef}
+            onScroll={handleScroll}
+            style={{ overflowY: 'auto', position: 'relative' }}
+          >
+            <div style={{ height: visibleRange.totalHeight, position: 'relative' }}>
+              {trashItems.slice(visibleRange.start, visibleRange.end).map((item, idx) => {
+                const actualIndex = visibleRange.start + idx;
+                return (
+                  <div
+                    key={item.id}
+                    className={`trash-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedItem(item)}
+                    style={{
+                      position: 'absolute',
+                      top: indexToOffset(actualIndex, TRASH_ITEM_HEIGHT),
+                      height: TRASH_ITEM_HEIGHT,
+                      left: 0,
+                      right: 0,
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    <div className="trash-item-info">
+                      <div className="trash-item-name">
+                        📊 {item.original_table_name}
+                      </div>
+                      <div className="trash-item-meta">
+                        <span className="meta-item">
+                          {t('trash.rowCount')} {item.row_count.toLocaleString()}
+                        </span>
+                        <span className="meta-item">
+                          {t('trash.deletedAt')} {formatDate(item.deleted_at)}
+                        </span>
+                        <span className={`meta-tag ${item.strategy.toLowerCase()}`}>
+                          {item.strategy === 'Rename' ? t('trash.rename') : t('trash.parquet')}
+                        </span>
+                      </div>
+                    </div>
 
-                <div className="trash-item-actions">
-                  <button
-                    className="btn-action btn-restore"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRestore(item);
-                    }}
-                    disabled={loading}
-                  >
-                    {t('trash.restore')}
-                  </button>
-                  <button
-                    className="btn-action btn-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePermanentDelete(item);
-                    }}
-                    disabled={loading}
-                  >
-                    {t('common.delete')}
-                  </button>
-                </div>
-              </div>
-            ))}
+                    <div className="trash-item-actions">
+                      <button
+                        className="btn-action btn-restore"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRestore(item);
+                        }}
+                        disabled={loading}
+                      >
+                        {t('trash.restore')}
+                      </button>
+                      <button
+                        className="btn-action btn-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePermanentDelete(item);
+                        }}
+                        disabled={loading}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

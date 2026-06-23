@@ -118,6 +118,8 @@ export const useQueryStore = create<QueryState>()(
       name: 'quickersql-query',
       partialize: (state) => ({
         queryHistory: state.queryHistory,
+        sqlQueries: state.sqlQueries,
+        activeQueryId: state.activeQueryId,
       }),
     }
   )

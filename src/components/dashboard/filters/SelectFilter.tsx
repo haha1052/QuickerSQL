@@ -2,7 +2,7 @@ import React from 'react';
 
 interface SelectFilterProps {
   label: string;
-  options: string[];
+  options: Array<{ label: string; value: string }>;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
@@ -25,8 +25,8 @@ export const SelectFilter: React.FC<SelectFilterProps> = ({
       >
         {placeholder && <option value="">{placeholder}</option>}
         {options.map((opt) => (
-          <option key={opt} value={opt}>
-            {opt}
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
           </option>
         ))}
       </select>

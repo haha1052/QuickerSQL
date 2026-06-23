@@ -108,8 +108,9 @@ pub fn save_chart_image(request: SaveImageRequest) -> Result<(), String> {
     // 移除 base64 数据前缀
     let base64_content = request.base64_data.split_once(',').map(|x| x.1).unwrap_or(&request.base64_data);
     
-    // 解码 base64
-    let binary_data = base64::decode(base64_content)
+    // 解码 base64（使用 Engine API，替代 deprecated `base64::decode`）
+    use base64::Engine as _;
+    let binary_data = base64::engine::general_purpose::STANDARD.decode(base64_content)
         .map_err(|e| format!("解码 base64 失败: {}", e))?;
     
     // 写入文件

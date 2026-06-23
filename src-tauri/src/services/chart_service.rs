@@ -335,9 +335,7 @@ impl ChartService {
             },
             x_axis: vec![EChartsAxis {
                 axis_type: Some(match config.chart_type {
-                    ChartType::Bar | ChartType::StackedBar | ChartType::Line | ChartType::Area => "category",
                     ChartType::Scatter => "value",
-                    ChartType::Pie => "category",
                     _ => "category",
                 }.to_string()),
                 data: if config.chart_type == ChartType::Scatter {

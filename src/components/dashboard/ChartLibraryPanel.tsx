@@ -1,10 +1,13 @@
-import React, { useState, useMemo } from 'react';
-import { useDashboardStore } from '../../store/dashboardStore';
-import { useToastStore } from '../../store/toastStore';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
+import { useDashboardStore, useToastStore } from '../../store';
 import { ChartPreview } from '../chart/ChartPreview';
 import { calculateNextPosition } from '../../utils/gridLayout';
+import { computeVisibleRange, indexToOffset } from '../../utils/virtual';
 import type { SavedChart } from '../../types/dashboard';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
+
+const CHART_ITEM_HEIGHT = 96;
+const CHART_ITEM_EXPANDED_HEIGHT = 280;
 
 interface ChartLibraryPanelProps {
   open: boolean;
@@ -42,6 +45,16 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
   const [scopeFilter, setScopeFilter] = useState<'all' | 'available' | 'unavailable'>('all');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduleChart, setScheduleChart] = useState<SavedChart | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+    if (e.currentTarget.clientHeight !== viewportHeight) {
+      setViewportHeight(e.currentTarget.clientHeight);
+    }
+  }, [viewportHeight]);
 
   React.useEffect(() => {
     if (open && savedCharts.length === 0) {
@@ -89,6 +102,14 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     }
     return list;
   }, [savedCharts, search, filterType, sortBy, scopeFilter, activeDashboardId]);
+
+  const visibleRange = computeVisibleRange(
+    scrollTop,
+    viewportHeight,
+    CHART_ITEM_HEIGHT,
+    filteredCharts.length,
+    5,
+  );
 
   const handleDeleteChart = async (chart: SavedChart, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -189,7 +210,11 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
           )}
         </div>
 
-        <div style={styles.listContainer}>
+        <div
+          style={styles.listContainer}
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+        >
           {filteredCharts.length === 0 ? (
             <div style={styles.empty}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>📊</div>
@@ -201,10 +226,12 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
               </div>
             </div>
           ) : (
-            <div style={styles.list}>
-              {filteredCharts.map((chart) => {
+            <div style={{ position: 'relative', height: visibleRange.totalHeight }}>
+              {filteredCharts.slice(visibleRange.start, visibleRange.end).map((chart, idx) => {
+                const actualIndex = visibleRange.start + idx;
                 const isSelected = selectedChartId === chart.id;
                 const available = isChartAvailableTo(chart);
+                const itemHeight = isSelected ? CHART_ITEM_EXPANDED_HEIGHT : CHART_ITEM_HEIGHT;
                 return (
                   <div
                     key={chart.id}
@@ -212,6 +239,11 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                       ...styles.chartItem,
                       ...(isSelected ? styles.chartItemSelected : {}),
                       ...(available ? {} : { opacity: 0.55 }),
+                      position: 'absolute',
+                      top: indexToOffset(actualIndex, CHART_ITEM_HEIGHT),
+                      height: itemHeight,
+                      left: 0,
+                      right: 0,
                     }}
                     onClick={() => handleChartClick(chart)}
                   >

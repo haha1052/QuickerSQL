@@ -18,7 +18,7 @@ export interface QueryParam {
   name: string;
   type: 'string' | 'number' | 'date' | 'select';
   default: string;
-  options?: string[];
+  options?: Array<{ label: string; value: string }>;
   label: string;
 }
 
@@ -95,7 +95,7 @@ export interface DashboardFilter {
   label: string;
   type: 'date-range' | 'select' | 'text';
   defaultValue: string | string[];
-  options?: string[];
+  options?: Array<{ label: string; value: string }>;
 }
 
 // Grid position for dashboard items

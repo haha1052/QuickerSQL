@@ -29,3 +29,11 @@
 - 前端：React 19 + TypeScript + Zustand + ECharts 5
 - 双引擎：SQLite（事务）+ DuckDB（分析）
 - 构建：Vite 7，类型检查 `tsc --noEmit`，构建 `tsc && vite build`
+
+## 透明窗口启动架构（2026-06-21 修复）
+
+- **`transparent: true` 与 `backgroundColor` 冲突**：Tauri 2 在 Windows 上设置 `backgroundColor` 后可能不走分层窗口路径，导致 WebView2 底层用白色画刷填充。**禁止在 `tauri.conf.json` 的窗口配置中同时设置 `transparent: true` 和 `backgroundColor`**，只保留 `transparent: true`。
+- **HWND 获取方式**：`apply_borderless()` 用 `GetForegroundWindow()` 不可靠（setup 阶段窗口未必是前台窗口）。应使用 `window.hwnd()` 获取确切句柄，通过 `hwnd.0 as *mut std::ffi::c_void` 转换后传入 `apply_borderless_to_hwnd(hwnd_ptr)`。
+- **`.startup-phase` CSS 类**：index.html 中定义了 `.startup-phase` 类（`background: transparent !important`），JS 必须在执行第一时间给 html/body/#root 添加此类，splash 淡出时移除。这提供了额外的 `!important` 透明保障层。
+- **DwmExtendFrameIntoClientArea(-1)**：让 DWM 把整个窗口视为客户区，不绘制任何框架轮廓。setup 阶段必须立即调用，不能等到 `window_resize_to_main` 命令。
+- **log crate 未初始化**：项目没有 `env_logger` 或 `tauri_plugin_log`，`log::info!` 不会输出到 stdout。调试时需用 `println!`。

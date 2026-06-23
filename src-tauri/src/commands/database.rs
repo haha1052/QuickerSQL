@@ -4,7 +4,7 @@
 //! 本文件只负责参数解析、获取连接、调用服务、写审计日志。
 use crate::TauriAppState;
 use crate::database::SqlIdentifier;
-use crate::models::database::{ColumnInfo, DatabaseInfo, DatabaseStatus, TableInfo};
+use crate::models::database::{ColumnInfo, DatabaseInfo, DatabaseStatus, TableInfo, TableMetaInfo};
 use crate::services::DatabaseService;
 use tauri::State;
 
@@ -161,56 +161,13 @@ pub fn rename_table(
 }
 
 /// 获取表的扩展元信息（索引数 + 估算磁盘大小）
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct TableMetaInfo {
-    pub index_count: i64,
-    pub size_bytes: i64,
-}
-
 #[tauri::command]
 pub fn get_table_meta(state: State<'_, TauriAppState>, table_name: String) -> Result<TableMetaInfo, String> {
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-
-    // 表名经 SqlIdentifier 校验
-    let ident = SqlIdentifier::new(&table_name)?;
-
-    // 1) 索引数量：PRAGMA index_list
-    let index_sql = format!("PRAGMA index_list({})", ident.quoted());
-    let index_count = match conn.query(&index_sql, &[]) {
-        Ok(result) => result.rows.len() as i64,
-        Err(_) => 0,
-    };
-
-    // 2) 估算大小：数据库实际使用空间 / 表数量的粗略平均值
-    let size_bytes = {
-        let page_size = conn.query("PRAGMA page_size", &[]).ok()
-            .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-            .unwrap_or(4096);
-        let page_count = conn.query("PRAGMA page_count", &[]).ok()
-            .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-            .unwrap_or(0);
-        let freelist_count = conn.query("PRAGMA freelist_count", &[]).ok()
-            .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-            .unwrap_or(0);
-
-        let used_pages = page_count.saturating_sub(freelist_count);
-        let total_used_size = page_size.saturating_mul(used_pages);
-
-        let table_count = conn.query("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", &[]).ok()
-            .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-            .unwrap_or(1);
-        if table_count > 0 {
-            total_used_size / table_count.max(1)
-        } else {
-            0
-        }
-    };
-
-    Ok(TableMetaInfo { index_count, size_bytes })
+    DatabaseService::get_table_performance_info(&conn, &table_name)
 }
 
 /// 获取表的行数

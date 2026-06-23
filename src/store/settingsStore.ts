@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   SettingItem,
   SettingCategory,
+  QueryCacheStats,
 } from '../types';
 import { tauriService } from '../services';
 
@@ -11,6 +12,11 @@ interface SettingsState {
   activeCategory: string;
   loading: boolean;
   error: string | null;
+
+  // 查询缓存统计
+  cacheStats: QueryCacheStats | null;
+  cacheStatsLoading: boolean;
+  cacheStatsError: string | null;
   
   // Actions
   loadSettings: () => Promise<void>;
@@ -18,6 +24,19 @@ interface SettingsState {
   resetSettings: (category?: string) => Promise<void>;
   setActiveCategory: (category: string) => void;
   clearError: () => void;
+
+  // 查询缓存相关 actions
+  loadCacheStats: () => Promise<void>;
+  configureCache: (
+    capacity: number,
+    ttlSeconds: number,
+    enabled: boolean
+  ) => Promise<void>;
+  clearCache: () => Promise<void>;
+
+  // v2 优化：直接将 get_startup_status 返回的精简 settings 转换为 categories
+  // 避免启动阶段再发一次 IPC
+  setSettingsFromStartup: (items: Array<{ category: string; key: string; value: string }>) => void;
   
   // 辅助方法
   getSetting: (category: string, key: string) => SettingItem | undefined;
@@ -28,7 +47,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   activeCategory: 'appearance',
   loading: false,
   error: null,
-  
+
+  cacheStats: null,
+  cacheStatsLoading: false,
+  cacheStatsError: null,
+
   loadSettings: async () => {
     set({ loading: true, error: null });
     try {
@@ -93,10 +116,95 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setActiveCategory: (category: string) => set({ activeCategory: category }),
   
   clearError: () => set({ error: null }),
+
+  // v2 优化：将 startup 返回的精简 settings 转换为 categories
+  // 保留 id/description/value_type 等字段时使用合理默认值
+  // 用户首次打开设置页时若需要更详细字段，可再次调用 loadSettings
+  setSettingsFromStartup: (items) => {
+    if (!items || items.length === 0) return;
+    const map = new Map<string, SettingCategory>();
+    items.forEach((it) => {
+      const defaulted: SettingItem = {
+        id: `${it.category}-${it.key}`,
+        category: it.category,
+        key: it.key,
+        value: it.value,
+        value_type: 'string',
+        description: null,
+        options: null,
+        is_visible: true,
+        is_system: false,
+        updated_at: '',
+      };
+      const existing = map.get(it.category);
+      if (existing) {
+        existing.items.push(defaulted);
+      } else {
+        map.set(it.category, {
+          id: it.category,
+          name: it.category,
+          icon: null,
+          items: [defaulted],
+        });
+      }
+    });
+    const categories = Array.from(map.values());
+    set({ categories, loading: false });
+    const state = get();
+    if (!categories.find((c) => c.id === state.activeCategory) && categories.length > 0) {
+      set({ activeCategory: categories[0].id });
+    }
+  },
   
   getSetting: (category: string, key: string) => {
     const state = get();
     const cat = state.categories.find(c => c.id === category);
     return cat?.items.find(item => item.key === key);
+  },
+
+  loadCacheStats: async () => {
+    set({ cacheStatsLoading: true, cacheStatsError: null });
+    try {
+      const response = await tauriService.getQueryCacheStats();
+      if (response.success && response.data) {
+        set({ cacheStats: response.data, cacheStatsLoading: false });
+      } else {
+        throw new Error(response.error || 'Failed to load cache stats');
+      }
+    } catch (error) {
+      set({ cacheStatsError: String(error), cacheStatsLoading: false });
+    }
+  },
+
+  configureCache: async (capacity: number, ttlSeconds: number, enabled: boolean): Promise<void> => {
+    set({ cacheStatsLoading: true, cacheStatsError: null });
+    try {
+      const response = await tauriService.configureQueryCache({
+        capacity,
+        ttlSeconds,
+        enabled,
+      });
+      if (response.success) {
+        await get().loadCacheStats();
+      } else {
+        throw new Error(response.error || 'Failed to configure cache');
+      }
+    } catch (error) {
+      set({ cacheStatsError: String(error), cacheStatsLoading: false });
+    }
+  },
+
+  clearCache: async (): Promise<void> => {
+    set({ cacheStatsLoading: true, cacheStatsError: null });
+    try {
+      const response = await tauriService.clearQueryCache();
+      if (response.success && response.data) {
+        set({ cacheStats: response.data, cacheStatsLoading: false });
+      } else {
+        throw new Error(response.error || 'Failed to clear cache');
+      }
+    } catch (error) {
+      set({ cacheStatsError: String(error), cacheStatsLoading: false });
+    }
   },
 }));

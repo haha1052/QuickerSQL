@@ -1,7 +1,8 @@
-# QuickerSQL 架构守护规则 v7.0
+# QuickerSQL 架构守护规则 v10.0
 
-> 优先级：最高。任何代码生成 / 修改任务必须先完整阅读本文件 + 根目录 `AGENTS.md` + `docs/架构现状.md`，三文件缺一不可执行。
+> 优先级：高。代码修改任务须阅读本文件 + [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 了解整体规则。
 > 生效范围：所有 Trae Agent（主 Agent 与所有子 Agent）。
+> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步版本号；新增"规格驱动开发"流程，MCP 工具验证内化为默认开发流程一环）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
@@ -185,9 +186,48 @@ types/（类型定义，禁止逻辑）
 
 ---
 
-## 七、版本与变更记录
+## 七、补充：数据库迁移规范简要
 
-| 版本 | 日期 | 变更内容 |
-|------|------|---------|
-| v1.0 | 历史 | 初版（仅 3 条极简规则） |
-| v7.0 | 2026-06-20 | **分层规则体系全面升级**：新增模块白名单（§2）、目录禁改清单（§2.3）、系统表清单补全（§3，含 `__automation_*`、`__saved_charts`、`__saved_dashboards`）、接口文档前置（§4）、新文件命名约束（§5.1）、规则优先级声明（§6）；与 `.trae/rules/coding.md`、`security.md`、`test.md`、`file-lock.md`、`CLAUDE.local.md` 组成六文件规则体系 |
+### 7.1 迁移脚本命名
+
+遵循 `V<序号>__<描述>.sql` 格式：
+
+```
+V001__create_settings_table.sql
+V002__add_created_at_column.sql
+```
+
+### 7.2 迁移约束
+
+- **新增系统表时必须先更新 AGENTS.md §3 系统表清单**
+- **老数据库 NULL 场景必须有降级处理路径**（default value 或 safe fallback）
+- **列名变更必须前后端 struct/interface 同步修改**（见 AGENTS.md §2.3）
+
+### 7.3 规则文档引用表
+
+| 主题 | 参考文档 |
+|------|---------|
+| 安全 / 参数化查询 | [security.md](file:///e:/LA_DUCK/la-duck/.trae/rules/security.md) |
+| 代码规范 / 命名 | [coding.md](file:///e:/LA_DUCK/la-duck/.trae/rules/coding.md) |
+| 测试要求 | [test.md](file:///e:/LA_DUCK/la-duck/.trae/rules/test.md) |
+| 文件锁 / 核心文件 | [file-lock.md](file:///e:/LA_DUCK/la-duck/.trae/rules/file-lock.md) |
+| MCP 工具使用 | [mcp.md](file:///e:/LA_DUCK/la-duck/.trae/rules/mcp.md) |
+| 发布 / 依赖管理 | [release.md](file:///e:/LA_DUCK/la-duck/.trae/rules/release.md) |
+| 完整规则入口 | [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) |
+
+---
+
+### 7.4 如何用 MCP 工具验证本规则
+
+> 每次修改代码后，以下命令必须通过。用 Windows CLI MCP 直接执行。
+
+| 验证项 | 命令（PowerShell 环境） | 期望结果 |
+|--------|------------------------|---------|
+| Rust 目录结构完整 | `Get-ChildItem -Path src-tauri/src -Directory \| Select-Object Name` | 至少包含 commands/services/models/database/utils 5 个目录 |
+| TS 目录结构完整 | `Get-ChildItem -Path src -Directory \| Select-Object Name` | 至少包含 components/store/services/types/utils 5 个目录 |
+| commands 层不直接写 SQL | `Get-ChildItem -Path src-tauri/src/commands -Include *.rs -Recurse \| Select-String -Pattern "format!.*SELECT\|format!.*INSERT\|format!.*UPDATE\|conn.execute(format!" -CaseSensitive:$false` | 0 个匹配 |
+| models 层没有业务逻辑 | `Get-ChildItem -Path src-tauri/src/models -Include *.rs -Recurse \| Select-String -Pattern "fn .*_service\|impl.*Service" -CaseSensitive:$false` | 0 个匹配 |
+| 前后端字段名一致 | `Get-ChildItem -Path src-tauri/src/models -Include *.rs -Recurse \| Select-String -Pattern 'rename = "camelCase"' \| Measure-Object` | 每个 struct 至少有字段用 camelCase 映射 |
+| 系统表命名规范 | `Get-ChildItem -Path src-tauri/src/services -Include *.rs -Recurse \| Select-String -Pattern '"__\w+"' \| Measure-Object` | 所有系统表名以双下划线开头 |
+
+> 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

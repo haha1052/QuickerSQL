@@ -6,4 +6,5 @@ export { useWorkspaceStore, SIDEBAR_MIN_WIDTH, SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MA
 export { useSettingsStore } from './settingsStore';
 export { useDashboardStore } from './dashboardStore';
 export { useTaskStore } from './taskStore';
-export { useToastStore } from './toastStore';
+export { useToastStore, type Toast, type ToastType } from './toastStore';
+export { useTableStore } from './tableStore';

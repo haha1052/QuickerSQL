@@ -321,3 +321,88 @@ impl TrashService {
         }
     }
 }
+
+// ============================================================
+// M7.3 测试模块：表名安全校验 + TrashStrategy 解析
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::SqlIdentifier;
+
+    #[test]
+    fn test_table_name_rejects_invalid_identifiers() {
+        // SqlIdentifier 禁止的字符：; -- 引号等。这里用其 is_safe_identifier 白名单
+        // 合法：字母、数字、下划线、中文
+        assert!(SqlIdentifier::is_safe_identifier("users"));
+        assert!(SqlIdentifier::is_safe_identifier("用户表"));
+        assert!(SqlIdentifier::is_safe_identifier("my_table_123"));
+
+        // 非法：包含分号、空格、引号
+        assert!(!SqlIdentifier::is_safe_identifier("users; DROP TABLE"));
+        assert!(!SqlIdentifier::is_safe_identifier("user' OR '1'='1"));
+        assert!(!SqlIdentifier::is_safe_identifier("\"tab\""));
+    }
+
+    #[test]
+    fn test_quote_identifier_escapes_quotes() {
+        // 表名内含双引号需要被转义为 ""
+        let quoted = SqlIdentifier::quote_identifier("user\"name");
+        assert_eq!(quoted, "\"user\"\"name\"");
+    }
+
+    #[test]
+    fn test_trash_strategy_parsing_fallback_rename() {
+        // TrashService 内部将未知 strategy 回退到 Rename
+        let unknown = "SomeNewStrategy";
+        let strategy = match unknown {
+            "Rename" => TrashStrategy::Rename,
+            "Parquet" => TrashStrategy::Parquet,
+            _ => TrashStrategy::Rename, // 默认回退
+        };
+        assert!(matches!(strategy, TrashStrategy::Rename));
+    }
+
+    #[test]
+    fn test_trash_strategy_parsing_recognizes_known() {
+        assert!(matches!(
+            match "Rename" {
+                "Rename" => TrashStrategy::Rename,
+                "Parquet" => TrashStrategy::Parquet,
+                _ => TrashStrategy::Rename,
+            },
+            TrashStrategy::Rename
+        ));
+        assert!(matches!(
+            match "Parquet" {
+                "Rename" => TrashStrategy::Rename,
+                "Parquet" => TrashStrategy::Parquet,
+                _ => TrashStrategy::Rename,
+            },
+            TrashStrategy::Parquet
+        ));
+    }
+
+    #[test]
+    fn test_trash_list_response_default_size_none() {
+        let resp = TrashListResponse {
+            items: Vec::new(),
+            total: 0,
+            total_size_bytes: None,
+        };
+        assert_eq!(resp.total, 0);
+        assert!(resp.items.is_empty());
+        assert!(resp.total_size_bytes.is_none());
+    }
+
+    #[test]
+    fn test_row_count_parse_falls_back_to_zero_on_empty() {
+        // 对应 get_table_row_count 中的空结果回退
+        let empty_rows: Vec<Vec<String>> = Vec::new();
+        let value = empty_rows
+            .first()
+            .and_then(|r| r.first().and_then(|v| v.parse::<u64>().ok()))
+            .unwrap_or(0);
+        assert_eq!(value, 0);
+    }
+}

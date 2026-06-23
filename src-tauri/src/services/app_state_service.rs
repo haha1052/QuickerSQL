@@ -57,36 +57,27 @@ impl AppStateService {
         Ok(())
     }
 
-    /// 初始化默认应用状态
+    /// 初始化默认应用状态（参数化查询，避免 SQL 注入风险）
     fn initialize_default_app_states(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        use crate::database::traits::ToSql;
         let defaults = default_app_states();
 
         for (category, key, default_value, description) in defaults {
-            // 检查是否已存在
-            let check_sql = format!(
-                "SELECT id FROM __app_state WHERE category = '{}' AND key = '{}'",
-                category.replace("'", "''"),
-                key.replace("'", "''")
-            );
-            let result = conn.query(&check_sql, &[])
+            // 参数化查询：检查是否已存在
+            let check_sql = "SELECT id FROM __app_state WHERE category = ? AND key = ?";
+            let check_params: [&dyn ToSql; 2] = [&category, &key];
+            let result = conn.query(check_sql, &check_params)
                 .map_err(|e| format!("检查应用状态失败：{}", e))?;
 
             if result.rows.is_empty() {
-                // 插入默认状态
+                // 参数化查询：插入默认状态
                 let id = uuid::Uuid::new_v4().to_string();
                 let description_str = description.clone().unwrap_or_default();
 
-                let insert_sql = format!(
-                    "INSERT INTO __app_state (id, category, key, value, description)
-                     VALUES ('{}', '{}', '{}', '{}', '{}');",
-                    id.replace("'", "''"),
-                    category.replace("'", "''"),
-                    key.replace("'", "''"),
-                    default_value.replace("'", "''"),
-                    description_str.replace("'", "''")
-                );
+                let insert_sql = "INSERT INTO __app_state (id, category, key, value, description) VALUES (?, ?, ?, ?, ?);";
+                let insert_params: [&dyn ToSql; 5] = [&id, &category, &key, &default_value, &description_str];
 
-                conn.execute(&insert_sql, &[])
+                conn.execute(insert_sql, &insert_params)
                     .map_err(|e| format!("插入默认应用状态失败：{}", e))?;
             }
         }
@@ -94,18 +85,16 @@ impl AppStateService {
         Ok(())
     }
 
-    /// 获取单个应用状态
+    /// 获取单个应用状态（参数化查询）
     pub fn get_app_state(
         conn: &MutexGuardConnection<'_>,
         category: &str,
         key: &str,
     ) -> Result<Option<AppStateResponse>, String> {
-        let select_sql = format!(
-            "SELECT category, key, value FROM __app_state WHERE category = '{}' AND key = '{}'",
-            category.replace("'", "''"),
-            key.replace("'", "''")
-        );
-        let result = conn.query(&select_sql, &[])
+        use crate::database::traits::ToSql;
+        let select_sql = "SELECT category, key, value FROM __app_state WHERE category = ? AND key = ?";
+        let params: [&dyn ToSql; 2] = [&category, &key];
+        let result = conn.query(select_sql, &params)
             .map_err(|e| format!("获取应用状态失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -120,16 +109,15 @@ impl AppStateService {
         }))
     }
 
-    /// 按分类获取所有应用状态
+    /// 按分类获取所有应用状态（参数化查询）
     pub fn get_app_states_by_category(
         conn: &MutexGuardConnection<'_>,
         category: &str,
     ) -> Result<Vec<AppStateResponse>, String> {
-        let select_sql = format!(
-            "SELECT category, key, value FROM __app_state WHERE category = '{}' ORDER BY key",
-            category.replace("'", "''")
-        );
-        let result = conn.query(&select_sql, &[])
+        use crate::database::traits::ToSql;
+        let select_sql = "SELECT category, key, value FROM __app_state WHERE category = ? ORDER BY key";
+        let params: [&dyn ToSql; 1] = [&category];
+        let result = conn.query(select_sql, &params)
             .map_err(|e| format!("获取应用状态失败：{}", e))?;
 
         let mut items = Vec::new();
@@ -144,7 +132,7 @@ impl AppStateService {
         Ok(items)
     }
 
-    /// 更新应用状态（不存在则创建）
+    /// 更新应用状态（不存在则创建，参数化查询）
     pub fn update_app_state(
         conn: &MutexGuardConnection<'_>,
         category: &str,
@@ -152,42 +140,29 @@ impl AppStateService {
         value: &str,
         description: Option<&str>,
     ) -> Result<(), String> {
-        // 先检查是否存在
-        let check_sql = format!(
-            "SELECT id FROM __app_state WHERE category = '{}' AND key = '{}'",
-            category.replace("'", "''"),
-            key.replace("'", "''")
-        );
-        let result = conn.query(&check_sql, &[])
+        use crate::database::traits::ToSql;
+        // 参数化查询：先检查是否已存在
+        let check_sql = "SELECT id FROM __app_state WHERE category = ? AND key = ?";
+        let check_params: [&dyn ToSql; 2] = [&category, &key];
+        let result = conn.query(check_sql, &check_params)
             .map_err(|e| format!("检查应用状态失败：{}", e))?;
 
         if result.rows.is_empty() {
-            // 插入新记录
+            // 参数化查询：插入新记录
             let id = uuid::Uuid::new_v4().to_string();
             let desc_str = description.unwrap_or("").to_string();
 
-            let insert_sql = format!(
-                "INSERT INTO __app_state (id, category, key, value, description)
-                 VALUES ('{}', '{}', '{}', '{}', '{}');",
-                id.replace("'", "''"),
-                category.replace("'", "''"),
-                key.replace("'", "''"),
-                value.replace("'", "''"),
-                desc_str.replace("'", "''")
-            );
+            let insert_sql = "INSERT INTO __app_state (id, category, key, value, description) VALUES (?, ?, ?, ?, ?);";
+            let insert_params: [&dyn ToSql; 5] = [&id, &category, &key, &value, &desc_str];
 
-            conn.execute(&insert_sql, &[])
+            conn.execute(insert_sql, &insert_params)
                 .map_err(|e| format!("插入应用状态失败：{}", e))?;
         } else {
-            // 更新现有记录
-            let update_sql = format!(
-                "UPDATE __app_state SET value = '{}', updated_at = CURRENT_TIMESTAMP WHERE category = '{}' AND key = '{}'",
-                value.replace("'", "''"),
-                category.replace("'", "''"),
-                key.replace("'", "''")
-            );
+            // 参数化查询：更新现有记录
+            let update_sql = "UPDATE __app_state SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE category = ? AND key = ?";
+            let update_params: [&dyn ToSql; 3] = [&value, &category, &key];
 
-            conn.execute(&update_sql, &[])
+            conn.execute(update_sql, &update_params)
                 .map_err(|e| format!("更新应用状态失败：{}", e))?;
         }
 
@@ -316,13 +291,11 @@ impl AppStateService {
         for row in &tabs_result.rows {
             let tab_id = row[0].clone();
 
-            // 获取该 Tab 的所有面板
-            let panels_sql = format!(
-                "SELECT id, panel_type, title, size, sql_content, is_active, position 
-                 FROM __workspace_panels WHERE tab_id = '{}' ORDER BY position",
-                tab_id.replace("'", "''")
-            );
-            let panels_result = conn.query(&panels_sql, &[])
+            // 参数化查询：获取该 Tab 的所有面板
+            let panels_sql = "SELECT id, panel_type, title, size, sql_content, is_active, position
+                              FROM __workspace_panels WHERE tab_id = ? ORDER BY position";
+            let panels_params: [&dyn crate::database::traits::ToSql; 1] = [&tab_id];
+            let panels_result = conn.query(panels_sql, &panels_params)
                 .map_err(|e| format!("获取工作区Panel失败：{}", e))?;
 
             let mut panels = Vec::new();
@@ -354,6 +327,79 @@ impl AppStateService {
             });
         }
 
+        Ok(tabs)
+    }
+
+    /// 高效加载工作区布局：2 查询 + 应用层聚合
+    /// 替代原 load_workspace 的 1+N 查询，仅在启动路径使用
+    pub fn load_workspace_fast(conn: &MutexGuardConnection<'_>) -> Result<Vec<WorkspaceTab>, String> {
+        use crate::database::traits::ToSql;
+
+        let empty_params: [&dyn ToSql; 0] = [];
+
+        // 查询 1：获取所有 Tab
+        let tabs_result = conn.query(
+            "SELECT id, title, tab_type, position, is_active FROM __workspace_tabs ORDER BY position",
+            &empty_params
+        ).map_err(|e| format!("获取工作区Tab失败: {}", e))?;
+
+        if tabs_result.rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 收集所有 tab_id，用于第 2 次批量查询 panels
+        let tab_ids: Vec<String> = tabs_result.rows.iter().map(|r| r[0].clone()).collect();
+
+        // 查询 2：一次查询所有 Tab 的所有 panels（用 tab_id 关联）
+        // 构建占位符 ?, ?, ?...
+        let placeholders: Vec<String> = tab_ids.iter().map(|_| "?".to_string()).collect();
+        let panels_sql = format!(
+            "SELECT tab_id, id, panel_type, title, size, sql_content, is_active, position
+             FROM __workspace_panels WHERE tab_id IN ({}) ORDER BY tab_id, position",
+            placeholders.join(", ")
+        );
+
+        // 将 tab_ids 转为参数引用
+        let param_refs: Vec<&dyn ToSql> = tab_ids.iter().map(|id| id as &dyn ToSql).collect();
+        let panels_result = conn.query(&panels_sql, &param_refs)
+            .map_err(|e| format!("获取工作区Panels失败: {}", e))?;
+
+        // 应用层聚合：按 tab_id 分组 panels
+        let mut panels_by_tab: std::collections::HashMap<String, Vec<WorkspacePanel>> = std::collections::HashMap::new();
+        for panel_row in &panels_result.rows {
+            if panel_row.len() < 8 { continue; }
+            let tab_id = panel_row[0].clone();
+            let panel = WorkspacePanel {
+                id: panel_row[1].clone(),
+                panel_type: panel_row[2].clone(),
+                title: panel_row[3].clone(),
+                size: panel_row[4].parse().unwrap_or(100),
+                sql_content: if panel_row[5].is_empty() { None } else { Some(panel_row[5].clone()) },
+                is_active: panel_row[6].parse().unwrap_or(true),
+                position: panel_row[7].parse().unwrap_or(0),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            panels_by_tab.entry(tab_id).or_default().push(panel);
+        }
+
+        // 组装最终结果（保持 Tab 的顺序）
+        let mut tabs = Vec::new();
+        for row in &tabs_result.rows {
+            if row.len() < 5 { continue; }
+            let tab_id = row[0].clone();
+            let panels = panels_by_tab.remove(&tab_id).unwrap_or_default();
+            tabs.push(WorkspaceTab {
+                id: tab_id,
+                title: row[1].clone(),
+                tab_type: row[2].clone(),
+                position: row[3].parse().unwrap_or(0),
+                is_active: row[4].parse().unwrap_or(false),
+                panels,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            });
+        }
         Ok(tabs)
     }
 }

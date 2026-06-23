@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef, Component, Dispatch, SetStateAction } from 'react';
-import * as echarts from 'echarts';
-import { useDashboardStore } from '../../store/dashboardStore';
+import type { ECharts } from 'echarts';
+// P0-2 启动优化：echarts 改为懒加载，避免启动时加载大型第三方库
+// import * as echarts from 'echarts'  // ← 已移至组件内部动态 import
+import { useDashboardStore } from '../../store';
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
 import { applyFiltersToSql, hasActiveFilters } from '../../utils/filterSql';
 import type { DashboardItem as DashboardItemType, SavedChart, DashboardFilter } from '../../types/dashboard';
+import type { ChartConfig } from '../../types/chart';
 
 interface DashboardItemProps {
   item: DashboardItemType;
@@ -18,7 +21,7 @@ interface DashboardItemProps {
 async function renderWithSql(
   sql: string,
   savedChart: SavedChart,
-  setChartConfig: Dispatch<SetStateAction<Record<string, unknown> | null>>,
+  setChartConfig: Dispatch<SetStateAction<ChartConfig | null>>,
   setError: Dispatch<SetStateAction<string | null>>,
   setLoading: Dispatch<SetStateAction<boolean>>,
 ) {
@@ -114,50 +117,68 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode }
  *           避免与父组件 DashboardItem 的 Grid 布局产生嵌套冲突。
  */
 const ChartCanvas: React.FC<{
-  chartConfig: Record<string, unknown> | null;
+  chartConfig: ChartConfig | null;
   /** 编辑模式下禁用 ECharts 的鼠标交互，让拖拽事件能穿透到外层卡片 */
   interactive: boolean;
 }> = ({ chartConfig, interactive }) => {
   const chartRef = useRef<HTMLDivElement>(null);
-  const chartInstanceRef = useRef<echarts.ECharts | null>(null);
+  const chartInstanceRef = useRef<ECharts | null>(null);
+  const echartsModuleRef = useRef<{ init: (el: HTMLDivElement) => ECharts } | null>(null);
 
   useEffect(() => {
     if (!chartConfig || !chartRef.current) return;
 
-    let localInstance: echarts.ECharts | null = chartInstanceRef.current;
+    const containerEl: HTMLDivElement = chartRef.current;
+
     let handleResize: (() => void) | null = null;
+    let localInstance: ECharts | null = chartInstanceRef.current;
+    let disposed = false;
 
-    try {
-      if (!localInstance) {
-        localInstance = echarts.init(chartRef.current);
-        chartInstanceRef.current = localInstance;
-      }
-
-      const normalized = normalizeEChartsConfig(chartConfig);
-      if (!normalized) return;
-      localInstance.setOption(normalized);
-
-      handleResize = () => {
-        localInstance?.resize();
-      };
-
-      window.addEventListener('resize', handleResize);
-    } catch (e) {
-      console.error('[ChartCanvas] ECharts渲染失败:', e);
-      // 配置失败：如果是本次 useEffect 新创建的实例，dispose 它避免泄漏
-      if (localInstance && chartInstanceRef.current === localInstance) {
+    (async () => {
+      // P0-2 启动优化：首次渲染时动态加载 echarts，不阻塞主 bundle
+      if (!echartsModuleRef.current) {
         try {
-          localInstance.dispose();
-        } catch {
-          /* ignore */
+          echartsModuleRef.current = await import('echarts');
+        } catch (e) {
+          console.error('[ChartCanvas] 动态加载 echarts 失败:', e);
+          return;
         }
-        chartInstanceRef.current = null;
-        localInstance = null;
       }
-      return;
-    }
+      if (disposed) return;
+
+      const echarts = echartsModuleRef.current;
+
+      try {
+        if (!localInstance) {
+          localInstance = echarts.init(containerEl);
+          chartInstanceRef.current = localInstance;
+        }
+
+        const normalized = normalizeEChartsConfig(chartConfig);
+        if (!normalized) return;
+        localInstance.setOption(normalized);
+
+        handleResize = () => {
+          localInstance?.resize();
+        };
+
+        window.addEventListener('resize', handleResize);
+      } catch (e) {
+        console.error('[ChartCanvas] ECharts渲染失败:', e);
+        if (localInstance && chartInstanceRef.current === localInstance) {
+          try {
+            localInstance.dispose();
+          } catch {
+            /* ignore */
+          }
+          chartInstanceRef.current = null;
+          localInstance = null;
+        }
+      }
+    })();
 
     return () => {
+      disposed = true;
       if (handleResize) {
         window.removeEventListener('resize', handleResize);
       }
@@ -196,7 +217,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chartConfig, setChartConfig] = useState<Record<string, unknown> | null>(null);
+  const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards, refreshChartsVersion } = useDashboardStore();
@@ -290,7 +311,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
           ? applyFiltersToSql(savedChart.sql, JSON.parse(filterValuesKey), dashboardFilters)
           : savedChart.sql;
         try {
-          await renderWithSql(effectiveSql, savedChart as any, setChartConfig, setError, setLoading);
+          await renderWithSql(effectiveSql, savedChart, setChartConfig, setError, setLoading);
           return;
         } catch (e) {
           console.error('[DashboardItem] SQL 渲染失败，继续尝试回退:', e);
@@ -309,7 +330,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               ? applyFiltersToSql(queryResponse.data.sql, JSON.parse(filterValuesKey), dashboardFilters)
               : queryResponse.data.sql;
             if (savedChart.xAxis && savedChart.yAxis?.length > 0) {
-              await renderWithSql(fallbackSql, savedChart as any, setChartConfig, setError, setLoading);
+              await renderWithSql(fallbackSql, savedChart, setChartConfig, setError, setLoading);
               return;
             }
           }

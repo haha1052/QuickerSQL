@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useDashboardStore } from '../../store/dashboardStore';
-import { useToastStore } from '../../store/toastStore';
+import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
 import type { SavedChart, ChartType } from '../../types/dashboard';

@@ -208,3 +208,118 @@ impl AuditLogService {
         })
     }
 }
+
+// ============================================================
+// M7.3 测试模块：行解析 / 数据结构 纯函数验证
+// ============================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_row(
+        id: &str,
+        ts: &str,
+        module: &str,
+        action: &str,
+        desc: &str,
+        status: &str,
+        duration: &str,
+        details: &str,
+    ) -> Vec<String> {
+        vec![
+            id.to_string(),
+            ts.to_string(),
+            module.to_string(),
+            action.to_string(),
+            desc.to_string(),
+            status.to_string(),
+            duration.to_string(),
+            details.to_string(),
+        ]
+    }
+
+    #[test]
+    fn test_row_to_audit_log_item_success() {
+        let row = build_row(
+            "123",
+            "2026-06-21T12:00:00+00:00",
+            "sql",
+            "execute",
+            "SELECT * FROM users",
+            "success",
+            "42",
+            "some details",
+        );
+        let result = AuditLogService::row_to_audit_log_item(&row);
+        assert!(result.is_ok());
+        let item = result.unwrap();
+        assert_eq!(item.id, "123");
+        assert_eq!(item.module, "sql");
+        assert_eq!(item.action, "execute");
+        assert_eq!(item.status, "success");
+        assert_eq!(item.duration_ms, Some(42));
+        assert_eq!(item.details.as_deref(), Some("some details"));
+    }
+
+    #[test]
+    fn test_row_to_audit_log_item_insufficient_columns() {
+        let short_row = vec![
+            "1".to_string(),
+            "2026-06-21T12:00:00+00:00".to_string(),
+            "sql".to_string(),
+        ];
+        let result = AuditLogService::row_to_audit_log_item(&short_row);
+        assert!(result.is_err(), "列数不足应返回 Err");
+    }
+
+    #[test]
+    fn test_row_to_audit_log_item_null_duration_and_details() {
+        let row = build_row(
+            "1",
+            "2026-06-21T12:00:00+00:00",
+            "query",
+            "list",
+            "",
+            "success",
+            "null",
+            "null",
+        );
+        let item = AuditLogService::row_to_audit_log_item(&row).unwrap();
+        assert!(item.duration_ms.is_none());
+        assert!(item.details.is_none());
+    }
+
+    #[test]
+    fn test_row_to_audit_log_item_invalid_duration_falls_back_none() {
+        let row = build_row(
+            "1",
+            "2026-06-21T12:00:00+00:00",
+            "m",
+            "a",
+            "d",
+            "s",
+            "not_a_number",
+            "",
+        );
+        let item = AuditLogService::row_to_audit_log_item(&row).unwrap();
+        assert!(item.duration_ms.is_none());
+    }
+
+    #[test]
+    fn test_row_to_audit_log_item_timestamp_invalid_falls_back_now() {
+        let row = build_row(
+            "1",
+            "not-a-timestamp",
+            "m",
+            "a",
+            "d",
+            "s",
+            "1",
+            "",
+        );
+        let item = AuditLogService::row_to_audit_log_item(&row).unwrap();
+        // 回退到 Utc::now()，至少应有合理时间范围
+        let now = Utc::now();
+        assert!(item.timestamp <= now);
+    }
+}

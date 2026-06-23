@@ -1,7 +1,8 @@
-# QuickerSQL 代码规范 v7.0
+# QuickerSQL 代码规范 v10.0
 
 > 优先级：高（仅次于 security.md / architecture.md）
 > 适用：Rust 与 TS 两部分代码；子 Agent 在任何"代码生成/修改"任务中必须遵循本文件。
+> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；新增 MCP 工具验证命令，异常处理/命名规范可程序化验证）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
@@ -72,7 +73,7 @@
 - ✅ 正则表达式、复杂 SQL 模板、复杂算法必须附带行内注释解释意图
 - ✅ `TODO:` 注释须加负责人/日期，如 `// TODO(2026-06-20): 重构为参数化查询`
 - ❌ 禁止注释掉的代码长期保留（可在 git 历史中恢复）
-- ❌ 禁止 `console.log` 调试残留生产代码（`console.error` / `console.warn` 用于故障诊断可接受）
+- ✅ **console 规则**：`console.error` / `console.warn` 用于错误诊断允许保留；生产代码中出现 `console.log` 时须加一行注释说明"为什么需要这条 log"（PowerShell 检测：`Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse | Select-String -Pattern 'console\.log' | Select-String -NotMatch '//' -Context 1`）
 
 ---
 
@@ -111,8 +112,27 @@
 
 ---
 
-## 六、版本与变更记录
+## 六、补充：代码提交前自检清单（简化版）
 
-| 版本 | 日期 | 变更内容 |
-|------|------|---------|
-| v7.0 | 2026-06-20 | 初版。命名规范（snake_case / camelCase 强制 + serde rename）、异常处理（unwrap 禁止 + 静默吞错禁止 + Mutex PoisonError 处理）、注释规范、设计模式（Service / Store / 统一 invokeCommand）、可读性约束 |
+| 检查项 | 验证方式 |
+|--------|---------|
+| `cargo check --quiet` 通过 | 在 `src-tauri/` 目录执行 |
+| `npx tsc --noEmit --pretty` 通过 | 项目根目录执行 |
+| 敏感字符串检测通过 | 执行 AGENTS.md §4 中的 PowerShell 检测命令 |
+| 无 `console.log` 调试残留 | 执行前述 coding.md §3 中的 PowerShell 检测命令 |
+| 新增命令/依赖已同步更新 capabilities / Cargo.toml | 自查文件变更记录 |
+
+---
+
+### 七、如何用 MCP 工具验证本规则
+
+| 验证项 | 命令（PowerShell 环境） | 期望结果 |
+|--------|------------------------|---------|
+| Rust 无 unwrap/expect | `Get-ChildItem -Path src-tauri/src -Include *.rs -Recurse \| Select-String -Pattern "\.unwrap\(\)\|\.expect\(" \| Select-Object -First 20` | 0 个匹配（除初始化/测试代码外） |
+| TS 无 @ts-ignore | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse \| Select-String -Pattern "@ts-ignore" \| Select-Object -First 20` | 0 个匹配或有详细注释说明 |
+| TS 无 any 类型 | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse \| Select-String -Pattern ": any\|as any" \| Select-Object -First 20` | 0 个匹配 |
+| Rust 函数体过长 | `Get-ChildItem -Path src-tauri/src -Include *.rs -Recurse \| ForEach-Object { $content = Get-Content $_.FullName; $content.Length } \| Sort-Object -Descending \| Select-Object -First 5` | 不超过 300 行/文件；单函数建议 ≤ 80 行 |
+| TS 调试 console.log | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse \| Select-String -Pattern "console\.log" \| Select-String -NotMatch "//" \| Select-Object -First 20` | 0 个或有注释说明 |
+| Rust 敏感字符串 | `Get-ChildItem -Path src-tauri/src -Include *.rs -Recurse \| Select-String -Pattern 'sk-|Bearer |ghp_|eyJ|password:' \| Select-Object -First 20` | 0 个匹配 |
+
+> 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

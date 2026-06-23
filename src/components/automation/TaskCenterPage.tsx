@@ -1,7 +1,7 @@
-﻿import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
-import { useTaskStore } from '../../store/taskStore';
-import { useToastStore } from '../../store/toastStore';
+import { useTaskStore, useToastStore } from '../../store';
+import { useStartupContext } from '../../AppWrapper';
 import { TaskEditorModal } from './TaskEditorModal';
 import { TaskRunLogsPanel } from './TaskRunLogsPanel';
 import type { Task, TaskType, TaskState, TaskRunStatus } from '../../types/automation';
@@ -112,7 +112,6 @@ export const TaskCenterPage: React.FC = () => {
     disableTask,
     runTaskNow,
     deleteTask,
-    loadTasks,
     setFilterState,
     setFilterType,
     setKeyword,
@@ -127,13 +126,22 @@ export const TaskCenterPage: React.FC = () => {
   const [pageSize, setPageSize] = useState<number>(20);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
+  // v3 启动优化：优先消费 StartupContext 中的缓存数据，避免独立 IPC
+  // 仅在首屏渲染后按需刷新时才执行 IPC
+  const { startupData, isStartupLoaded } = useStartupContext();
   useEffect(() => {
-    loadTasks();
-    const timer = setInterval(() => {
-      loadTasks();
-    }, 30000);
+    if (!isStartupLoaded || !startupData) return;
+    const store = useTaskStore.getState();
+    if (startupData.tasks.length > 0) {
+      store.setTasksFromStartup(startupData.tasks);
+    } else {
+      // 空数据库场景：直接设空，不发 IPC
+      store.setTasksFromStartup([]);
+    }
+    // 30 秒后仍在本页面则后台刷新（非启动关键路径）
+    const timer = setInterval(() => { store.loadTasks(); }, 30000);
     return () => clearInterval(timer);
-  }, [loadTasks]);
+  }, [isStartupLoaded, startupData?.tasks?.length]);
 
   const selectedTask = useMemo(
     () => tasks.find((t) => t.id === selectedTaskId) || null,
@@ -318,7 +326,7 @@ export const TaskCenterPage: React.FC = () => {
       zIndex: 1,
     },
     th: {
-      padding: `${Spacing.md} ${Spacing.lg}`,
+      padding: `${Spacing.sm} ${Spacing.md}`,
       textAlign: 'left',
       fontSize: FontSizes.small,
       fontWeight: 500,
@@ -332,7 +340,7 @@ export const TaskCenterPage: React.FC = () => {
       transition: 'background 0.15s',
     },
     td: {
-      padding: `${Spacing.md} ${Spacing.lg}`,
+      padding: `${Spacing.sm} ${Spacing.md}`,
       fontSize: FontSizes.small,
       color: Colors.textPrimary,
       verticalAlign: 'middle',
@@ -420,6 +428,17 @@ export const TaskCenterPage: React.FC = () => {
                 <option value="refresh_chart">刷新图表</option>
                 <option value="refresh_dashboard">刷新仪表盘</option>
                 <option value="export_csv">导出 CSV</option>
+              </select>
+              <select
+                style={styles.select}
+                value="all"
+                onChange={() => {}}
+                title="调度模式筛选"
+              >
+                <option value="all">所有调度</option>
+                <option value="manual">手动触发</option>
+                <option value="interval">间隔调度</option>
+                <option value="cron">Cron 调度</option>
               </select>
             </div>
             <button style={styles.primaryBtn} onClick={openCreate}>+ 新建任务</button>

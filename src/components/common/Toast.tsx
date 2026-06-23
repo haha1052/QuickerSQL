@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useToastStore, type Toast as ToastItem } from '../../store/toastStore';
+import { useToastStore, type Toast as ToastItem } from '../../store';
 
 const getToastStyles = (type: ToastItem['type']) => {
   switch (type) {

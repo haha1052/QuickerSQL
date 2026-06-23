@@ -4,7 +4,6 @@ import { useWorkspaceStore, useQueryStore } from '../../store';
 import { SQLEditor } from '../sql/SQLEditor';
 import { QueryResult } from '../sql/QueryResult';
 import { ChartPanel } from '../chart/ChartPanel';
-import { useQueryExecution } from '../sql/hooks';
 
 interface PanelManagerProps {
   tabId: string;
@@ -32,7 +31,6 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
   }, [tabQueryId, activeQueryId, setActiveQueryId]);
 
   const activeQuery = sqlQueries.find(q => q.id === tabQueryId);
-  const { executeQuery, isLoading } = useQueryExecution();
 
   const handleMouseDown = (index: number, e: React.MouseEvent) => {
     setIsDragging(true);
@@ -96,8 +94,6 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
           <SQLEditor
             query={displayedQuery}
             onChange={(sql) => updateSqlQuery(displayedQueryId, { sql })}
-            onExecute={executeQuery}
-            isLoading={isLoading}
           />
         );
       case 'results_grid':
@@ -137,6 +133,7 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
             <div style={{
               ...styles.panel,
               height: `${panel.size}%`,
+              minHeight: panel.type === 'results_grid' ? 200 : undefined,
             }}>
               <div style={styles.panelContent}>
                 {renderPanelContent(panel)}

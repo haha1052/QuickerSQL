@@ -4,7 +4,8 @@ import { DashboardCanvas } from './DashboardCanvas';
 import { DashboardFilterBar } from './filters/DashboardFilterBar';
 import { ChartLibraryPanel } from './ChartLibraryPanel';
 import { ChartEditSidebar } from './ChartEditSidebar';
-import { useDashboardStore } from '../../store/dashboardStore';
+import { useDashboardStore } from '../../store';
+import { useStartupContext } from '../../AppWrapper';
 import { exportDashboardToPng } from '../../utils/dashboardExport';
 
 export const DashboardPage: React.FC = () => {
@@ -14,8 +15,6 @@ export const DashboardPage: React.FC = () => {
     savedCharts,
     selectedChartId,
     setSelectedChartId,
-    loadDashboards,
-    loadSavedCharts,
     setActiveDashboard,
     isFullscreen,
     setFullscreen,
@@ -24,6 +23,11 @@ export const DashboardPage: React.FC = () => {
   const [savingLayout, setSavingLayout] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const [showEditSidebar, setShowEditSidebar] = useState(false);
+  const [layoutSettings, setLayoutSettings] = useState({
+    gap: 16,
+    rowHeight: 80,
+    snapToGrid: true,
+  });
 
   // T3+T4: 编辑模式下的临时布局（按 itemId 存储覆盖后的位置/尺寸）
   const [tempLayout, setTempLayout] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
@@ -90,10 +94,22 @@ export const DashboardPage: React.FC = () => {
     }
   };
 
+  // v3 启动优化：优先消费 StartupContext 中的缓存数据，避免独立 IPC
+  // 如果 startupData 为空（首次启动），则直接设为空数组；不触发任何 IPC
+  const { startupData, isStartupLoaded } = useStartupContext();
   useEffect(() => {
-    loadDashboards();
-    loadSavedCharts();
-  }, []);
+    if (!isStartupLoaded || !startupData) return;
+    if (startupData.dashboards.length > 0) {
+      useDashboardStore.getState().setDashboardsFromStartup(startupData.dashboards);
+    } else {
+      useDashboardStore.getState().setDashboardsFromStartup([]);
+    }
+    if (startupData.savedCharts.length > 0) {
+      useDashboardStore.getState().setSavedChartsFromStartup(startupData.savedCharts);
+    } else {
+      useDashboardStore.getState().setSavedChartsFromStartup([]);
+    }
+  }, [isStartupLoaded, startupData?.dashboards?.length, startupData?.savedCharts?.length]);
 
   // 若存在仪表盘列表但没选，则默认选择第一个仪表盘
   useEffect(() => {
@@ -226,6 +242,8 @@ export const DashboardPage: React.FC = () => {
         onToggleLibrary={() => setShowLibrary(v => !v)}
         libraryOpen={showLibrary}
         onExportPng={handleExportPng}
+        layoutSettings={layoutSettings}
+        onLayoutSettingsChange={setLayoutSettings}
       />
       {/* P1 UX：编辑模式提示条 */}
       {isEditing && (
@@ -247,6 +265,7 @@ export const DashboardPage: React.FC = () => {
         isEditing={isEditing}
         tempLayout={tempLayout}
         onItemLayoutChange={handleItemLayoutChange}
+        layoutSettings={layoutSettings}
       />
     </>
   );

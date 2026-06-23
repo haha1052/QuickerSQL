@@ -30,6 +30,10 @@ interface DashboardStore {
   deleteDashboard: (id: string) => Promise<void>;
   setActiveDashboard: (id: string | null) => void;
 
+  // v3 启动优化：直接消费 get_startup_status 缓存的数据，避免独立 IPC
+  setDashboardsFromStartup: (dashboards: Array<{ id: string; name: string; description: string; isDefault: boolean; refreshIntervalSecs: number; createdAt: number; updatedAt: number; }>) => void;
+  setSavedChartsFromStartup: (charts: Array<{ id: string; name: string; chartType: string; xAxis: string; yAxis: string[]; title: string; tags: string[]; description: string; visibility: string; createdAt: number; updatedAt: number; }>) => void;
+
   // DashboardItem actions
   addChartToDashboard: (dashboardId: string, chartId: string, position: GridPosition) => Promise<boolean>;
   updateDashboardItem: (itemId: string, updates: Partial<DashboardItem>) => Promise<void>;
@@ -399,6 +403,46 @@ export const useDashboardStore = create<DashboardStore>()(
     // 图表选择
     setSelectedChartId: (id: string | null) => {
       set({ selectedChartId: id });
+    },
+
+    // v3 启动优化：直接消费 StartupContext 缓存，避免独立 IPC
+    setDashboardsFromStartup: (dashboards) => {
+      set({ dashboards: dashboards.map((d) => ({
+        id: d.id,
+        name: d.name,
+        description: d.description,
+        layout: [],
+        filters: [],
+        refreshIntervalSecs: d.refreshIntervalSecs,
+        isDefault: d.isDefault,
+        createdBy: '',
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+      })) });
+    },
+    setSavedChartsFromStartup: (charts) => {
+      set({ savedCharts: charts.map((c) => ({
+        id: c.id,
+        name: c.name,
+        queryId: '',
+        sql: '',
+        chartType: c.chartType as SavedChart['chartType'],
+        xAxis: c.xAxis,
+        yAxis: c.yAxis,
+        title: c.title,
+        filters: [],
+        tags: c.tags,
+        description: c.description,
+        thumbnail: null,
+        config: null,
+        visibility: c.visibility as SavedChart['visibility'],
+        authorizedDashboardIds: [],
+        lastResult: null,
+        lastRunAt: null,
+        createdBy: '',
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      })) });
     },
 
     // Utility

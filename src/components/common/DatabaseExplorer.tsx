@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useStartupContext } from '../../AppWrapper';
 import { TableIcon, ChevronRightIcon, RefreshCwIcon, SearchIcon, TrashIcon } from './Icons';
 import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { useWorkspaceStore } from '../../store';
-import { useToastStore } from '../../store/toastStore';
+import { useToastStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
 import type { ColumnInfo, TableInfo } from '../../types';
+import { useTableStore } from '../../store';
 
 // ============ 常量 ============
 const ICON_SIZE = 14;
@@ -48,15 +50,24 @@ const highlightText = (text: string, keyword: string): React.ReactNode => {
 export const DatabaseExplorer: React.FC = () => {
   const { t } = useLocale();
 
-  // ============ 状态 ============
+  // ============ 从 store 读取状态 ============
+  const {
+    tables: storeTables,
+    loading: storeLoading,
+    columnsCache,
+    columnsLoading,
+    metaCache,
+    listTables,
+    getTableColumns,
+    getTableMeta,
+    moveToTrash,
+    renameTable,
+  } = useTableStore();
+
+  // 本地 UI 状态
   const [tables, setTables] = useState<TableInfo[]>([]);
-  const [columnsCache, setColumnsCache] = useState<Record<string, ColumnInfo[]>>({});
-  const [columnsLoading, setColumnsLoading] = useState<Record<string, boolean>>({});
-  const [metaCache, setMetaCache] = useState<Record<string, { index_count: number; size_bytes: number }>>({});
-  const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
-  // ============ 分组展开状态（独立控制每个分组是否展开，不影响分组是否存在）
   const [expandUserTables, setExpandUserTables] = useState(true);
   const [expandSystemTables, setExpandSystemTables] = useState(true);
   const [expandedFirstLetter, setExpandedFirstLetter] = useState<Set<string>>(new Set(['全部']));
@@ -73,46 +84,49 @@ export const DatabaseExplorer: React.FC = () => {
   const { addTab } = useWorkspaceStore();
   const { addToast } = useToastStore();
 
-  // ============ 数据加载 ============
-  const loadTables = async () => {
-    setLoading(true);
-    try {
-      const { tauriService } = await import('../../services');
-      const response = await tauriService.listTables();
-      if (response.success && response.data) {
-        setTables(response.data);
-      }
-    } catch (e) {
-      console.error('Failed to load tables:', e);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // v2 启动优化：优先使用 StartupContext 已返回的 tablesList
+  const startupCtx = useStartupContext();
 
+  // 启动阶段优先消费 StartupContext 的 tablesList，有数据时直接使用，否则设空数组
   useEffect(() => {
-    loadTables();
+    if (!startupCtx.isStartupLoaded) return;
+
+    if (startupCtx.startupData?.tablesList && startupCtx.startupData.tablesList.length > 0) {
+      const initialTables = startupCtx.startupData.tablesList.map((name) => ({
+        name,
+        row_count: -1,
+        column_count: -1,
+        is_system_table: name.startsWith('__') || name.startsWith('sqlite_'),
+      }));
+      setTables(initialTables);
+      return;
+    }
+    // 空数据库场景：直接设空数组
+    setTables([]);
+  }, [startupCtx.isStartupLoaded, startupCtx.startupData?.tablesList]);
+
+  // 当 store 中的 tables 更新时同步到本地（listTables 调用后）
+  useEffect(() => {
+    if (storeTables.length > 0) {
+      setTables(storeTables);
+    }
+  }, [storeTables]);
+
+  // 初始化时主动刷新表列表（解决启动时不显示表的问题）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (tables.length === 0) {
+        void listTables();
+      }
+    }, 500);
+    return () => clearTimeout(timer);
   }, []);
 
   // ============ 列信息懒加载 ============
-  const loadColumnsIfNeeded = useCallback(async (tableName: string) => {
+  const loadColumnsIfNeeded = async (tableName: string) => {
     if (columnsCache[tableName] || columnsLoading[tableName]) return;
-    setColumnsLoading((prev) => ({ ...prev, [tableName]: true }));
-    try {
-      const { tauriService } = await import('../../services');
-      const response = await tauriService.getTableColumns(tableName);
-      if (response.success && response.data) {
-        setColumnsCache((prev) => ({ ...prev, [tableName]: response.data! }));
-      }
-    } catch (e) {
-      console.error('Failed to load columns:', e);
-    } finally {
-      setColumnsLoading((prev) => {
-        const next = { ...prev };
-        delete next[tableName];
-        return next;
-      });
-    }
-  }, [columnsCache, columnsLoading]);
+    await getTableColumns(tableName);
+  };
 
   // ============ 交互：展开 / 折叠 ============
   const toggleTableExpand = async (table: TableInfo) => {
@@ -123,22 +137,14 @@ export const DatabaseExplorer: React.FC = () => {
       newExpanded.add(table.name);
       void loadColumnsIfNeeded(table.name);
       if (!metaCache[table.name]) {
-        try {
-          const { tauriService: svc } = await import('../../services');
-          const metaRes = await svc.getTableMeta(table.name);
-          if (metaRes.success && metaRes.data) {
-            setMetaCache((prev) => ({ ...prev, [table.name]: metaRes.data as { index_count: number; size_bytes: number } }));
-          }
-        } catch {
-          // 忽略错误
-        }
+        await getTableMeta(table.name);
       }
     }
     setExpandedTables(newExpanded);
   };
 
   // ============ 操作：生成 SQL 并新建 Tab ============
-  const generateAndOpenSql = useCallback((tableName: string, sql: string, tabTitle?: string) => {
+  const generateAndOpenSql = (tableName: string, sql: string, tabTitle?: string) => {
     addTab(
       {
         title: tabTitle || tableName,
@@ -149,11 +155,11 @@ export const DatabaseExplorer: React.FC = () => {
         ],
         active: true,
       },
-      { initialSql: sql }
+      { initialSql: sql },
     );
-  }, [addTab]);
+  };
 
-  const handleDoubleClickTable = async (table: TableInfo) => {
+  const handleDoubleClickTable = (table: TableInfo) => {
     const needsQuotes = !/^[a-zA-Z0-9_]+$/.test(table.name);
     const sql = needsQuotes
       ? `SELECT * FROM "${table.name}" LIMIT 100;`
@@ -176,19 +182,7 @@ export const DatabaseExplorer: React.FC = () => {
     } else if (!confirm(`确定删除表 '${table.name}'？`)) {
       return;
     }
-    try {
-      const { tauriService } = await import('../../services');
-      const response = await tauriService.moveToTrash(table.name);
-      if (response.success) {
-        addToast(`表 '${table.name}' 已移到回收站`, 'success');
-        await loadTables();
-      } else {
-        addToast(`删除失败: ${response.error}`, 'error');
-      }
-    } catch (e) {
-      console.error('Delete failed:', e);
-      addToast('删除失败', 'error');
-    }
+    await moveToTrash(table.name);
   };
 
   // ============ 操作：重命名表 ============
@@ -205,51 +199,34 @@ export const DatabaseExplorer: React.FC = () => {
       return; // 未修改，无需操作
     }
 
-    try {
-      const { tauriService } = await import('../../services');
-      const response = await tauriService.renameTable(table.name, trimmed);
-      if (response.success) {
-        // 刷新列缓存（旧表名已不存在）
-        setColumnsCache((prev) => {
-          const next = { ...prev };
-          delete next[table.name];
-          return next;
-        });
-        addToast(`表已重命名为 '${trimmed}'`, 'success');
-        await loadTables();
-      } else {
-        addToast(`重命名失败: ${response.error}`, 'error');
-      }
-    } catch (e) {
-      console.error('Rename failed:', e);
-      addToast('重命名失败', 'error');
-    }
+    await renameTable(table.name, trimmed);
   };
 
   // ============ 操作：复制表名 ============
-  const copyTableName = useCallback((tableName: string) => {
+  const copyTableName = (tableName: string) => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(tableName).catch(() => {});
     } else {
-      // Fallback
       const ta = document.createElement('textarea');
       ta.value = tableName;
       document.body.appendChild(ta);
       ta.select();
-      try { document.execCommand('copy'); } catch {}
+      try {
+        document.execCommand('copy');
+      } catch {
+        /* ignore */
+      }
       document.body.removeChild(ta);
     }
-  }, []);
+  };
 
   // ============ 搜索 & 排序 & 分组 ============
-  // 先根据搜索词过滤
   const filteredTables = useMemo(() => {
     if (!searchTerm.trim()) return tables;
     const kw = searchTerm.toLowerCase();
-    return tables.filter((t) => t.name.toLowerCase().includes(kw));
+    return tables.filter((tbl) => tbl.name.toLowerCase().includes(kw));
   }, [tables, searchTerm]);
 
-  // 再按 sortKey 排序
   const sortedTables = useMemo(() => {
     const copy = [...filteredTables];
     switch (sortKey) {
@@ -269,28 +246,22 @@ export const DatabaseExplorer: React.FC = () => {
     return copy;
   }, [filteredTables, sortKey]);
 
-  // 分组
-  // 注意：这里只构建 groups 列表，不依赖展开状态（展开由渲染层控制）
-  //   - 确保「用户表」和「系统表」分组一定存在（即使为空）
-  //   - 用户表为空时，分组头仍显示，展开时提示「暂无用户表」
   const groups = useMemo(() => {
     if (groupMode === 'first_letter') {
       const map = new Map<string, TableInfo[]>();
-      for (const t of sortedTables) {
-        const key = t.is_system_table
+      for (const tbl of sortedTables) {
+        const key = tbl.is_system_table
           ? '系统表'
           : (() => {
-              const first = t.name.charAt(0).toUpperCase();
-              return /[A-Z0-9]/.test(first) ? first : '其他';
-            })();
+            const first = tbl.name.charAt(0).toUpperCase();
+            return /[A-Z0-9]/.test(first) ? first : '其他';
+          })();
         if (!map.has(key)) map.set(key, []);
-        map.get(key)!.push(t);
+        map.get(key)!.push(tbl);
       }
-      // 确保「系统表」分组始终存在（即使空也显示）
       if (!map.has('系统表')) map.set('系统表', []);
       return Array.from(map.entries())
         .sort(([a], [b]) => {
-          // 「系统表」在最前面（如果存在）
           if (a === '系统表') return -1;
           if (b === '系统表') return 1;
           return a.localeCompare(b);
@@ -303,32 +274,27 @@ export const DatabaseExplorer: React.FC = () => {
         }));
     }
     if (groupMode === 'system_user') {
-      const user = sortedTables.filter((t) => !t.is_system_table);
-      const sys = sortedTables.filter((t) => t.is_system_table);
-      // 两个分组始终存在（即使为空）
+      const user = sortedTables.filter((tbl) => !tbl.is_system_table);
+      const sys = sortedTables.filter((tbl) => tbl.is_system_table);
       return [
         { title: '用户表', items: user, accent: false, groupKey: 'user' },
         { title: '系统表', items: sys, accent: true, groupKey: 'system' },
       ];
     }
-    // none — 平铺模式（不分组）
     return [{ title: '全部', items: sortedTables, accent: false, groupKey: 'all' }];
   }, [sortedTables, groupMode]);
 
-  // 计算任意分组是否展开
-  const getGroupExpanded = useCallback((g: { title: string; groupKey: string; items: TableInfo[] }) => {
+  const getGroupExpanded = (g: { title: string; groupKey: string; items: TableInfo[] }) => {
     if (groupMode === 'system_user') {
       return g.groupKey === 'user' ? expandUserTables : expandSystemTables;
     }
     if (groupMode === 'first_letter') {
       return expandedFirstLetter.has(g.groupKey);
     }
-    // none 模式（平铺），只有一个分组，默认展开
     return true;
-  }, [groupMode, expandUserTables, expandSystemTables, expandedFirstLetter]);
+  };
 
-  // 切换任意分组的展开状态
-  const toggleGroupExpanded = useCallback((g: { title: string; groupKey: string; items: TableInfo[] }) => {
+  const toggleGroupExpanded = (g: { title: string; groupKey: string; items: TableInfo[] }) => {
     if (groupMode === 'system_user') {
       if (g.groupKey === 'user') setExpandUserTables((v) => !v);
       else setExpandSystemTables((v) => !v);
@@ -342,8 +308,7 @@ export const DatabaseExplorer: React.FC = () => {
         return next;
       });
     }
-    // none 模式：不支持折叠（单分组无意义）
-  }, [groupMode]);
+  };
 
   // ============ 渲染单个表行 ============
   const renderTableRow = (table: TableInfo) => {
@@ -410,7 +375,6 @@ export const DatabaseExplorer: React.FC = () => {
           )}
         </div>
 
-        {/* 展开后的列列表 */}
         {isExpanded && (
           <div style={styles.columnsList}>
             {colsLoading && !cols && (
@@ -422,7 +386,7 @@ export const DatabaseExplorer: React.FC = () => {
               </div>
             )}
             {cols && cols.length === 0 && <div style={styles.columnEmpty}>无列信息</div>}
-            {cols && cols.length > 0 && cols.map((col) => (
+            {cols && cols.length > 0 && cols.map((col: ColumnInfo) => (
               <div key={col.name} style={styles.columnItem}>
                 <span style={styles.columnName}>
                   {col.is_primary_key && <span style={styles.pkMarker}>🔑</span>}
@@ -503,7 +467,9 @@ export const DatabaseExplorer: React.FC = () => {
     }
 
     return items;
-  }, [contextMenu, generateAndOpenSql, copyTableName, columnsCache, handleRenameTable]);
+  }, [contextMenu, columnsCache]);
+
+  const loading = storeLoading;
 
   return (
     <div style={styles.container}>
@@ -522,7 +488,6 @@ export const DatabaseExplorer: React.FC = () => {
           />
         </div>
 
-        {/* 排序下拉 */}
         <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as SortKey)}
@@ -535,7 +500,6 @@ export const DatabaseExplorer: React.FC = () => {
           <option value="column_count_desc">列数最多</option>
         </select>
 
-        {/* 分组模式下拉 */}
         <select
           value={groupMode}
           onChange={(e) => setGroupMode(e.target.value as GroupMode)}
@@ -547,7 +511,7 @@ export const DatabaseExplorer: React.FC = () => {
           <option value="none">平铺</option>
         </select>
 
-        <button style={styles.refreshBtn} onClick={loadTables} title="刷新列表">
+        <button style={styles.refreshBtn} onClick={() => listTables()} title="刷新列表">
           <span style={styles.iconCell}>
             <RefreshCwIcon size={ICON_SIZE} color="var(--text-secondary)" />
           </span>
@@ -605,7 +569,8 @@ export const DatabaseExplorer: React.FC = () => {
         {/* 搜索无结果提示 */}
         {!loading && searchTerm.trim() && sortedTables.length === 0 && (
           <div style={styles.empty}>
-            未找到匹配「{searchTerm}」的表</div>
+            未找到匹配「{searchTerm}」的表
+          </div>
         )}
       </div>
 
@@ -633,7 +598,6 @@ const styles: Record<string, React.CSSProperties> = {
     userSelect: 'none',
   },
 
-  // ===== 统一的图标单元格 =====
   iconCell: {
     width: WRAPPER_SIZE,
     height: WRAPPER_SIZE,
@@ -649,7 +613,6 @@ const styles: Record<string, React.CSSProperties> = {
     transform: 'rotate(90deg)',
   },
 
-  // ===== 顶部工具栏 =====
   header: {
     display: 'flex',
     alignItems: 'center',
@@ -700,7 +663,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'background 0.2s',
   },
 
-  // ===== 列表区域 =====
   tablesList: {
     flex: 1,
     overflowY: 'auto',
@@ -724,7 +686,6 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
   },
 
-  // ===== 分组 =====
   groupItem: {
     marginBottom: '2px',
   },
@@ -764,13 +725,6 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: 'calc(50vh - 80px)',
     minHeight: 0,
   },
-  groupEmpty: {
-    padding: '6px 8px 6px 32px',
-    fontSize: '12px',
-    color: 'var(--text-tertiary)',
-    fontStyle: 'italic',
-  },
-  // 分组为空时的友好提示（比 groupEmpty 更显眼、带操作引导）
   groupEmptyHint: {
     marginLeft: '8px',
     padding: '12px 16px',
@@ -780,7 +734,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderLeft: '3px solid var(--text-tertiary)',
     lineHeight: '1.6',
   },
-  // 代码提示片段（如 CREATE TABLE 语句）
   codeTip: {
     display: 'inline-block',
     padding: '2px 6px',
@@ -792,7 +745,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0 2px',
   },
 
-  // ===== 表行 =====
   tableItem: {
     marginBottom: '2px',
   },
@@ -889,7 +841,6 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.2s',
   },
 
-  // ===== 搜索高亮 =====
   highlightMark: {
     background: 'rgba(255, 220, 100, 0.35)',
     color: 'var(--text-primary)',
@@ -898,7 +849,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
   },
 
-  // ===== 系统表样式 =====
   systemTableHeader: {
     background: 'var(--bg-tertiary)',
   },

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { DashboardItem } from './DashboardItem';
 import { AddChartModal } from './AddChartModal';
-import { useDashboardStore } from '../../store/dashboardStore';
+import { useDashboardStore } from '../../store';
 import type { Dashboard } from '../../types/dashboard';
 
 interface DashboardCanvasProps {
@@ -9,6 +9,7 @@ interface DashboardCanvasProps {
   isEditing: boolean;
   tempLayout?: Record<string, { x: number; y: number; width: number; height: number }>;
   onItemLayoutChange?: (itemId: string, layout: { x: number; y: number; width: number; height: number }) => void;
+  layoutSettings?: { gap: number; rowHeight: number; snapToGrid: boolean };
 }
 
 export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
@@ -16,6 +17,7 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   isEditing,
   tempLayout = {},
   onItemLayoutChange,
+  layoutSettings = { gap: 16, rowHeight: 80, snapToGrid: true },
 }) => {
   const [showAddModal, setShowAddModal] = useState(false);
   const { removeChartFromDashboard } = useDashboardStore();
@@ -53,7 +55,14 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }
 
   return (
-    <div style={styles.canvas} data-dashboard-canvas="true">
+    <div
+      style={{
+        ...styles.canvas,
+        gap: `${layoutSettings.gap}px`,
+        gridAutoRows: `${layoutSettings.rowHeight}px`,
+      }}
+      data-dashboard-canvas="true"
+    >
       {dashboard.layout.map((item) => {
         // 合并 tempLayout：优先使用 tempLayout 中的覆盖值
         const override = tempLayout[item.id];

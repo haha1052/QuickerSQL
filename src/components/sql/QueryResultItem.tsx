@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { AgGridReact } from 'ag-grid-react';
-import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+// P0-2 启动优化：ag-grid 懒加载
+import { AgGridLazy } from '../common/AgGridLazy';
 import { Button, DropdownMenu } from '../common';
 import { ChartPanel } from '../chart/ChartPanel';
 import { useQueryCopy } from './hooks/useQueryCopy';
@@ -9,7 +9,7 @@ import { useSetting } from '../../context/SettingsContext';
 import { useLocale } from '../../context/LocaleContext';
 import type { SqlStatementResult } from '../../types';
 
-ModuleRegistry.registerModules([AllCommunityModule]);
+// ModuleRegistry.registerModules([AllCommunityModule]);  // ← 已在 AgGridLazy 中动态处理
 
 interface QueryResultItemProps {
   result: SqlStatementResult;
@@ -20,7 +20,7 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
   const [showChart, setShowChart] = useState(false);
   const [fontSize] = useSetting('appearance', 'fontSize');
   const [fontFamily] = useSetting('appearance', 'fontFamily');
-  const { locale, t, localeText } = useLocale();
+  const { t, localeText } = useLocale();
   
   const {
     contextMenu,
@@ -74,6 +74,12 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
     }
   }, [contextMenu, closeContextMenu]);
 
+  // 计算总行数
+  const totalRows = result.rows?.length || 0;
+  // 默认每页显示50行
+  const pageSize = 50;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -121,57 +127,67 @@ export const QueryResultItem: React.FC<QueryResultItemProps> = ({ result, index 
         <div style={styles.errorContainer}>
           <span style={styles.errorText}>{result.error}</span>
         </div>
-      ) : (
+      ) : result.columns !== null && result.columns !== undefined && result.columns.length > 0 ? (
         <>
-          {result.affected_rows !== null && !result.columns ? (
-            <div style={styles.affectedRowsContainer}>
-              <span style={styles.affectedRowsText}>{t('query.affectedRows')}: {result.affected_rows}</span>
+          {showChart ? (
+            <div style={styles.chartContainer}>
+              <ChartPanel
+                queryResult={{
+                  columns: result.columns,
+                  rows: result.rows ?? []
+                }}
+              />
             </div>
-          ) : null}
-
-          {result.columns && result.rows ? (
-            showChart ? (
-              <div style={styles.chartContainer}>
-                <ChartPanel
-                  queryResult={{
-                    columns: result.columns,
-                    rows: result.rows
-                  }}
-                />
-              </div>
-            ) : (
-              <div style={styles.tableWrapper}>
-                <div style={{ ...styles.tableContainer, ...gridStyle }} className="ag-theme-alpine">
-                  <AgGridReact<any>
-                    key={locale}
-                    rowData={result.rows.map((row, rowIndex) => {
-                      const rowObj: Record<string, any> = { id: rowIndex };
+          ) : (
+            <div style={styles.tableWrapper}>
+              <div style={{ ...styles.tableContainer, ...gridStyle }} className="ag-theme-alpine">
+                <AgGridLazy
+                  key={`query-item-${index}-${result.columns.length}-${result.rows?.length || 0}`}
+                  rowData={(result.rows ?? []).map((row, rowIndex) => {
+                      const rowObj: Record<string, string | number | boolean | null> = { id: rowIndex };
                       row.forEach((cell, colIndex) => {
                         rowObj[`col${colIndex}`] = cell;
                       });
                       return rowObj;
                     })}
-                    columnDefs={result.columns.map((col, colIndex) => ({
-                      field: `col${colIndex}`,
-                      headerName: col,
-                    }))}
-                    localeText={localeText}
-                    defaultColDef={{
-                      filter: true,
-                      sortable: true,
-                      resizable: true,
-                      minWidth: 120,
-                    }}
-                    onCellContextMenu={handleGridContextMenu}
-                    rowSelection="multiple"
-                    enableCellTextSelection={true}
-                  />
-                </div>
+                  columnDefs={result.columns.map((col, colIndex) => ({
+                    field: `col${colIndex}`,
+                    headerName: col,
+                  }))}
+                  localeText={localeText}
+                  defaultColDef={{
+                    filter: true,
+                    sortable: true,
+                    resizable: true,
+                    minWidth: 120,
+                  }}
+                  onCellContextMenu={handleGridContextMenu}
+                  rowSelection="multiple"
+                  enableCellTextSelection={true}
+                  pagination={true}
+                  paginationPageSize={pageSize}
+                  suppressPaginationPanel={false}
+                  domLayout="autoHeight"
+                />
               </div>
-            )
-          ) : null}
+              {/* 分页信息 */}
+              <div style={styles.paginationInfo}>
+                <span style={styles.pageText}>
+                  {t('query.totalRows')}: {totalRows} | {t('query.page')} 1/{totalPages}
+                </span>
+              </div>
+            </div>
+          )}
         </>
-      )}
+      ) : result.success && result.affected_rows !== null ? (
+        <div style={styles.affectedRowsContainer}>
+          <span style={styles.affectedRowsText}>{t('query.affectedRows')}: {result.affected_rows}</span>
+        </div>
+      ) : result.success ? (
+        <div style={styles.emptyContainer}>
+          <span style={styles.emptyText}>{t('query.noResults')}</span>
+        </div>
+      ) : null}
 
       {contextMenu && (
         <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
@@ -223,7 +239,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     flex: 1,
-    minHeight: 300,
+    minHeight: 120,
+    maxHeight: 600,
   },
   header: {
     display: 'flex',
@@ -232,6 +249,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     background: 'var(--bg-tertiary)',
     borderBottom: '1px solid var(--border-primary)',
+    flexShrink: 0,
   },
   statementInfo: {
     display: 'flex',
@@ -267,22 +285,39 @@ const styles: Record<string, React.CSSProperties> = {
   chartContainer: {
     flex: 1,
     minHeight: 300,
+    maxHeight: 460,
     background: 'var(--bg-secondary)',
     display: 'flex',
     flexDirection: 'column',
+    overflow: 'auto',
   },
   tableWrapper: {
     flex: 1,
-    minHeight: 0,
+    minHeight: 80,
+    maxHeight: 560,
     display: 'flex',
     flexDirection: 'column',
     background: 'var(--bg-primary)',
+    minWidth: '100%',
+    overflow: 'hidden',
   },
   tableContainer: {
     flex: 1,
-    minHeight: 0,
-    height: '100%',
+    minHeight: 60,
+    maxHeight: 520,
+    minWidth: '100%',
     background: 'var(--bg-primary)',
+    overflow: 'auto',
+  },
+  paginationInfo: {
+    padding: '8px 16px',
+    background: 'var(--bg-tertiary)',
+    borderTop: '1px solid var(--border-primary)',
+    flexShrink: 0,
+  },
+  pageText: {
+    fontSize: '12px',
+    color: 'var(--text-tertiary)',
   },
   successBadge: {
     fontSize: '12px',

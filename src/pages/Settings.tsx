@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useAppContext } from '../AppWrapper';
 import { ChevronLeftIcon, CheckIcon } from '../components/common/Icons';
+import { QueryCacheStatsPanel } from '../components/settings';
 import { useSettingsStore } from '../store';
 import { tauriService } from '../services';
 import type { SettingItem } from '../types';
 import { useLocale } from '../context/LocaleContext';
 import './Settings.css';
+
+const QUERY_CACHE_CATEGORY_ID = 'query-cache';
 
 // 定义每个设置项的专用配置
 const SETTING_CONFIGS: Record<string, {
@@ -444,7 +447,18 @@ const SETTING_CONFIGS: Record<string, {
       { label: '周一', value: 'monday' },
     ],
   },
-  'locale-timezone': { type: 'string' },
+  'locale-timezone': {
+    type: 'select',
+    options: ['local', 'UTC', 'Asia/Shanghai', 'Asia/Tokyo', 'America/New_York', 'Europe/London'],
+    displayOptions: [
+      { label: '本地时区', value: 'local' },
+      { label: 'UTC', value: 'UTC' },
+      { label: '中国标准时间 (Asia/Shanghai)', value: 'Asia/Shanghai' },
+      { label: '东京时间 (Asia/Tokyo)', value: 'Asia/Tokyo' },
+      { label: '纽约时间 (America/New_York)', value: 'America/New_York' },
+      { label: '伦敦时间 (Europe/London)', value: 'Europe/London' },
+    ],
+  },
 
   // ========== 自动化任务设置 (7项) ==========
   'automation-engineEnabled': { type: 'boolean' },
@@ -685,6 +699,12 @@ const Settings: React.FC = () => {
               {category.icon} {t(`settings.category.${category.id}`) || category.name}
             </li>
           ))}
+          <li
+            className={activeCategory === QUERY_CACHE_CATEGORY_ID ? 'active' : ''}
+            onClick={() => setActiveCategory(QUERY_CACHE_CATEGORY_ID)}
+          >
+            🔍 {t(`settings.category.${QUERY_CACHE_CATEGORY_ID}`) || '查询缓存'}
+          </li>
         </ul>
       </div>
 
@@ -700,6 +720,15 @@ const Settings: React.FC = () => {
           <div className="settings-loading">
             <p>{t('common.loading')}</p>
           </div>
+        ) : activeCategory === QUERY_CACHE_CATEGORY_ID ? (
+          <>
+            <div className="settings-category-title">
+              🔍 {t(`settings.category.${QUERY_CACHE_CATEGORY_ID}`) || '查询缓存'}
+            </div>
+            <div className="settings-category-content">
+              <QueryCacheStatsPanel />
+            </div>
+          </>
         ) : (
           <>
             <div className="settings-category-title">
@@ -726,20 +755,41 @@ const Settings: React.FC = () => {
               )}
               
               {activeCategory === 'security' && (
-                <div className="settings-items" style={{ marginTop: 12, padding: 16, border: '1px dashed var(--border-primary)', borderRadius: 8 }}>
-                  <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 8, fontWeight: 500 }}>
-                    🕓 活动记录管理
+                <>
+                  <div className="settings-items" style={{ marginTop: 12, padding: 16, border: '1px dashed var(--border-primary)', borderRadius: 8 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 8, fontWeight: 500 }}>
+                      🕓 活动记录管理
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                      查看用户在软件上执行的所有操作记录
+                    </div>
+                    <button
+                      className="export-button"
+                      onClick={goToActivityLog}
+                    >
+                      📋 查看活动记录
+                    </button>
                   </div>
-                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-                    查看用户在软件上执行的所有操作记录
+                  <div className="settings-items" style={{ marginTop: 12, padding: 16, border: '1px dashed var(--border-primary)', borderRadius: 8 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 8, fontWeight: 500 }}>
+                      🦆 首次启动设置
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                      重置后，下次启动将显示欢迎界面和引导教程
+                    </div>
+                    <button
+                      className="reset-all-button"
+                      onClick={async () => {
+                        if (confirm('确定要重置首次启动状态吗？下次启动时将显示欢迎界面。')) {
+                          await tauriService.updateAppState('welcome', 'has_launched', 'false', '是否已启动过');
+                          alert('已重置。重启应用后将会看到欢迎界面。');
+                        }
+                      }}
+                    >
+                      🔄 重置首次启动状态
+                    </button>
                   </div>
-                  <button
-                    className="export-button"
-                    onClick={goToActivityLog}
-                  >
-                    📋 查看活动记录
-                  </button>
-                </div>
+                </>
               )}
               
               <div className="settings-actions">

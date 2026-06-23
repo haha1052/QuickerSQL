@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { DateRangePicker } from './DateRangePicker';
 import { SelectFilter } from './SelectFilter';
 import { TextFilter } from './TextFilter';
-import { useDashboardStore } from '../../../store/dashboardStore';
+import { useDashboardStore } from '../../../store';
 import type { DashboardFilter } from '../../../types/dashboard';
 
 interface DashboardFilterBarProps {

@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
-import { useTaskStore } from '../../store/taskStore';
-import { useToastStore } from '../../store/toastStore';
-import { useSettingsStore } from '../../store/settingsStore';
+import { useTaskStore, useToastStore, useSettingsStore } from '../../store';
 import type { Task, TaskType, ScheduleMode, TaskState, CreateTaskPayload, UpdateTaskPayload, SqlTaskPayload, RefreshChartPayload, RefreshDashboardPayload, ExportCsvPayload } from '../../types/automation';
 
 // 从 settings 读取自动化任务默认值（第三轮新增 - 让"默认重试次数/默认超时"真正生效）

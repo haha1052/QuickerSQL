@@ -113,3 +113,10 @@ pub struct ColumnInfo {
     pub is_primary_key: bool,
     pub position: i64,
 }
+
+/// 表扩展元信息（索引数 + 估算磁盘大小）
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct TableMetaInfo {
+    pub index_count: i64,
+    pub size_bytes: i64,
+}

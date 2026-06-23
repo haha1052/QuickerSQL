@@ -33,6 +33,24 @@ interface TaskStoreState {
   setFilterState: (s: TaskState | 'all') => void;
   setFilterType: (t: string) => void;
   setKeyword: (k: string) => void;
+  // v3 启动优化：直接消费 get_startup_status 缓存的数据，避免独立 IPC
+  setTasksFromStartup: (tasks: Array<{
+    id: string;
+    name: string;
+    description: string;
+    taskType: string;
+    scheduleMode: string;
+    scheduleValue: string;
+    state: string;
+    nextRunAt: number | null;
+    lastRunStatus: string | null;
+    lastRunDurationMs: number | null;
+    totalRuns: number;
+    successRuns: number;
+    failedRuns: number;
+    createdAt: number;
+    updatedAt: number;
+  }>) => void;
 }
 
 /** 统一的 startLoading / endLoading helper，避免每个 action 重复写 set 字段 */
@@ -241,5 +259,48 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
 
   setKeyword(k) {
     set({ keyword: k });
+  },
+
+  setTasksFromStartup(tasks) {
+    const { enabledCount, failedCount, total } = tasks.reduce(
+      (acc, t) => {
+        acc.total++;
+        if (t.state === 'enabled') acc.enabledCount++;
+        if (t.lastRunStatus === 'failed') acc.failedCount++;
+        return acc;
+      },
+      { enabledCount: 0, failedCount: 0, total: 0 }
+    );
+    set({
+      tasks: tasks.map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        taskType: t.taskType as Task['taskType'],
+        payload: '',
+        scheduleMode: t.scheduleMode as Task['scheduleMode'],
+        scheduleValue: t.scheduleValue,
+        timezone: '',
+        state: t.state as Task['state'],
+        projectId: '',
+        nextRunAt: t.nextRunAt,
+        lastRunAt: null,
+        lastRunStatus: t.lastRunStatus as Task['lastRunStatus'] | null,
+        lastRunDurationMs: t.lastRunDurationMs,
+        totalRuns: t.totalRuns,
+        successRuns: t.successRuns,
+        failedRuns: t.failedRuns,
+        retryOnFail: 0,
+        retryIntervalSecs: 60,
+        timeoutSecs: 300,
+        notifyOnSuccess: false,
+        notifyOnFailure: false,
+        tags: '',
+        createdBy: '',
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      })),
+      stats: { total, enabledCount, failedTasksCount: failedCount },
+    });
   },
 }));

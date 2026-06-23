@@ -36,8 +36,8 @@ interface WorkspaceStore extends WorkspaceState {
   setSidebarActiveTab: (tab: 'explorer' | 'history' | 'snippets' | 'trash') => void;
 
   // ============ 查询面板布局模式 ============
-  /** 设置面板模式：default / editor / results / only-editor / only-results */
-  setPanelMode: (tabId: string, mode: 'default' | 'editor' | 'results' | 'only-editor' | 'only-results') => void;
+  /** 设置面板模式：only-editor / editor / default / results */
+  setPanelMode: (tabId: string, mode: 'only-editor' | 'editor' | 'default' | 'results') => void;
 
   // ============ 后端同步 ============
   /** 从后端数据库加载工作区布局 */
@@ -50,6 +50,25 @@ interface WorkspaceStore extends WorkspaceState {
   isBackedUp: boolean;
   /** 上次保存时间 */
   lastSavedAt: number | null;
+
+  // ============ v2 启动优化：直接消费 StartupContext 的 workspaceLayout ============
+  /** 从 get_startup_status 的返回数据直接设置 tabs（避免二次 IPC） */
+  setTabsFromStartup: (layout: Array<{
+    id: string;
+    title: string;
+    tabType: string;
+    position: number;
+    isActive: boolean;
+    panels: Array<{
+      id: string;
+      panelType: string;
+      title: string;
+      size: number;
+      sqlContent: string | null;
+      isActive: boolean;
+      position: number;
+    }>;
+  }>) => void;
 }
 
 /** 将前端 WorkspaceTab 转换为后端 save_workspace 需要的格式 */
@@ -149,7 +168,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               id: 'editor',
               type: 'sql_editor' as PanelType,
               title: 'SQL Editor',
-              size: 50,
+              size: 100,
               active: true,
               content: null,
             },
@@ -157,7 +176,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               id: 'results',
               type: 'results_grid' as PanelType,
               title: 'Results',
-              size: 50,
+              size: 0,
               active: true,
               content: null,
             },
@@ -362,13 +381,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       // ============ 查询面板布局模式 ============
       setPanelMode: (tabId, mode) => {
         const PANEL_MODE_SIZES: Record<string, [number, number]> = {
-          'default': [50, 50],          // 默认 50/50
-          'editor': [80, 20],            // 编辑器优先
-          'results': [20, 80],           // 结果优先
-          'only-editor': [100, 0],       // 仅编辑器
-          'only-results': [0, 100],      // 仅结果
+          'only-editor': [100, 0],       // 100% SQL编辑器
+          'editor': [80, 20],            // 80% SQL编辑器，20%结果框
+          'default': [50, 50],           // 50% SQL编辑器，50%结果框
+          'results': [20, 80],           // 20% SQL编辑器，80%结果框
         };
-        const [editorSize, resultsSize] = PANEL_MODE_SIZES[mode] || [50, 50];
+        const [editorSize, resultsSize] = PANEL_MODE_SIZES[mode] || [100, 0];
 
         set((state) => ({
           tabs: state.tabs.map((t) => {
@@ -394,6 +412,90 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         autoSaveTimer = setTimeout(() => {
           get().syncToBackend();
         }, AUTO_SAVE_DELAY);
+      },
+
+      // v2 优化：启动阶段直接消费 StartupContext 的 workspaceLayout
+      // 避免 Workspace.tsx 再发一次 loadWorkspace IPC
+      setTabsFromStartup: (layout) => {
+        if (!layout || layout.length === 0) return;
+
+        const queryState = useQueryStore.getState();
+        const usedQueryIds = new Set<string>();
+        const findUnusedQuery = (): typeof queryState.sqlQueries[number] | undefined => {
+          return queryState.sqlQueries.find((q) => !usedQueryIds.has(q.id));
+        };
+
+        const mappedTabs: WorkspaceTab[] = layout.map((tab) => {
+          // 1. 尝试按 tab.id 在 sqlQueries 中精确匹配（保留持久化后的对应关系）
+          let matchedQuery = queryState.sqlQueries.find(
+            (q) => q.id === tab.id && !usedQueryIds.has(q.id),
+          );
+
+          let queryId: string;
+          if (matchedQuery) {
+            usedQueryIds.add(matchedQuery.id);
+            queryId = matchedQuery.id;
+          } else {
+            const unused = findUnusedQuery();
+            if (unused) {
+              usedQueryIds.add(unused.id);
+              queryId = unused.id;
+            } else {
+              // 2. 找不到未被占用的查询 → fallback：新建第一个 tab 的 queryId
+              queryId = `startup-${tab.id}`;
+            }
+          }
+
+          let panels: Panel[] = (tab.panels || []).map((p) => ({
+            id: p.id,
+            type: (p.panelType || 'sql_editor') as PanelType,
+            title: p.title || '',
+            size: typeof p.size === 'number' && p.size > 0 && p.size <= 100 ? p.size : 50,
+            active: p.isActive,
+            content: p.sqlContent ?? null,
+          }));
+
+          // 确保至少有两个面板：编辑器和结果
+          if (panels.length === 0) {
+            panels = [
+              { id: 'editor', type: 'sql_editor', title: 'SQL Editor', size: 50, active: true, content: null },
+              { id: 'results', type: 'results_grid', title: 'Results', size: 50, active: true, content: null },
+            ];
+          } else if (panels.length === 1) {
+            // 如果只有一个面板，添加另一个面板
+            panels[0].size = 50;
+            const newType: PanelType = panels[0].type === 'sql_editor' ? 'results_grid' : 'sql_editor';
+            panels.push({
+              id: panels[0].type === 'sql_editor' ? 'results' : 'editor',
+              type: newType,
+              title: newType === 'sql_editor' ? 'SQL Editor' : 'Results',
+              size: 50,
+              active: true,
+              content: null,
+            });
+          } else {
+            // 确保面板大小总和为100%
+            const totalSize = panels.reduce((sum, p) => sum + p.size, 0);
+            if (totalSize !== 100) {
+              panels.forEach((p, i) => {
+                p.size = i === 0 ? 50 : 50;
+              });
+            }
+          }
+
+          return {
+            id: tab.id,
+            title: tab.title || '',
+            type: (tab.tabType || 'sql') as WorkspaceTabType,
+            panels,
+            active: tab.isActive,
+            createdAt: Date.now(),
+            queryId,
+          };
+        });
+
+        const activeTab = mappedTabs.find((t) => t.active)?.id ?? mappedTabs[0]?.id ?? '';
+        set({ tabs: mappedTabs, activeTabId: activeTab, isBackedUp: true });
       },
 
       syncToBackend: async () => {

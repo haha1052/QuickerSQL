@@ -17,6 +17,7 @@ import type {
   UpdateSettingRequest,
   ExportSettingsResponse,
   ImportSettingsRequest,
+  QueryCacheStats,
   QueryAuditLogsRequest,
   AuditLogsListResponse,
   TableInfo,
@@ -35,6 +36,9 @@ import type {
   CreateTaskPayload,
   UpdateTaskPayload,
 } from '../types/automation';
+import type {
+  ProfileResult,
+} from '../types/profile';
 
 /**
  * Tauri Service Layer
@@ -127,6 +131,7 @@ class TauriService {
 
   /**
    * Import data (V2 - preferred, reads complete file)
+   * 添加 30 秒全局超时保护，防止长时间阻塞
    */
   async importDataV2(request: {
     file_path: string;
@@ -135,7 +140,32 @@ class TauriService {
     has_header: boolean;
     fields: Array<{ name: string; dataType: string }>;
   }): Promise<ApiResponse<string>> {
-    return this.invokeCommand<string>('import_data_v2', { request });
+    const TIMEOUT_MS = 30000; // 30 秒超时
+    
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    
+    // 创建超时 Promise
+    const timeoutPromise = new Promise<ApiResponse<string>>((resolve) => {
+      timeoutId = setTimeout(() => {
+        resolve({
+          success: false,
+          error: '导入超时，请检查文件/数据库',
+        });
+      }, TIMEOUT_MS);
+    });
+
+    // 创建导入任务 Promise
+    const importTask = this.invokeCommand<string>('import_data_v2', { request });
+
+    // 使用 Promise.race 竞争
+    const result = await Promise.race([importTask, timeoutPromise]);
+    
+    // 清理 setTimeout（无论哪个先完成，避免内存泄漏）
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    
+    return result;
   }
 
   // ============ Query Operations ============
@@ -512,6 +542,40 @@ class TauriService {
     return this.invokeCommand('import_settings_cmd', { request });
   }
 
+  // ============ Query Cache Operations ============
+
+  /**
+   * Get query cache statistics (capacity, size, hits, misses, hit rate, enabled state)
+   */
+  async getQueryCacheStats(): Promise<ApiResponse<QueryCacheStats>> {
+    return this.invokeCommand<QueryCacheStats>('get_query_cache_stats');
+  }
+
+  /**
+   * Configure query cache (capacity, ttl, enabled)
+   * Note: Tauri v2 converts camelCase to snake_case for Rust parameters,
+   * but we explicitly pass snake_case keys here for clarity.
+   */
+  async configureQueryCache(params: {
+    capacity: number;
+    ttlSeconds: number;
+    enabled: boolean;
+  }): Promise<ApiResponse<boolean>> {
+    return this.invokeCommand<boolean>('configure_query_cache', {
+      capacity: params.capacity,
+      ttl_seconds: params.ttlSeconds,
+      enabled: params.enabled,
+    });
+  }
+
+  /**
+   * Clear the query cache (reset hits/misses/entries)
+   * Returns the new stats snapshot after clearing
+   */
+  async clearQueryCache(): Promise<ApiResponse<QueryCacheStats>> {
+    return this.invokeCommand<QueryCacheStats>('clear_query_cache');
+  }
+
   // ============ Audit Log Operations ============
 
   /**
@@ -795,6 +859,33 @@ class TauriService {
     return this.invokeCommand<void>('remove_chart_from_dashboard', { itemId: itemId });
   }
 
+  // ========= 数据探查（Profile） Operations =========
+
+  /**
+   * 对指定数据表执行数据探查。
+   * 超过 5 万行时默认启用采样，可通过 forceFullScan=true 强制全量扫描。
+   */
+  async profileTable(
+    tableName: string,
+    forceFullScan?: boolean
+  ): Promise<ApiResponse<ProfileResult>> {
+    return this.invokeCommand<ProfileResult>('profile_table', {
+      tableName,
+      forceFullScan: forceFullScan ?? false,
+    });
+  }
+
+  /**
+   * 对前端传入的查询结果（列名 + 二维字符串）做内存内数据探查。
+   * 用于：用户刚跑了 SQL，对该 SELECT 结果做统计。
+   */
+  async profileResult(
+    columns: string[],
+    rows: string[][]
+  ): Promise<ApiResponse<ProfileResult>> {
+    return this.invokeCommand<ProfileResult>('profile_result', { columns, rows });
+  }
+
   // ============ Automation Tasks Commands ============
 
   async listAutomationTasks(filterState?: string, filterType?: string, keyword?: string): Promise<ApiResponse<TaskListResponse>> {
@@ -831,6 +922,131 @@ class TauriService {
 
   async getAutomationTaskRuns(taskId: string, limit?: number): Promise<ApiResponse<TaskRun[]>> {
     return this.invokeCommand<TaskRun[]>('get_automation_task_runs', { taskId, limit });
+  }
+
+  /**
+   * P0-2 启动优化：一次性获取所有启动所需数据
+   * 减少前端启动时的并发 IPC 调用，降低数据库锁竞争
+   *
+   * v2 扩展：新增 settings + tablesList，
+   * 让 SettingsContext 与 DatabaseExplorer 免二次 IPC。
+   */
+  async getStartupStatus(): Promise<ApiResponse<{
+    hasLaunched: boolean;
+    currentDbPath: string;
+    projectList: string[];
+    databaseStatus: { isConnected: boolean; path: string; tableCount: number };
+    workspaceLayout: Array<{
+      id: string;
+      title: string;
+      tabType: string;
+      position: number;
+      isActive: boolean;
+      panels: Array<{
+        id: string;
+        panelType: string;
+        title: string;
+        size: number;
+        sqlContent: string | null;
+        isActive: boolean;
+        position: number;
+      }>;
+    }> | null;
+    settings: Array<{ category: string; key: string; value: string }>;
+    tablesList: string[] | null;
+    dashboards: Array<{
+      id: string;
+      name: string;
+      description: string;
+      isDefault: boolean;
+      refreshIntervalSecs: number;
+      createdAt: number;
+      updatedAt: number;
+    }>;
+    savedCharts: Array<{
+      id: string;
+      name: string;
+      chartType: string;
+      xAxis: string;
+      yAxis: string[];
+      title: string;
+      tags: string[];
+      description: string;
+      visibility: string;
+      createdAt: number;
+      updatedAt: number;
+    }>;
+    tasks: Array<{
+      id: string;
+      name: string;
+      description: string;
+      taskType: string;
+      scheduleMode: string;
+      scheduleValue: string;
+      state: string;
+      nextRunAt: number | null;
+      lastRunStatus: string | null;
+      lastRunDurationMs: number | null;
+      totalRuns: number;
+      successRuns: number;
+      failedRuns: number;
+      createdAt: number;
+      updatedAt: number;
+    }>;
+    timing: {
+      appInitTsMs: number;
+      rustAppInitMs?: number;
+      rustSqliteConnectMs?: number;
+      rustSystemTablesInitMs?: number;
+      dbConnectMs: number;
+      hasLaunchedMs: number;
+      dbPathMs: number;
+      projectListMs: number;
+      databaseStatusMs: number;
+      workspaceMs: number;
+      settingsMs: number;
+      tablesListMs: number;
+      dashboardsMs: number;
+      savedChartsMs: number;
+      tasksMs: number;
+      totalBackendMs: number;
+    } | null;
+    startupTimestampMs: number;
+  }>> {
+    return this.invokeCommand('get_startup_status');
+  }
+
+  /**
+   * v10 splash 启动优化：把小窗口（400×400）放大到主应用尺寸（1200×800），
+   * 同时允许用户拖拽调整窗口大小。必须在 React 渲染主应用之前调用，
+   * 避免用户看到"大窗口 + 内容还没加载"的视觉断层。
+   *
+   * v14 (S4)：返回值中附带透明窗口诊断信息，前端据此决定是否应用降级
+   */
+  async windowResizeToMain(): Promise<ApiResponse<{
+    width: number;
+    height: number;
+    transparencyEffective: boolean;
+    needsFallback: boolean;
+    fallbackLevel: string;
+  }>> {
+    return this.invokeCommand('window_resize_to_main');
+  }
+
+  /**
+   * S5: 获取启动诊断信息（透明窗口状态 + 环境信息），
+   * 供前端 splash 判断是否需要降级为填充卡片样式。
+   */
+  async getStartupDiagnostics(): Promise<ApiResponse<{
+    transparentWindowEffective: boolean;
+    fallbackLevel: string;
+    rustDwmExtendOk: boolean;
+    rustDwmBorderColorOk: boolean;
+    rustDwmTransitionsDisabled: boolean;
+    rustStyleBitsCleared: boolean;
+    rustExStyleBitsCleared: boolean;
+  }>> {
+    return this.invokeCommand('get_startup_diagnostics');
   }
 }
 
