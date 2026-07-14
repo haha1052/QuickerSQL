@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { DashboardItem } from './DashboardItem';
 import { AddChartModal } from './AddChartModal';
 import { useDashboardStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 import type { Dashboard } from '../../types/dashboard';
 
 interface DashboardCanvasProps {
@@ -9,6 +10,7 @@ interface DashboardCanvasProps {
   isEditing: boolean;
   tempLayout?: Record<string, { x: number; y: number; width: number; height: number }>;
   onItemLayoutChange?: (itemId: string, layout: { x: number; y: number; width: number; height: number }) => void;
+  onItemDoubleClick?: (chartId: string) => void;
   layoutSettings?: { gap: number; rowHeight: number; snapToGrid: boolean };
 }
 
@@ -17,10 +19,21 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   isEditing,
   tempLayout = {},
   onItemLayoutChange,
+  onItemDoubleClick,
   layoutSettings = { gap: 16, rowHeight: 80, snapToGrid: true },
 }) => {
+  const { t } = useLocale();
   const [showAddModal, setShowAddModal] = useState(false);
   const { removeChartFromDashboard } = useDashboardStore();
+
+  const effectiveGap = dashboard?.gridGap ?? layoutSettings.gap;
+  const effectiveRowHeight = dashboard?.rowHeight ?? layoutSettings.rowHeight;
+  const effectiveSnapToGrid = dashboard?.snapToGrid ?? layoutSettings.snapToGrid;
+  const effectiveLayoutSettings = {
+    gap: effectiveGap,
+    rowHeight: effectiveRowHeight,
+    snapToGrid: effectiveSnapToGrid,
+  };
 
   if (!dashboard) {
     return (
@@ -30,40 +43,60 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     );
   }
 
-  if (dashboard.layout.length === 0) {
-    return (
-      <div style={styles.emptyCanvas}>
-        <div style={styles.emptyIcon}>📊</div>
-        <div style={styles.emptyText}>暂无图表</div>
-        <div style={styles.emptyHint}>
-          点击下方按钮添加已保存的图表，或先到 SQL 查询页保存图表
-        </div>
-        <button style={styles.addChartBtn} onClick={() => setShowAddModal(true)}>
-          + 添加图表
-        </button>
+  const canvasPadding = dashboard?.padding ?? 16;
 
-        {/* 添加图表弹窗 */}
-        {showAddModal && (
-          <AddChartModal
-            dashboardId={dashboard.id}
-            onClose={() => setShowAddModal(false)}
-            onAdded={() => setShowAddModal(false)}
-          />
-        )}
-      </div>
-    );
-  }
+  // 当画布宽度固定时，使用固定列宽（像素），否则使用 1fr 自适应
+  const hasFixedWidth = dashboard?.canvasWidth && dashboard.canvasWidth > 0;
+  const totalPaddingGap = canvasPadding * 2 + effectiveGap * 11;
+  const colWidth = hasFixedWidth
+    ? Math.floor(((dashboard!.canvasWidth as number) - totalPaddingGap) / 12)
+    : null;
+
+  const isEmpty = dashboard.layout.length === 0;
 
   return (
     <div
       style={{
         ...styles.canvas,
-        gap: `${layoutSettings.gap}px`,
-        gridAutoRows: `${layoutSettings.rowHeight}px`,
+        gap: `${effectiveGap}px`,
+        gridAutoRows: `${effectiveRowHeight}px`,
+        padding: `${canvasPadding}px`,
+        backgroundColor: dashboard?.backgroundColor || undefined,
+        backgroundImage: dashboard?.backgroundImage ? `url(${dashboard.backgroundImage})` : undefined,
+        backgroundSize: dashboard?.backgroundImage ? 'cover' : undefined,
+        backgroundPosition: dashboard?.backgroundImage ? 'center' : undefined,
+        height: dashboard?.canvasHeight && dashboard.canvasHeight > 0 ? `${dashboard.canvasHeight}px` : undefined,
+        width: dashboard?.canvasWidth && dashboard.canvasWidth > 0 ? `${dashboard.canvasWidth}px` : undefined,
+        // 固定宽度时使用固定像素列宽，否则使用 1fr 自适应
+        gridTemplateColumns: colWidth ? `repeat(12, ${colWidth}px)` : undefined,
+        alignItems: isEmpty ? 'center' : undefined,
+        justifyContent: isEmpty ? 'center' : undefined,
       }}
       data-dashboard-canvas="true"
     >
-      {dashboard.layout.map((item) => {
+      {isEmpty && (
+        <div style={styles.emptyCanvas}>
+          <div style={styles.emptyIcon}>📊</div>
+          <div style={styles.emptyText}>{t('dashboard.empty')}</div>
+          <div style={styles.emptyHint}>
+            点击下方按钮添加已保存的图表，或先到 SQL 查询页保存图表
+          </div>
+          <button style={styles.addChartBtn} onClick={() => setShowAddModal(true)}>
+            + 添加图表
+          </button>
+
+          {/* 添加图表弹窗 */}
+          {showAddModal && (
+            <AddChartModal
+              dashboardId={dashboard.id}
+              onClose={() => setShowAddModal(false)}
+              onAdded={() => setShowAddModal(false)}
+            />
+          )}
+        </div>
+      )}
+
+      {!isEmpty && dashboard.layout.map((item) => {
         // 合并 tempLayout：优先使用 tempLayout 中的覆盖值
         const override = tempLayout[item.id];
         const effectiveX = override ? override.x : item.x;
@@ -78,6 +111,8 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             isEditing={isEditing}
             onRemove={isEditing ? () => removeChartFromDashboard(item.id) : undefined}
             onLayoutChange={isEditing && onItemLayoutChange ? (layout) => onItemLayoutChange(item.id, layout) : undefined}
+            onDoubleClick={onItemDoubleClick ? () => onItemDoubleClick(item.chartId) : undefined}
+            layoutSettings={effectiveLayoutSettings}
           />
         );
       })}
@@ -112,15 +147,20 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '16px',
     padding: '16px',
     overflow: 'auto',
+    // 添加 alignItems: 'stretch' 确保子元素高度一致
+    alignItems: 'stretch',
   },
   emptyCanvas: {
-    flex: 1,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     gap: '12px',
     color: 'var(--text-secondary)',
+    textAlign: 'center',
+    gridColumn: '1 / -1',
+    gridRow: '1 / -1',
+    marginTop: '100px',
   },
   emptyIcon: { fontSize: '48px' },
   emptyText: { fontSize: '16px', fontWeight: 600 },

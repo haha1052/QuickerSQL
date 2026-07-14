@@ -7,7 +7,7 @@ import { WorkspaceTabs } from './WorkspaceTabs';
 import { PanelManager } from './PanelManager';
 import { useWorkspaceStore, useQueryStore, SIDEBAR_DEFAULT_WIDTH } from '../../store';
 import { useStartupContext } from '../../AppWrapper';
-import { useQueryExecution } from '../sql/hooks';
+import { useQueryExecution, editorSelectionGetter } from '../sql/hooks';
 import { useLocale } from '../../context/LocaleContext';
 
 // v2 启动优化：非 SQL Tab 的页面组件改为 React.lazy，减少首屏 bundle 体积
@@ -38,10 +38,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({
   onClearQueue,
 }) => {
   const { tabs, activeTabId, loadFromBackend, setTabsFromStartup, sidebar } = useWorkspaceStore();
-  const { setActiveQueryId, sqlQueries, addSqlQuery } = useQueryStore();
+  const setActiveQueryId = useQueryStore(s => s.setActiveQueryId);
+  const sqlQueries = useQueryStore(s => s.sqlQueries);
+  const addSqlQuery = useQueryStore(s => s.addSqlQuery);
   const startupCtx = useStartupContext();
   const { t } = useLocale();
-  const { executeQuery, isLoading } = useQueryExecution();
+  const { executeSelectedOrAll, isLoading } = useQueryExecution();
   const activeTabData = tabs.find(t => t.id === activeTabId);
 
   // v2 优化：优先消费 StartupContext 已返回的 workspaceLayout
@@ -194,7 +196,10 @@ export const Workspace: React.FC<WorkspaceProps> = ({
                   opacity: isLoading ? 0.7 : 1,
                   cursor: isLoading ? 'not-allowed' : 'pointer',
                 }}
-                onClick={executeQuery}
+                onClick={() => {
+                  const selectedSql = editorSelectionGetter.current?.();
+                  executeSelectedOrAll(selectedSql);
+                }}
                 disabled={isLoading}
               >
                 <span style={styles.executeIcon}>▶</span>
@@ -255,14 +260,15 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-tertiary)',
     borderBottom: '1px solid var(--border-primary)',
     flexShrink: 0,
-    height: '32px',
+    height: '40px',
   },
   tabsSection: {
     flex: 1,
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'stretch',
     overflow: 'hidden',
     height: '100%',
+    minWidth: 0,
   },
   executeButtonSection: {
     display: 'flex',
@@ -300,6 +306,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     overflow: 'hidden',
     background: 'var(--bg-primary)',
+    minHeight: 0,
   },
   dashboardPlaceholder: {
     flex: 1,

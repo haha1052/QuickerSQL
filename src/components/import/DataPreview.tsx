@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useRef } from 'react';
 // P0-2 启动优化：ag-grid 懒加载
 import { AgGridLazy } from '../common/AgGridLazy';
 import { PlayIcon } from '../common/Icons';
 import { useImportStore, useAppStore } from '../../store';
 import { tauriService } from '../../services';
 import { useLocale } from '../../context/LocaleContext';
+import { useSetting } from '../../context/SettingsContext';
 
 interface DataPreviewProps {
   onImportComplete: () => void;
@@ -16,6 +17,8 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
   } = useImportStore();
   const { setMessage } = useAppStore();
   const { t, localeText } = useLocale();
+  const [importBatchSize] = useSetting('import', 'importBatchSize');
+  const delimiterTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const activeItem = importItems.find((item) => item.id === activeImportItemId);
 
@@ -31,6 +34,42 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
 
   const handleTableNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     updateImportItem(activeItem.id, { tableName: e.target.value });
+  };
+
+  const handleDelimiterChange = (newDelimiter: string) => {
+    if (activeItem.fileType !== 'txt') return;
+
+    updateImportItem(activeItem.id, { delimiter: newDelimiter });
+
+    if (delimiterTimeoutRef.current) {
+      clearTimeout(delimiterTimeoutRef.current);
+    }
+
+    delimiterTimeoutRef.current = setTimeout(async () => {
+      try {
+        const response = await tauriService.loadTxt(activeItem.filePath, { delimiter: newDelimiter });
+        if (response.success && response.data) {
+          const { headers, rows } = response.data;
+          const displayHeaders = activeItem.hasHeader
+            ? (headers || [])
+            : (headers.length > 0
+                ? headers.map((_, i) => `column_${i + 1}`)
+                : rows[0]?.map((_, i) => `column_${i + 1}`) || []);
+          const columnCount = Math.max(displayHeaders.length, rows[0]?.length || 0);
+          const newFields = Array.from({ length: columnCount }, (_, index) => ({
+            name: activeItem.fields[index]?.name || displayHeaders[index] || `col_${index + 1}`,
+            dataType: activeItem.fields[index]?.dataType || 'TEXT',
+          }));
+          updateImportItem(activeItem.id, {
+            preview: { headers: headers || [], rows },
+            fields: newFields,
+          });
+        }
+      } catch (e) {
+        console.error('[DataPreview] Failed to reload TXT preview:', e);
+        setMessage('重新加载预览失败', 'error');
+      }
+    }, 300);
   };
 
   const handleHasHeaderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -99,12 +138,15 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
     updateImportItem(activeItem.id, { status: 'importing' });
 
     try {
+      const batchSizeNum = parseInt(importBatchSize || '1000', 10);
       const response = await tauriService.importDataV2({
         file_path: activeItem.filePath,
         sheet_name: activeItem.sheetName,
         table_name: activeItem.tableName,
         has_header: activeItem.hasHeader,
         fields: activeItem.fields,
+        batch_size: isNaN(batchSizeNum) ? undefined : batchSizeNum,
+        delimiter: activeItem.delimiter,
       });
 
       if (response && response.success) {
@@ -247,6 +289,20 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
             />
             <label htmlFor="hasHeader">{t('import.withHeader')}</label>
           </div>
+
+          {activeItem.fileType === 'txt' && (
+            <div style={styles.delimiterGroup}>
+              <span style={styles.label}>{t('import.delimiter')}:</span>
+              <input
+                type="text"
+                value={activeItem.delimiter || ''}
+                onChange={(e) => handleDelimiterChange(e.target.value)}
+                style={styles.delimiterInput}
+                placeholder={t('import.delimiterPlaceholder') || '自动检测'}
+              />
+              <span style={styles.delimiterHint}>例如：, 或 \t</span>
+            </div>
+          )}
 
           <button
             style={styles.inferBtn}
@@ -413,6 +469,25 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
     background: 'var(--bg-tertiary)',
     color: 'var(--text-primary)',
+  },
+  delimiterGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  delimiterInput: {
+    padding: '6px 12px',
+    border: '1px solid var(--border-primary)',
+    borderRadius: '4px',
+    fontSize: '14px',
+    width: '100px',
+    outline: 'none',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-primary)',
+  },
+  delimiterHint: {
+    fontSize: '12px',
+    color: 'var(--text-tertiary)',
   },
   headerCheckbox: {
     display: 'flex',

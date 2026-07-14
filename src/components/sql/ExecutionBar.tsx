@@ -15,7 +15,8 @@ export const ExecutionBar: React.FC<ExecutionBarProps> = ({
 }) => {
   const { t } = useLocale();
   const { tabs, activeTabId, addTab } = useWorkspaceStore();
-  const { sqlQueries, activeQueryId } = useQueryStore();
+  const sqlQueries = useQueryStore(s => s.sqlQueries);
+  const activeQueryId = useQueryStore(s => s.activeQueryId);
   
   const activeTabData = tabs.find(t => t.id === activeTabId);
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);

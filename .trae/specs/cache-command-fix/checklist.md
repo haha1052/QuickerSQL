@@ -1,0 +1,7 @@
+- [x] 检查点 1: lib.rs 中注册了 get_query_cache_stats 命令
+- [x] 检查点 2: lib.rs 中注册了 configure_query_cache 命令
+- [x] 检查点 3: capabilities/default.json 中添加了两个命令的权限声明（Tauri v2 brownfield 模式下不需要）
+- [x] 检查点 4: cargo check --quiet 无错误
+- [x] 检查点 5: npx tsc --noEmit --pretty 无错误
+- [x] 检查点 6: SQL 注入检测无新增风险
+- [x] 检查点 7: 查询缓存状态面板能正常加载统计数据（已修复命令注册，应用重启后生效）

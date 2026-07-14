@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 // P0-2 启动优化：将 echarts 改为运行时动态加载，避免启动时同步加载大库
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
+import { useSetting } from '../../context/SettingsContext';
 
 interface ChartPreviewProps {
   /** 已保存的 ECharts 配置 */
@@ -14,6 +15,18 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160
   const chartInstanceRef = useRef<any>(null);
   const [echartsModule, setEchartsModule] = useState<any>(null);
 
+  const [showGridStr] = useSetting('visualization', 'showGrid');
+  const [showLegendStr] = useSetting('visualization', 'showLegend');
+  const [animationStr] = useSetting('visualization', 'animation');
+  const [colorScheme] = useSetting('visualization', 'defaultColorScheme');
+
+  const vizOptions = useMemo(() => ({
+    showGrid: showGridStr !== 'false',
+    showLegend: showLegendStr !== 'false',
+    animation: animationStr !== 'false',
+    defaultColorScheme: colorScheme || 'default',
+  }), [showGridStr, showLegendStr, animationStr, colorScheme]);
+
   useEffect(() => {
     let cancelled = false;
     import('echarts')
@@ -26,7 +39,7 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160
     const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0;
     if (!hasConfig || !containerRef.current || !echartsModule) return;
 
-    const normalized = normalizeEChartsConfig(config);
+    const normalized = normalizeEChartsConfig(config, vizOptions);
     if (!normalized) return;
 
     if (!chartInstanceRef.current) {
@@ -49,7 +62,7 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160
       chartInstanceRef.current?.dispose();
       chartInstanceRef.current = null;
     };
-  }, [config, echartsModule]);
+  }, [config, echartsModule, vizOptions]);
 
   const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0;
   if (!hasConfig) {

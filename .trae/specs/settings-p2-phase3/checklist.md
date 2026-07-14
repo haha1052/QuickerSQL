@@ -1,0 +1,8 @@
+- [x] database.autoConnect 在启动时读取设置并自动连接最近数据库
+- [x] database.connectionTimeout 设置值被读取（SQLite 限制在文档中说明）
+- [x] database.queryTimeout 在查询执行时被读取并控制超时
+- [x] database.enableExplainPlan 设置影响执行计划功能开关
+- [x] implemented_settings() 包含新增的数据库设置项
+- [x] cargo check --quiet 无错误
+- [x] npx tsc --noEmit --pretty 无错误
+- [x] 设置系统现状分析报告更新到 v26.0

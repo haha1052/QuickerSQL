@@ -38,7 +38,7 @@ impl SqlIdentifier {
         // 检查是否只包含安全字符
         name.chars().all(|c| {
             c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' ||
-            (c >= '\u{4e00}' && c <= '\u{9fff}') // 中文字符
+            ('\u{4e00}'..='\u{9fff}').contains(&c) // 中文字符
         })
     }
 

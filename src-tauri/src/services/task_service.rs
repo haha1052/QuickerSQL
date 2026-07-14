@@ -74,6 +74,19 @@ impl TaskService {
             )"#,
             "CREATE INDEX IF NOT EXISTS idx_automation_runs_task_created ON __automation_runs(task_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_automation_runs_status ON __automation_runs(status)",
+            // ============================================================
+            // 3) __task_dependencies（任务依赖表）
+            // ============================================================
+            r#"CREATE TABLE IF NOT EXISTS __task_dependencies (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                task_id TEXT NOT NULL,
+                dependency_type TEXT NOT NULL DEFAULT 'time_interval',
+                dependency_config TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            )"#,
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON __task_dependencies(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_upstream ON __task_dependencies(dependency_type, dependency_config)",
         ];
 
         // ⚠️ rusqlite::execute() 只支持单条语句，因此必须把每条 DDL 拆成独立调用
@@ -82,6 +95,59 @@ impl TaskService {
                 return Err(format!("创建自动化任务系统表失败（第{}条）：{}", i + 1, e));
             }
         }
+
+        // ============================================================
+        // 旧数据自动迁移：将 schedule_mode 为 interval/cron 的任务迁移为依赖记录
+        // ============================================================
+        if let Err(e) = Self::migrate_schedule_to_dependencies(conn) {
+            log::warn!("迁移任务调度数据到依赖表失败: {}", e);
+        }
+
+        Ok(())
+    }
+
+    /// 旧数据迁移：将 schedule_mode 为 interval/cron 的任务迁移为依赖记录
+    /// 迁移幂等：通过检查该任务是否已有依赖来判断是否已迁移
+    fn migrate_schedule_to_dependencies(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        // 查询所有 schedule_mode IN ('interval', 'cron') 且该任务没有任何依赖记录的任务
+        let sql = "SELECT t.id, t.schedule_mode, t.schedule_value \
+             FROM __automation_tasks t \
+             WHERE t.schedule_mode IN ('interval', 'cron') \
+             AND NOT EXISTS (SELECT 1 FROM __task_dependencies d WHERE d.task_id = t.id);";
+        
+        let result = conn.query(sql, &[]).map_err(|e| format!("查询待迁移任务失败: {}", e))?;
+
+        for row in &result.rows {
+            if row.len() < 3 { continue; }
+            let task_id = &row[0];
+            let schedule_mode = &row[1];
+            let schedule_value = &row[2];
+
+            let (dep_type, dep_config) = match schedule_mode.as_str() {
+                "interval" => {
+                    let config = serde_json::json!({
+                        "intervalSeconds": schedule_value
+                    });
+                    ("time_interval", config.to_string())
+                }
+                "cron" => {
+                    let config = serde_json::json!({
+                        "expression": schedule_value,
+                        "timezone": "local"
+                    });
+                    ("cron", config.to_string())
+                }
+                _ => continue,
+            };
+
+            let insert_sql = "INSERT INTO __task_dependencies (task_id, dependency_type, dependency_config) \
+                 VALUES (?, ?, ?);";
+            let params: [&dyn ToSql; 3] = [&task_id, &dep_type, &dep_config];
+            if let Err(e) = conn.execute(insert_sql, &params) {
+                log::warn!("为任务 {} 创建依赖记录失败: {}", task_id, e);
+            }
+        }
+
         Ok(())
     }
 
@@ -98,8 +164,23 @@ impl TaskService {
 
         let state = req.state.unwrap_or_else(|| "enabled".to_string());
         let description = req.description.unwrap_or_default();
-        let retry_on_fail = req.retry_on_fail.unwrap_or(2);
-        let timeout_secs = req.timeout_secs.unwrap_or(300);
+
+        // 从设置读取默认值（用户未指定时使用）
+        let default_retry_on_fail: i64 = crate::services::SettingsService::get_setting(conn, "automation", "defaultRetryOnFail")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| v >= 0 && v <= 10)
+            .unwrap_or(0);
+        let default_timeout_secs: i64 = crate::services::SettingsService::get_setting(conn, "automation", "defaultTimeoutSecs")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| v >= 1 && v <= 86400)
+            .unwrap_or(300);
+
+        let retry_on_fail = req.retry_on_fail.unwrap_or(default_retry_on_fail);
+        let timeout_secs = req.timeout_secs.unwrap_or(default_timeout_secs);
 
         // 计算 next_run_at
         let next_run_at = if state == "enabled" {
@@ -475,7 +556,12 @@ impl TaskService {
                 }
 
                 let next_at = if task.state == "enabled" {
-                    compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+                    let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
+                    if !deps.is_empty() {
+                        Self::compute_next_run_from_deps(now, &deps)
+                    } else {
+                        compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+                    }
                 } else {
                     None
                 };
@@ -548,8 +634,13 @@ impl TaskService {
                         // 允许重试
                         Some(now + task.retry_interval_secs.max(10))
                     } else if task.state == "enabled" {
-                        // 不重试，按原调度继续（失败后仍然计算下次调度时间）
-                        compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+                        // 不重试，按依赖或原调度继续
+                        let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
+                        if !deps.is_empty() {
+                            Self::compute_next_run_from_deps(now, &deps)
+                        } else {
+                            compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+                        }
                     } else {
                         None
                     };
@@ -590,6 +681,12 @@ impl TaskService {
                 }
             }
         };
+
+        // 5. 任务完成后触发下游任务（仅触发一层，后续由调度器自然处理）
+        let is_success = exec_result.is_ok();
+        if let Err(e) = Self::trigger_downstream_tasks(primary_conn, id, is_success, now) {
+            log::warn!("触发下游任务失败: {}", e);
+        }
 
         // 对前端返回：任务已执行（不论成功/失败），都返回 TaskRun 让 UI 正确渲染
         // 仅在"读任务 / 写 run 记录"阶段失败时才返回 Err（这些是真正的系统级失败）
@@ -880,6 +977,308 @@ impl TaskService {
         }
         Ok(result)
     }
+
+    // ============================================================
+    // 任务依赖 CRUD
+    // ============================================================
+
+    /// 查询某个任务的所有依赖，按 created_at 排序
+    pub fn list_dependencies(
+        conn: &MutexGuardConnection<'_>,
+        task_id: &str,
+    ) -> Result<Vec<TaskDependency>, String> {
+        let sql = "SELECT id, task_id, dependency_type, dependency_config, created_at, updated_at \
+             FROM __task_dependencies WHERE task_id = ? ORDER BY created_at ASC;";
+        let params: [&dyn ToSql; 1] = [&task_id];
+        let result = conn.query(sql, &params).map_err(|e| format!("查询任务依赖失败: {}", e))?;
+        let mut deps = Vec::new();
+        for row in &result.rows {
+            if row.len() < 6 { continue; }
+            deps.push(Self::row_to_dependency(row)?);
+        }
+        Ok(deps)
+    }
+
+    /// 新增一条依赖，返回创建后的对象
+    pub fn add_dependency(
+        conn: &MutexGuardConnection<'_>,
+        task_id: &str,
+        dep_type: &str,
+        dep_config: &str,
+    ) -> Result<TaskDependency, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+
+        let insert_sql = "INSERT INTO __task_dependencies (id, task_id, dependency_type, dependency_config, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?);";
+        let now_str = now.to_string();
+        let params: [&dyn ToSql; 6] = [&id, &task_id, &dep_type, &dep_config, &now_str, &now_str];
+        conn.execute(insert_sql, &params).map_err(|e| format!("创建任务依赖失败: {}", e))?;
+
+        Self::get_dependency(conn, &id)
+    }
+
+    /// 根据 ID 查询依赖
+    fn get_dependency(
+        conn: &MutexGuardConnection<'_>,
+        id: &str,
+    ) -> Result<TaskDependency, String> {
+        let sql = "SELECT id, task_id, dependency_type, dependency_config, created_at, updated_at \
+             FROM __task_dependencies WHERE id = ?;";
+        let params: [&dyn ToSql; 1] = [&id];
+        let result = conn.query(sql, &params).map_err(|e| format!("查询任务依赖失败: {}", e))?;
+        if result.rows.is_empty() {
+            return Err("任务依赖不存在".to_string());
+        }
+        Self::row_to_dependency(&result.rows[0])
+    }
+
+    /// 更新依赖配置，返回更新后的对象
+    pub fn update_dependency(
+        conn: &MutexGuardConnection<'_>,
+        dep_id: &str,
+        dep_config: &str,
+    ) -> Result<TaskDependency, String> {
+        let now = chrono::Utc::now().timestamp();
+        let now_str = now.to_string();
+
+        let update_sql = "UPDATE __task_dependencies SET dependency_config = ?, updated_at = ? WHERE id = ?;";
+        let params: [&dyn ToSql; 3] = [&dep_config, &now_str, &dep_id];
+        conn.execute(update_sql, &params).map_err(|e| format!("更新任务依赖失败: {}", e))?;
+
+        Self::get_dependency(conn, dep_id)
+    }
+
+    /// 删除依赖，返回是否成功
+    pub fn delete_dependency(
+        conn: &MutexGuardConnection<'_>,
+        dep_id: &str,
+    ) -> Result<bool, String> {
+        let sql = "DELETE FROM __task_dependencies WHERE id = ?;";
+        let params: [&dyn ToSql; 1] = [&dep_id];
+        match conn.execute(sql, &params) {
+            Ok(rows) => Ok(rows > 0),
+            Err(e) => Err(format!("删除任务依赖失败: {}", e)),
+        }
+    }
+
+    /// 全量替换某个任务的所有依赖（先删后插，事务内完成）
+    pub fn replace_dependencies(
+        conn: &MutexGuardConnection<'_>,
+        task_id: &str,
+        deps: Vec<(String, String)>,
+    ) -> Result<Vec<TaskDependency>, String> {
+        conn.begin_transaction().map_err(|e| format!("开启事务失败: {}", e))?;
+
+        let delete_sql = "DELETE FROM __task_dependencies WHERE task_id = ?;";
+        let delete_params: [&dyn ToSql; 1] = [&task_id];
+        if let Err(e) = conn.execute(delete_sql, &delete_params) {
+            let _ = conn.rollback_transaction();
+            return Err(format!("删除旧依赖失败: {}", e));
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let now_str = now.to_string();
+        let mut result = Vec::new();
+
+        for (dep_type, dep_config) in &deps {
+            let id = uuid::Uuid::new_v4().to_string();
+            let insert_sql = "INSERT INTO __task_dependencies (id, task_id, dependency_type, dependency_config, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?);";
+            let params: [&dyn ToSql; 6] = [&id, &task_id, &dep_type.as_str(), &dep_config.as_str(), &now_str, &now_str];
+            if let Err(e) = conn.execute(insert_sql, &params) {
+                let _ = conn.rollback_transaction();
+                return Err(format!("创建依赖失败: {}", e));
+            }
+            match Self::get_dependency(conn, &id) {
+                Ok(dep) => result.push(dep),
+                Err(e) => {
+                    let _ = conn.rollback_transaction();
+                    return Err(e);
+                }
+            }
+        }
+
+        if let Err(e) = conn.commit_transaction() {
+            let _ = conn.rollback_transaction();
+            return Err(format!("提交事务失败: {}", e));
+        }
+
+        Ok(result)
+    }
+
+    /// 查询所有依赖于某个前置任务的后置任务
+    /// 条件：dependency_type IN ('task_success', 'task_completed')
+    /// 需要解析 dependency_config JSON 中的 upstreamTaskId 字段来匹配
+    pub fn get_downstream_tasks(
+        conn: &MutexGuardConnection<'_>,
+        upstream_task_id: &str,
+    ) -> Result<Vec<(TaskDependency, Task)>, String> {
+        let sql = "SELECT d.id, d.task_id, d.dependency_type, d.dependency_config, d.created_at, d.updated_at, \
+                          t.id, t.name, t.description, t.task_type, t.payload, t.schedule_mode, t.schedule_value, \
+                          t.timezone, t.state, t.project_id, t.next_run_at, t.last_run_at, t.last_run_status, \
+                          t.last_run_duration_ms, t.total_runs, t.success_runs, t.failed_runs, t.retry_on_fail, \
+                          t.retry_interval_secs, t.timeout_secs, t.notify_on_success, t.notify_on_failure, \
+                          t.tags, t.created_by, t.created_at, t.updated_at \
+             FROM __task_dependencies d \
+             JOIN __automation_tasks t ON d.task_id = t.id \
+             WHERE d.dependency_type IN ('task_success', 'task_completed');";
+
+        let result = conn.query(sql, &[]).map_err(|e| format!("查询下游任务失败: {}", e))?;
+        let mut downstream = Vec::new();
+
+        for row in &result.rows {
+            if row.len() < 32 { continue; }
+
+            let dep_row: Vec<String> = row.iter().take(6).cloned().collect();
+            let task_row: Vec<String> = row.iter().skip(6).cloned().collect();
+
+            let dep = match Self::row_to_dependency(&dep_row) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let dep_config: serde_json::Value = match serde_json::from_str(&dep.dependency_config) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let config_upstream_id = dep_config
+                .get("upstreamTaskId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if config_upstream_id == upstream_task_id {
+                match Self::row_to_task(&task_row) {
+                    Ok(task) => downstream.push((dep, task)),
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        Ok(downstream)
+    }
+
+    /// 触发下游任务（仅一层，避免循环依赖问题）
+    /// - task_success: 仅当前任务成功时触发
+    /// - task_completed: 无论成功失败都触发
+    /// 下游任务状态必须是 enabled 才会被触发
+    /// 从 dependency_config 读取 delaySeconds（默认 0），计算触发时间
+    /// 更新下游任务的 next_run_at 为触发时间（取较小值）
+    fn trigger_downstream_tasks(
+        conn: &MutexGuardConnection<'_>,
+        upstream_task_id: &str,
+        is_success: bool,
+        now: i64,
+    ) -> Result<(), String> {
+        let downstream = Self::get_downstream_tasks(conn, upstream_task_id)?;
+
+        for (dep, task) in downstream {
+            // 检查依赖类型是否满足触发条件
+            let should_trigger = match dep.dependency_type {
+                DependencyType::TaskSuccess => is_success,
+                DependencyType::TaskCompleted => true,
+                _ => false,
+            };
+
+            if !should_trigger {
+                continue;
+            }
+
+            // 下游任务状态不是 enabled 则跳过
+            if task.state != "enabled" {
+                continue;
+            }
+
+            // 解析 dependency_config，读取 delaySeconds
+            let config: serde_json::Value = serde_json::from_str(&dep.dependency_config)
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let delay_seconds = config
+                .get("delaySeconds")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0);
+
+            // 计算触发时间
+            let trigger_time = now + delay_seconds;
+
+            // 决定是否更新 next_run_at
+            // 如果当前 next_run_at 为 None，或者 trigger_time 更早，则更新
+            let should_update = match task.next_run_at {
+                None => true,
+                Some(current) => trigger_time < current,
+            };
+
+            if should_update {
+                let update_sql = "UPDATE __automation_tasks SET next_run_at = ?, updated_at = ? WHERE id = ?;";
+                let trigger_time_str = trigger_time.to_string();
+                let now_str = now.to_string();
+                let params: [&dyn ToSql; 3] = [&trigger_time_str, &now_str, &task.id];
+                if let Err(e) = conn.execute(update_sql, &params) {
+                    log::warn!("更新下游任务 {} next_run_at 失败: {}", task.id, e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 根据依赖列表计算下次运行时间
+    /// 遍历所有 time_interval 和 cron 类型的依赖，返回最早的触发时间
+    /// 如果没有时间依赖，返回 None
+    pub fn compute_next_run_from_deps(now: i64, deps: &[TaskDependency]) -> Option<i64> {
+        let mut earliest: Option<i64> = None;
+
+        for dep in deps {
+            let next_time = match dep.dependency_type {
+                DependencyType::TimeInterval => {
+                    let config: serde_json::Value = serde_json::from_str(&dep.dependency_config)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                    let interval_secs = config
+                        .get("intervalSeconds")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(3600)
+                        .max(10);
+                    Some(now + interval_secs)
+                }
+                DependencyType::Cron => {
+                    let config: serde_json::Value = serde_json::from_str(&dep.dependency_config)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                    let expression = config
+                        .get("expression")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    compute_next_run(now, "cron", expression)
+                }
+                _ => None,
+            };
+
+            if let Some(t) = next_time {
+                earliest = match earliest {
+                    Some(e) => Some(e.min(t)),
+                    None => Some(t),
+                };
+            }
+        }
+
+        earliest
+    }
+
+    /// 行 -> TaskDependency
+    fn row_to_dependency(row: &[String]) -> Result<TaskDependency, String> {
+        if row.len() < 6 {
+            return Err("任务依赖行数据不完整".to_string());
+        }
+        Ok(TaskDependency {
+            id: row[0].clone(),
+            task_id: row[1].clone(),
+            dependency_type: DependencyType::from(row[2].as_str()),
+            dependency_config: row[3].clone(),
+            created_at: row[4].parse().unwrap_or(0),
+            updated_at: row[5].parse().unwrap_or(0),
+        })
+    }
 }
 
 // ============================================================
@@ -971,27 +1370,39 @@ impl TaskScheduleEngine {
         let engine_enabled = SettingsService::get_setting(&conn, "automation", "engineEnabled")
             .ok()
             .flatten()
-            .map(|s| s.value.to_ascii_lowercase() != "false")
+            .map(|s| !s.value.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
         let scan_interval_secs: u64 = SettingsService::get_setting(&conn, "automation", "scheduleIntervalSecs")
             .ok()
             .flatten()
             .and_then(|s| s.value.parse::<u64>().ok())
-            .filter(|&v| v >= 10 && v <= 3600)
+            .filter(|&v| (10..=3600).contains(&v))
             .unwrap_or(30);
         let log_retention_days: i64 = SettingsService::get_setting(&conn, "automation", "logRetentionDays")
             .ok()
             .flatten()
             .and_then(|s| s.value.parse::<i64>().ok())
-            .filter(|&v| v >= 1 && v <= 3650)
+            .filter(|&v| (1..=3650).contains(&v))
             .unwrap_or(30);
+
+        // 读取自动化任务相关设置
+        // 注意：defaultRetryOnFail 和 defaultTimeoutSecs 在 create_task 中使用
+        // notifyOnFailure 在 run_automation_task_now 命令中使用
+        // 这里只读取 maxConcurrentTasks
+        let max_concurrent_tasks: i64 = SettingsService::get_setting(&conn, "automation", "maxConcurrentTasks")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| (1..=20).contains(&v))
+            .unwrap_or(3);
 
         // 3) 引擎开关关闭时：不做任务执行，但仍按配置间隔扫描
         if !engine_enabled {
             return scan_interval_secs;
         }
 
-        // 4) 日志清理（超过 log_retention_days 的旧日志）
+        // 4) 日志清理
+        // 4.1) 清理自动化任务运行日志（超过 log_retention_days 的旧日志）
         let cutoff = chrono::Utc::now().timestamp() - log_retention_days * 86400;
         let cleanup_sql = "DELETE FROM __automation_runs WHERE created_at < ?;";
         let cutoff_str = cutoff.to_string();
@@ -1000,15 +1411,35 @@ impl TaskScheduleEngine {
             log::warn!("清理过期运行日志失败: {}", e);
         }
 
-        // 5) 扫描到期任务
+        // 4.2) 清理审计日志（如果 auditLogAutoClean 开启）
+        let audit_log_auto_clean = SettingsService::get_setting(&conn, "security", "auditLogAutoClean")
+            .ok()
+            .flatten()
+            .map(|s| !s.value.eq_ignore_ascii_case("false"))
+            .unwrap_or(false);
+        if audit_log_auto_clean {
+            let audit_log_max_size_mb: i64 = SettingsService::get_setting(&conn, "security", "auditLogMaxSizeMB")
+                .ok()
+                .flatten()
+                .and_then(|s| s.value.parse::<i64>().ok())
+                .filter(|&v| (10..=10000).contains(&v))
+                .unwrap_or(100); // 默认 100MB
+
+            use crate::services::AuditLogService;
+            if let Err(e) = AuditLogService::cleanup_by_size(&conn, audit_log_max_size_mb) {
+                log::warn!("按大小清理审计日志失败: {}", e);
+            }
+        }
+
+        // 5) 扫描到期任务（使用 max_concurrent_tasks 限制每次扫描的任务数量）
         let now = chrono::Utc::now().timestamp();
+        let limit_str = max_concurrent_tasks.to_string();
         let scan_sql = "SELECT id FROM __automation_tasks \
              WHERE state='enabled' AND next_run_at IS NOT NULL AND next_run_at <= ? \
              AND last_run_status != 'running' \
              ORDER BY next_run_at ASC LIMIT ?;";
         let now_str = now.to_string();
-        let limit_5 = "5".to_string();
-        let params_scan: [&dyn ToSql; 2] = [&now_str, &limit_5];
+        let params_scan: [&dyn ToSql; 2] = [&now_str, &limit_str];
 
         let candidate_ids = match conn.query(scan_sql, &params_scan) {
             Ok(result) => result.rows.into_iter().map(|r| r.into_iter().next().unwrap_or_default()).collect::<Vec<_>>(),

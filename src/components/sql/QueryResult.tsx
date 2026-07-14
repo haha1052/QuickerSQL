@@ -4,7 +4,9 @@ import { QueryResultItem } from './QueryResultItem';
 import { useLocale } from '../../context/LocaleContext';
 
 export const QueryResult: React.FC = () => {
-  const { sqlQueries, activeQueryId, queryLoading } = useQueryStore();
+  const sqlQueries = useQueryStore(s => s.sqlQueries);
+  const activeQueryId = useQueryStore(s => s.activeQueryId);
+  const queryLoading = useQueryStore(s => s.queryLoading);
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
   const { t } = useLocale();
 
@@ -40,9 +42,7 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     display: 'flex',
     flexDirection: 'column',
-    height: '100%',
-    minHeight: 200,
-    overflow: 'hidden',
+    width: '100%',
     background: 'var(--bg-primary)',
   },
   loadingContainer: {
@@ -50,7 +50,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     alignItems: 'center',
     padding: '40px',
-    height: '100%',
     minHeight: 200,
     background: 'var(--bg-primary)',
   },
@@ -59,9 +58,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)',
   },
   resultsContainer: {
-    flex: 1,
-    minHeight: 200,
-    overflowY: 'auto',
     overflowX: 'hidden',
     padding: '12px',
     display: 'flex',
@@ -73,7 +69,6 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     alignItems: 'center',
     padding: '40px',
-    height: '100%',
     minHeight: 200,
     background: 'var(--bg-primary)',
   },

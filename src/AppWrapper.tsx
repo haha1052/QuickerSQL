@@ -1,14 +1,19 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { tauriService } from './services/tauri';
+import type { ProjectInfo } from './types';
 import App from './App';
 import Welcome from './pages/Welcome';
 import Guide from './pages/Guide';
-import Settings from './pages/Settings';
 import ActivityLog from './pages/ActivityLog';
+import { SettingsModal, ErrorBoundary } from './components/common';
 import { SettingsProvider } from './context/SettingsContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { ThemeSettingsSync } from './context/ThemeSettingsSync';
+import { CacheSettingsSync } from './context/CacheSettingsSync';
+import { AdvancedSettingsSync } from './context/AdvancedSettingsSync';
 import { LocaleProvider } from './context/LocaleContext';
+import { ShortcutProvider } from './context/ShortcutProvider';
+import { useSettingsStore, useToastStore } from './store';
 import './styles/theme.css';
 
 // P0-2 启动优化：启动数据的共享 context
@@ -36,7 +41,7 @@ export interface StartupLayoutTab {
 export interface StartupData {
   hasLaunched: boolean;
   currentDbPath: string;
-  projectList: string[];
+  projectList: ProjectInfo[];
   databaseStatus: { isConnected: boolean; path: string; tableCount: number };
   workspaceLayout: StartupLayoutTab[] | null;
   // v2 新增：SettingsContext 与 DatabaseExplorer 直接消费，减少启动 IPC
@@ -103,6 +108,11 @@ export interface StartupData {
   startupTimestampMs: number;
 }
 
+interface ThemeData {
+  transparencyEffective?: boolean;
+  needsFallback?: boolean;
+}
+
 interface StartupContextType {
   startupData: StartupData | null;
   isStartupLoaded: boolean;
@@ -116,12 +126,24 @@ export const useStartupContext = (): StartupContextType => {
 };
 
 // AppPageState: 应用视图状态（区分于后端 Rust AppState）
-type AppPageState = 'welcome' | 'guide' | 'workspace' | 'settings' | 'activity_log' | 'loading';
+type AppPageState = 'welcome' | 'guide' | 'workspace' | 'activity_log' | 'loading';
 
+// AppContext: 全局 UI 导航与页面切换
+// ============================================
+// 职责边界：
+// - 负责页面级别的导航切换（welcome/guide/workspace/activity_log）
+// - 不负责业务数据状态（由各 Store 管理）
+// - 不负责业务相关的模态框控制（由对应业务 Store 管理，如 settingsStore 的 showSettingsModal）
+//
+// 为什么页面导航放在 Context 而不是 Store？
+// - 页面导航是应用级 UI 路由，与业务数据无关
+// - 导航状态变化通常伴随整个页面的切换，属于顶层 UI 控制
+// - 与启动流程（get_startup_status）紧密耦合，放在 AppWrapper 内更内聚
 interface AppContextType {
-  goToSettings: () => void;
   goToWorkspace: () => void;
   goToActivityLog: () => void;
+  goToWelcome: () => void;
+  goToGuide: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -205,8 +227,58 @@ const AppWrapper: React.FC = () => {
     return () => clearInterval(timer);
   }, [isLoading]);
 
+  // DuckDB 初始化完成事件监听
+  useEffect(() => {
+    const unlistenRef = { current: null as (() => void) | null };
+    const cancelledRef = { current: false };
+    
+    tauriService.onDuckDbInitCompleted((status) => {
+      if (cancelledRef.current) return;
+      if (status.success) {
+        useToastStore.getState().addToast(
+          `DuckDB 初始化完成，已同步 ${status.view_count} 个表（耗时 ${status.duration_ms}ms）`,
+          'success',
+          3000
+        );
+      } else {
+        useToastStore.getState().addToast(
+          'DuckDB 初始化失败',
+          'error',
+          5000
+        );
+      }
+    }).then((unlisten) => {
+      if (cancelledRef.current) {
+        unlisten();
+      } else {
+        unlistenRef.current = unlisten;
+      }
+    }).catch((e) => {
+      console.error('[DuckDB] 注册初始化事件监听失败:', e);
+    });
+
+    return () => {
+      cancelledRef.current = true;
+      if (unlistenRef.current) {
+        unlistenRef.current();
+        unlistenRef.current = null;
+      }
+    };
+  }, []);
+
+  // DuckDB 预加载：启动完成后5秒自动触发，避免首次分析查询卡住
+  useEffect(() => {
+    if (!isLoading && state !== 'loading') {
+      const preloadTimer = setTimeout(() => {
+        tauriService.preloadDuckdb().catch((e) => {
+          console.error('[DuckDB] 预加载失败:', e);
+        });
+      }, 5000);
+      return () => clearTimeout(preloadTimer);
+    }
+  }, [isLoading, state]);
+
   // v14（事件驱动过渡 · S2 方案）: 启动完成时执行完整的过渡流程：
-  // 1) 记录最终耗时 + 停止 splash 计时
   // 2) 异步调用 windowResizeToMain() 把窗口从 400×400 放大到 1200×800
   // 3) IPC 返回后：把 html/body background 从 transparent 设为 #f5f7fa
   // 4) 使用 requestAnimationFrame 双帧对齐替代静态 setTimeout(80ms)：
@@ -214,8 +286,14 @@ const AppWrapper: React.FC = () => {
   //    - 第 2 帧：DWM 合成器已把背景色合成到窗口画面
   //    - 此后再调用 __TRIGGER_SPLASH_TRANSITION__ 淡出 splash 卡片
   // 5) 失败路径（catch）同样改为事件驱动，不再依赖静态延迟
+  // v14（事件驱动过渡 · S2 方案）: 启动完成时执行完整的过渡流程
+  // 使用 ref 替代 state 作为依赖，避免 setFinalRuntimeMs 触发清理函数
+  const hasDoneTransitionRef = useRef(false);
+  
   useEffect(() => {
-    if (!isLoading && finalRuntimeMs === null) {
+    if (!isLoading && !hasDoneTransitionRef.current) {
+      hasDoneTransitionRef.current = true;
+      
       const now = performance.now();
       setFinalRuntimeMs(now);
 
@@ -225,26 +303,40 @@ const AppWrapper: React.FC = () => {
         window.__CLEAR_SPLASH_TIMER__();
       }
 
+      let rafId1: number | null = null;
+      let rafId2: number | null = null;
+      let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
       const doTransition = () => {
         if (typeof window.__TRIGGER_SPLASH_TRANSITION__ === 'function') {
           window.__TRIGGER_SPLASH_TRANSITION__(transitionMs);
         }
       };
 
+      const clearAllTimers = () => {
+        if (rafId1 !== null) {
+          cancelAnimationFrame(rafId1);
+          rafId1 = null;
+        }
+        if (rafId2 !== null) {
+          cancelAnimationFrame(rafId2);
+          rafId2 = null;
+        }
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
+      };
+
       const paintAfterBgChange = () => {
-        // ⭐ 事件驱动：双 rAF 对齐 DWM 合成帧
-        // 第 1 帧：浏览器 layout/paint，html/body 背景色从 transparent 变为 #f5f7fa
-        // 第 2 帧：Windows DWM 合成器把浏览器的新画面合成到窗口
-        // 2 帧后：splash 卡片淡出，确保背景色已经"打底"，不会露白
         if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
+          rafId1 = requestAnimationFrame(() => {
+            rafId2 = requestAnimationFrame(() => {
               doTransition();
             });
           });
         } else {
-          // 退化：极老环境无 rAF（理论上 WebView2 必存在）
-          setTimeout(doTransition, 50);
+          fallbackTimer = setTimeout(doTransition, 50);
         }
       };
 
@@ -252,49 +344,42 @@ const AppWrapper: React.FC = () => {
         .then((resizeResp) => {
           const data = resizeResp?.data ?? null;
           const transparencyEffective =
-            data && typeof (data as any).transparencyEffective === 'boolean'
-              ? (data as any).transparencyEffective
+            data && typeof (data as ThemeData).transparencyEffective === 'boolean'
+              ? (data as ThemeData).transparencyEffective
               : true;
-          const needsFallback = data && (data as any).needsFallback === true;
+          const needsFallback = data && (data as ThemeData).needsFallback === true;
 
-          // S4 三级降级：根据 Rust 端的透明窗口诊断结果，
-          // 在 html 根节点上添加 fallback-l1 / fallback-l2 类，
-          // 由 index.html 的 CSS 规则接管样式降级
           const html = document.documentElement;
           if (needsFallback || !transparencyEffective) {
-            // L1: 卡片填充（紫色实心卡片）——绝大多数环境够用
             if (html) html.classList.add('fallback-l1');
             console.info('[DIAG] 透明窗口未生效，启用 L1 降级（卡片填充）');
           } else {
-            // 透明工作正常 → 清掉降级类（保障用户机器上的美观）
             if (html) html.classList.remove('fallback-l1', 'fallback-l2', 'fallback-l3');
             console.info('[DIAG] 透明窗口生效，使用默认 splash 样式');
           }
 
-          // ⭐ 关键：把 html/body 从透明 → 不透明，为后续主应用渲染铺好底色
           if (document.body) document.body.style.background = '#f5f7fa';
           if (document.documentElement) document.documentElement.style.background = '#f5f7fa';
-          // 事件驱动对齐 DWM 合成，不再依赖静态 80ms
           paintAfterBgChange();
         })
         .catch((err) => {
           console.warn('[DIAG] windowResizeToMain failed, forcing transition:', err);
-          // 失败路径：保守启用 L1 降级 + 设置背景色
           const html = document.documentElement;
           if (html) html.classList.add('fallback-l1');
           if (document.body) document.body.style.background = '#f5f7fa';
           if (document.documentElement) document.documentElement.style.background = '#f5f7fa';
-          // 失败路径同样用事件驱动（避免静态延迟）
           if (typeof requestAnimationFrame === 'function') {
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => doTransition());
+            rafId1 = requestAnimationFrame(() => {
+              rafId2 = requestAnimationFrame(() => doTransition());
             });
           } else {
-            setTimeout(doTransition, 50);
+            fallbackTimer = setTimeout(doTransition, 50);
           }
         });
+
+      return clearAllTimers;
     }
-  }, [isLoading, finalRuntimeMs]);
+  }, [isLoading]);
 
   // v10: 超时保护（5 秒没完成启动 → 显示"点击进入应用"按钮）
   useEffect(() => {
@@ -393,10 +478,16 @@ const AppWrapper: React.FC = () => {
     setState('workspace');
   };
 
-  const goToSettings = () => setState('settings');
+  const handleGoToGuide = () => {
+    setState('guide');
+  };
+
   const goToWorkspace = () => setState('workspace');
   const goToActivityLog = () => setState('activity_log');
+  const goToWelcome = () => setState('welcome');
   const goToGuide = () => setState('guide');
+
+  const { openSettingsModal } = useSettingsStore();
 
   // —— 启动阶段（正在加载时）：完全不渲染任何内容
   //    启动视觉由 index.html 的内联 splash 卡片负责
@@ -420,14 +511,14 @@ const AppWrapper: React.FC = () => {
         background: 'var(--bg-primary, #f5f7fa)',
         color: 'var(--text-primary, #1f2328)',
       }}>
-        <AppContext.Provider value={{ goToSettings, goToWorkspace, goToActivityLog }}>
+        <AppContext.Provider value={{ goToWorkspace, goToActivityLog, goToWelcome, goToGuide }}>
           <StartupContext.Provider value={{ startupData, isStartupLoaded: true }}>
             <SettingsWrapper>
-              {state === 'welcome' && <Welcome onGetStarted={handleGetStarted} onGoToGuide={goToGuide} onGoToSettings={goToSettings} />}
+              {state === 'welcome' && <Welcome onGetStarted={handleGetStarted} onGoToGuide={handleGoToGuide} onGoToSettings={openSettingsModal} />}
               {state === 'guide' && <Guide onComplete={handleGuideComplete} onSkip={handleGuideSkip} />}
               {state === 'workspace' && <App />}
-              {state === 'settings' && <Settings />}
               {state === 'activity_log' && <ActivityLog />}
+              <SettingsModal />
             </SettingsWrapper>
           </StartupContext.Provider>
         </AppContext.Provider>
@@ -460,9 +551,16 @@ const SettingsWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) 
   return (
     <SettingsProvider>
       <ThemeSettingsSync />
-      <LocaleProvider>
-        {children}
-      </LocaleProvider>
+      <CacheSettingsSync />
+      <AdvancedSettingsSync>
+        <LocaleProvider>
+          <ShortcutProvider>
+            <ErrorBoundary>
+              {children}
+            </ErrorBoundary>
+          </ShortcutProvider>
+        </LocaleProvider>
+      </AdvancedSettingsSync>
     </SettingsProvider>
   );
 };

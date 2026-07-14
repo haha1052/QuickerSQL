@@ -11,6 +11,9 @@ pub struct TrashService;
 
 /// 默认阈值（当 settings 中未配置时使用）
 const DEFAULT_LARGE_TABLE_THRESHOLD: u64 = 100_000;
+const DEFAULT_CLEANUP_DAYS: u64 = 30;
+const DEFAULT_MAX_TRASH_SIZE_MB: u64 = 1024;
+const ESTIMATED_BYTES_PER_ROW: u64 = 1024;
 
 impl TrashService {
     /// 从 settings 读取大表阈值（单位：行数）
@@ -18,6 +21,47 @@ impl TrashService {
         match crate::services::SettingsService::get_setting(conn, "performance", "large_table_threshold") {
             Ok(Some(setting)) => setting.value.parse::<u64>().unwrap_or(DEFAULT_LARGE_TABLE_THRESHOLD),
             _ => DEFAULT_LARGE_TABLE_THRESHOLD,
+        }
+    }
+
+    /// 从 settings 读取是否启用自动清理
+    fn get_auto_cleanup_enabled(conn: &MutexGuardConnection<'_>) -> bool {
+        match crate::services::SettingsService::get_setting(conn, "trash", "autoCleanup") {
+            Ok(Some(setting)) => setting.value.to_lowercase() == "true",
+            _ => false,
+        }
+    }
+
+    /// 从 settings 读取清理天数
+    fn get_cleanup_days(conn: &MutexGuardConnection<'_>) -> u64 {
+        match crate::services::SettingsService::get_setting(conn, "trash", "cleanupDays") {
+            Ok(Some(setting)) => setting.value.parse::<u64>().unwrap_or(DEFAULT_CLEANUP_DAYS),
+            _ => DEFAULT_CLEANUP_DAYS,
+        }
+    }
+
+    /// 从 settings 读取回收站最大大小（MB）
+    fn get_max_trash_size_mb(conn: &MutexGuardConnection<'_>) -> u64 {
+        match crate::services::SettingsService::get_setting(conn, "trash", "maxTrashSize") {
+            Ok(Some(setting)) => setting.value.parse::<u64>().unwrap_or(DEFAULT_MAX_TRASH_SIZE_MB),
+            _ => DEFAULT_MAX_TRASH_SIZE_MB,
+        }
+    }
+
+    /// 获取回收站统计信息（项目总数、估算总字节数）
+    pub fn get_trash_stats(conn: &MutexGuardConnection<'_>) -> Result<(u64, u64), String> {
+        let result = conn.query(
+            "SELECT COUNT(*), COALESCE(SUM(row_count), 0) FROM __trash_metadata",
+            &[],
+        ).map_err(|e| format!("查询回收站统计失败：{}", e))?;
+
+        if let Some(row) = result.rows.first() {
+            let count: u64 = row[0].parse().unwrap_or(0);
+            let total_rows: u64 = row[1].parse().unwrap_or(0);
+            let estimated_bytes = total_rows * ESTIMATED_BYTES_PER_ROW;
+            Ok((count, estimated_bytes))
+        } else {
+            Ok((0, 0))
         }
     }
     /// 确保回收站表存在
@@ -66,6 +110,19 @@ impl TrashService {
         // 确保表名安全
         if !crate::database::SqlIdentifier::is_safe_identifier(table_name) {
             return Err(format!("不安全的表名：{}", table_name));
+        }
+
+        // 检查回收站当前大小，如果超过限制则警告
+        let max_trash_size_mb = Self::get_max_trash_size_mb(conn);
+        let max_trash_bytes = max_trash_size_mb * 1024 * 1024;
+        if let Ok((_, current_size)) = Self::get_trash_stats(conn) {
+            if current_size > max_trash_bytes {
+                log::warn!(
+                    "回收站当前大小（约 {:.2} MB）已超过设置的最大限制（{} MB），建议清理回收站",
+                    current_size as f64 / (1024.0 * 1024.0),
+                    max_trash_size_mb
+                );
+            }
         }
 
         // 确定策略（从 settings 读取阈值）
@@ -319,6 +376,120 @@ impl TrashService {
         } else {
             Ok(0)
         }
+    }
+
+    /// 自动清理回收站
+    /// 清理超过指定天数的项目，并确保回收站总大小不超过限制
+    /// 返回清理的项目数量
+    pub fn auto_cleanup(conn: &MutexGuardConnection<'_>) -> Result<u64, String> {
+        if !Self::get_auto_cleanup_enabled(conn) {
+            log::debug!("自动清理未启用，跳过");
+            return Ok(0);
+        }
+
+        let cleanup_days = Self::get_cleanup_days(conn);
+        let max_trash_size_mb = Self::get_max_trash_size_mb(conn);
+        let mut cleaned_count: u64 = 0;
+
+        log::info!(
+            "开始自动清理回收站：清理{}天前的项目，最大限制{}MB",
+            cleanup_days,
+            max_trash_size_mb
+        );
+
+        // 第一步：清理超过 cleanupDays 天的项目
+        let old_items_sql = r#"
+            SELECT id, trash_table_name, strategy
+            FROM __trash_metadata
+            WHERE deleted_at < datetime('now', ? || ' days')
+            ORDER BY deleted_at ASC
+        "#;
+        let days_param = format!("-{}", cleanup_days);
+
+        let old_items = conn.query(old_items_sql, &[&days_param])
+            .map_err(|e| format!("查询过期回收站项失败：{}", e))?;
+
+        for row in &old_items.rows {
+            let id = &row[0];
+            let trash_table_name = row[1].as_str();
+            let strategy = &row[2];
+
+            if let Err(e) = Self::permanent_delete_internal(conn, id, trash_table_name, strategy) {
+                log::warn!("清理过期回收站项 {} 失败：{}", id, e);
+            } else {
+                cleaned_count += 1;
+            }
+        }
+
+        // 第二步：检查总大小，如果超过限制则清理最旧的项目
+        let max_trash_bytes = max_trash_size_mb * 1024 * 1024;
+        let mut current_stats = Self::get_trash_stats(conn)?;
+        let mut current_size = current_stats.1;
+
+        while current_size > max_trash_bytes && current_stats.0 > 0 {
+            let oldest_sql = r#"
+                SELECT id, trash_table_name, strategy
+                FROM __trash_metadata
+                ORDER BY deleted_at ASC
+                LIMIT 1
+            "#;
+
+            let oldest_result = conn.query(oldest_sql, &[])
+                .map_err(|e| format!("查询最旧回收站项失败：{}", e))?;
+
+            if oldest_result.rows.is_empty() {
+                break;
+            }
+
+            let row = &oldest_result.rows[0];
+            let id = &row[0];
+            let trash_table_name = row[1].as_str();
+            let strategy = &row[2];
+
+            if let Err(e) = Self::permanent_delete_internal(conn, id, trash_table_name, strategy) {
+                log::warn!("清理超量回收站项 {} 失败：{}", id, e);
+                break;
+            } else {
+                cleaned_count += 1;
+            }
+
+            current_stats = Self::get_trash_stats(conn)?;
+            current_size = current_stats.1;
+        }
+
+        log::info!("自动清理完成，共清理 {} 个回收站项", cleaned_count);
+        Ok(cleaned_count)
+    }
+
+    /// 内部永久删除函数（供 auto_cleanup 使用，避免重复查询）
+    fn permanent_delete_internal(
+        conn: &MutexGuardConnection<'_>,
+        id: &str,
+        trash_table_name: &str,
+        strategy: &str,
+    ) -> Result<(), String> {
+        let trash_table_name_owned = if trash_table_name.is_empty() {
+            None
+        } else {
+            Some(trash_table_name.to_string())
+        };
+
+        if strategy == "Rename" {
+            if let Some(trash_table) = trash_table_name_owned {
+                if crate::database::SqlIdentifier::is_safe_identifier(&trash_table) {
+                    let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table);
+                    let drop_sql = format!("DROP TABLE IF EXISTS {}", safe_trash);
+                    conn.execute(&drop_sql, &[])
+                        .map_err(|e| format!("删除表失败：{}", e))?;
+                }
+            }
+        }
+
+        let delete_sql = "DELETE FROM __trash_metadata WHERE id = ?";
+        conn.execute(delete_sql, &[&id])
+            .map_err(|e| format!("删除元数据失败：{}", e))?;
+
+        Ok(())
     }
 }
 

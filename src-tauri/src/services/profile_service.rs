@@ -77,7 +77,7 @@ impl ProfileService {
             format!("SELECT * FROM {}", quoted)
         };
         let data = if sampled {
-            let size_param = sample_size as i64;
+            let size_param = sample_size;
             let params: [&dyn ToSql; 1] = [&size_param];
             conn.query(&data_sql, &params)
         } else {

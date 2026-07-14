@@ -2,11 +2,23 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { useSetting } from './SettingsContext';
 
 type LocaleCode = 'zh-CN' | 'en-US';
+type DateFormat = 'YYYY-MM-DD' | 'DD/MM/YYYY' | 'MM/DD/YYYY';
+type TimeFormat = '12h' | '24h';
+type NumberFormat = '1,000.00' | '1.000,00' | '1 000.00';
+type FirstDayOfWeek = 'sunday' | 'monday';
 
 interface LocaleContextValue {
   locale: LocaleCode;
   t: (key: string, vars?: Record<string, string | number>) => string;
   localeText: Record<string, string>;
+  dateFormat: DateFormat;
+  timeFormat: TimeFormat;
+  numberFormat: NumberFormat;
+  firstDayOfWeek: FirstDayOfWeek;
+  timezone: string;
+  formatDate: (date: Date | string | number) => string;
+  formatTime: (date: Date | string | number) => string;
+  formatNumber: (num: number) => string;
 }
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
@@ -164,6 +176,12 @@ const zhCNTranslations: Record<string, string> = {
   'common.confirm': '确认',
   'common.delete': '删除',
   'common.edit': '编辑',
+  'common.layout': '布局',
+  'common.cancelSelection': '取消选择',
+  'common.runNow': '立即运行',
+  'common.remove': '移除',
+  'common.searchPlaceholder': '搜索...',
+  'common.inputPlaceholder': '输入...',
   'common.refresh': '刷新',
   'common.search': '搜索',
   'common.loading': '加载中...',
@@ -173,13 +191,17 @@ const zhCNTranslations: Record<string, string> = {
   'common.back': '返回',
   'common.selectAll': '全选',
   'common.selectNone': '全不选',
+  'common.create': '创建',
+  'common.creating': '创建中...',
 
   // Header
   'header.project': '项目',
-  'header.csvImport': 'CSV导入',
+  'header.csvImport': '数据导入',
   'header.sqlQuery': 'SQL查询',
   'header.dashboard': '仪表盘',
   'header.settings': '设置',
+  'header.automation': '自动化任务',
+  'header.noProject': '未选择',
 
   // Toolbar
   'toolbar.newProject': '新建项目',
@@ -245,8 +267,10 @@ const zhCNTranslations: Record<string, string> = {
   'query.copySelectedRows': '复制选中行',
   'query.exportMenu': '导出',
   'query.copyAll': '复制全部数据',
+  'query.explainPlan': '执行计划',
+  'query.copyToClipboard': '点击复制到剪贴板',
 
-  // 设置页面
+  // 数据导入设置页面
   'settings.title': '设置',
   'settings.appearance': '外观',
   'settings.editor': '编辑器',
@@ -294,7 +318,7 @@ const zhCNTranslations: Record<string, string> = {
   'import.useAddButtonHint': '请使用"添加文件"按钮选择文件，谢谢！',
   'import.addFile': '添加文件',
   'import.clickToAdd': '点击添加文件',
-  'import.supportedFormats': '支持 CSV、Excel 文件',
+  'import.supportedFormats': '支持 CSV、Excel、JSON、Parquet、TXT 文件',
   'import.releaseToAdd': '释放以添加文件',
   'import.success': '成功导入表',
   'import.fail': '导入失败',
@@ -303,6 +327,9 @@ const zhCNTranslations: Record<string, string> = {
   'import.sample': '示例',
   'import.autoInfer': '自动推断',
   'import.fieldConfiguration': '字段配置',
+  'import.delimiter': '分隔符',
+  'import.delimiterPlaceholder': '自动检测',
+  'import.delimiterHint': '例如：, 或 \\t',
   'import.importSuccess': '导入成功',
   'import.importFailed': '导入失败',
   'import.errorFileNotFound': '文件不存在或路径错误',
@@ -313,6 +340,8 @@ const zhCNTranslations: Record<string, string> = {
   'import.errorOutOfMemory': '内存不足，请尝试减少数据量',
   'import.errorFileTooLarge': '文件过大，超出导入限制',
   'import.errorEncoding': '文件编码错误，请检查文件编码格式',
+  'import.noTasks': '暂无导入任务',
+  'import.selectFileHint': '选择 CSV/Excel/JSON/Parquet/TXT 文件，或拖拽到此处',
 
   // Settings图表
   'chart.title': '图表',
@@ -350,6 +379,76 @@ const zhCNTranslations: Record<string, string> = {
   'chart.defaultColorScheme': '默认配色方案',
   'chart.defaultChartType': '默认图表类型',
   'chart.animation': '启用动画效果',
+  'chart.renderFailed': '图表渲染失败',
+  'chart.noSavedCharts': '暂无保存的图表',
+
+  // 仪表盘
+  'dashboard.empty': '暂无图表',
+  'dashboard.unauthorized': '未授权给当前仪表盘',
+
+  // 图表（Task 2）
+  'chart.sectionBasic': '基本信息',
+  'chart.fieldName': '名称',
+  'chart.chartNamePlaceholder': '图表名称',
+  'chart.showOnTop': '显示在图表顶部',
+  'chart.description': '描述',
+  'chart.descriptionPlaceholder': '可选描述（不展示在图表上）',
+  'chart.tags': '标签（用逗号分隔）',
+  'chart.tagsPlaceholder': '如：销售, 2024, 季度',
+  'chart.sectionConfig': '图表配置',
+  'chart.chartType': '图表类型',
+  'chart.xAxisField': 'X 轴字段',
+  'chart.xAxisPlaceholder': '例如：月份、日期、地区',
+  'chart.yAxisFields': 'Y 轴字段（用逗号分隔多个）',
+  'chart.yAxisPlaceholder': '例如：销售额, 利润, 成本',
+  'chart.sectionQuery': '数据查询 (SQL)',
+  'chart.sectionAuthorization': '授权范围',
+  'chart.allDashboards': '所有仪表盘',
+  'chart.addToCurrentHint': '将此图表的一个副本添加到当前仪表盘',
+  'chart.createTaskHint': '为当前图表创建一个定时刷新的自动化任务',
+  'chart.addToDashboard': '添加到仪表盘',
+  'chart.chartLibrary': '图表库',
+  'chart.namePlaceholder': '例如：月度销售趋势',
+  'chart.tagInputHint': '输入标签后按 Enter',
+  'chart.searchPlaceholder': '搜索图表名称、标签...',
+  'chart.authFilterHint': '按图表对当前仪表盘的授权范围筛选',
+  'chart.scheduleRefresh': '定时刷新此图表',
+  'chart.deleteChart': '删除此图表',
+
+  // 仪表盘（Task 2）
+  'dashboard.removeFromDashboard': '从仪表盘移除',
+  'dashboard.dragToResize': '拖拽以调整图表大小',
+  'dashboard.openChartLibrary': '打开图表库，查看所有历史图表',
+  'dashboard.refreshAllCharts': '刷新所有图表数据',
+  'dashboard.scheduleRefresh': '定时刷新仪表盘数据',
+  'dashboard.exportPng': '导出仪表盘为 PNG 图片',
+  'dashboard.canvasSettings': '画布设置',
+  'dashboard.deleteDashboard': '删除仪表盘',
+  'dashboard.autoFit': '0=自适应',
+  'dashboard.namePlaceholder': '例如：销售仪表盘',
+  'dashboard.confirmSaveLayout': '检测到 {count} 个图表的布局已修改。\n\n点击"{confirm}"保存更改并退出编辑模式，\n点击"{cancel}"继续编辑。',
+  'dashboard.layoutSavePartialFailed': '⚠️ 部分布局保存失败（{failedCount}/{totalCount} 项），请重试或检查网络连接。',
+  'dashboard.confirmRemoveChart': '确定从仪表盘移除该图表吗？',
+  'dashboard.noDashboards': '还没有仪表盘',
+  'dashboard.createFirstDashboardHint': '创建您的第一个仪表盘，开始可视化数据分析',
+  'dashboard.dashboardNamePrompt': '仪表盘名称：',
+  'dashboard.newDashboardName': '新仪表盘',
+  'dashboard.dashboardName': '仪表盘名称',
+  'dashboard.createDashboard': '创建仪表盘',
+  'dashboard.createFailed': '创建仪表盘失败，请重试',
+  'dashboard.editModeHint': '编辑模式 — 拖拽移动 / 右下角圆点缩放 / 方向键微调(Shift大步) / Delete删除 / Esc退出',
+  'dashboard.itemsModified': '· 已修改 {count} 项',
+
+  // 代码片段
+  'snippets.empty': '暂无 SQL 片段',
+  'snippets.createFirstHint': '点击「新建」创建第一个片段',
+  'snippets.searchPlaceholder': '搜索片段...',
+  'snippets.insertToEditor': '插入到编辑器',
+  'snippets.namePlaceholder': '输入片段名称',
+  'snippets.sqlPlaceholder': '输入 SQL 语句',
+  'snippets.descPlaceholder': '输入描述（可选）',
+  'snippets.categoryName': '分类名称',
+  'snippets.tagsPlaceholder': '例如: 查询, 统计, 日常',
 
   // 外观
   'appearance.theme': '界面主题',
@@ -413,6 +512,12 @@ const zhCNTranslations: Record<string, string> = {
   'cache.cacheSize': '缓存大小（MB）',
   'cache.cacheExpiry': '缓存过期时间（分钟）',
   'cache.cacheStrategy': '缓存策略',
+  'cache.missCount': '未命中次数 (misses)',
+  'cache.autoRefresh': '自动刷新',
+
+  // 数据概览
+  'profile.rowCount': '行数：',
+
   'security.enablePasswordProtect': '启用密码保护',
   'security.autoLock': '空闲时自动锁定',
   'security.lockTimeout': '自动锁定时间（分钟）',
@@ -486,6 +591,9 @@ const zhCNTranslations: Record<string, string> = {
   'settings.editor.autoIndent': '自动缩进',
   'settings.editor.highlightLine': '高亮当前行',
   'settings.editor.bracketMatching': '括号匹配',
+  'settings.editor.showLineNumbers': '显示行号',
+  'settings.editor.showMinimap': '显示小地图',
+  'settings.editor.enableCodeFolding': '启用代码折叠',
   'settings.editor.autoSave': '自动保存',
   'settings.editor.saveInterval': '自动保存间隔（秒）',
   'settings.editor.insertSpaces': '使用空格替代Tab',
@@ -533,7 +641,23 @@ const zhCNTranslations: Record<string, string> = {
   'settings.import.skipEmptyRows': '跳过空行',
   'settings.import.firstRowAsHeader': '首行作为表头',
   'settings.import.importBatchSize': '批量导入行数',
+  'settings.import.importBatchSize.100': '100',
+  'settings.import.importBatchSize.500': '500',
+  'settings.import.importBatchSize.1000': '1000',
+  'settings.import.importBatchSize.2000': '2000',
+  'settings.import.importBatchSize.5000': '5000',
+  'settings.import.importBatchSize.10000': '10000',
   'settings.import.maxImportFileSize': '最大导入文件大小（MB）',
+  'settings.import.maxImportFileSize.10': '10',
+  'settings.import.maxImportFileSize.50': '50',
+  'settings.import.maxImportFileSize.100': '100',
+  'settings.import.maxImportFileSize.200': '200',
+  'settings.import.maxImportFileSize.500': '500',
+  'settings.import.maxImportFileSize.1000': '1000',
+  'settings.import.maxImportFileSize.2000': '2000',
+  'settings.import.maxImportFileSize.5000': '5000',
+  'settings.import.importTimeout': '导入超时时间（秒）',
+  'settings.import.importTimeoutDescription': '单次导入操作的最大等待时间，超过此时间将取消导入',
 
   // 可视化设置项
   'settings.visualization.defaultChartType': '默认图表类型',
@@ -593,6 +717,19 @@ const zhCNTranslations: Record<string, string> = {
   'settings.security.sessionTimeout': '会话超时时间（分钟）',
   'settings.security.enableAuditLog': '启用审计日志',
 
+  // 安全分类下的附加功能
+  'settings.activityLog': '活动记录管理',
+  'settings.activityLogDesc': '查看用户在软件上执行的所有操作记录',
+  'settings.viewActivityLog': '查看活动记录',
+  'settings.firstLaunch': '首次启动设置',
+  'settings.firstLaunchDesc': '重置后，下次启动将显示欢迎界面和引导教程',
+  'settings.resetFirstLaunch': '重置首次启动状态',
+  'settings.resetFirstLaunchConfirm': '确定要重置首次启动状态吗？下次启动时将显示欢迎界面。',
+  'settings.resetFirstLaunchSuccess': '已重置。重启应用后将会看到欢迎界面。',
+  'settings.restartApp': '重启应用',
+  'settings.restartAppDesc': '重启应用以使部分设置生效',
+  'settings.restartAppConfirm': '确定要重启应用吗？',
+
   // 高级设置项
   'settings.advanced.developerMode': '开发者模式',
   'settings.advanced.showDebugInfo': '显示调试信息',
@@ -607,6 +744,18 @@ const zhCNTranslations: Record<string, string> = {
   'settings.advanced.dataDir': '数据目录路径',
   'settings.advanced.tempDir': '临时文件目录',
 
+  'settings.restoreDefault': '恢复默认',
+  'settings.notSet': '未设置',
+  'settings.invalidShortcut': '✗ 无效的快捷键格式',
+  'settings.validShortcut': '✓ 有效快捷键',
+  'settings.shortcutConflict': '⚠ 与 {name} 快捷键冲突',
+  'settings.booleanOn': '开启',
+  'settings.booleanOff': '关闭',
+  'settings.inDevelopment': '开发中',
+  'settings.noItemsInCategory': '该分类下暂无设置项',
+  'settings.viewWelcomePage': '👋 查看欢迎页',
+  'settings.viewGuide': '📚 查看引导教程',
+  'settings.shortcutHint': '如 Ctrl+Enter',
   // 快捷键设置项
   'settings.shortcuts.newFile': '新建文件',
   'settings.shortcuts.openFile': '打开文件',
@@ -670,6 +819,51 @@ const zhCNTranslations: Record<string, string> = {
   'databaseExplorer.tableDeleted': '表已删除并移至回收站！',
   'databaseExplorer.deleteFailed': '删除失败，请查看控制台。',
   'databaseExplorer.noMatch': '未找到匹配的表',
+  'database.trash': '回收站',
+  'database.dropTable': '删除表',
+  'database.sortBy': '排序方式',
+  'database.groupMode': '分组模式',
+  'database.refresh': '刷新列表',
+  'database.tableNamePlaceholder': '表名',
+  'database.userTables': '用户表',
+  'database.systemTables': '系统表',
+  'database.allTables': '全部',
+  'database.other': '其他',
+  'database.systemTableNotDeletable': "系统表 '{name}' 不允许删除或修改",
+  'database.confirmDeleteLargeTable': "将删除表 '{name}'（共 {count} 行数据），\n删除后可从\"{trash}\"恢复。确认继续？",
+  'database.confirmDeleteTable': "确定删除表 '{name}'？",
+  'database.renameTablePrompt': '将表 "{name}" 重命名为：',
+  'database.tableNameCannotBeEmpty': '表名不能为空',
+  'database.systemTableBadge': '系统表',
+  'database.rowCountSuffix': '行',
+  'database.columnCountSuffix': '列',
+  'database.indexCountSuffix': '索引',
+  'database.loadingColumns': '加载列信息...',
+  'database.noColumns': '无列信息',
+  'database.viewTop100Rows': '查看前 100 行',
+  'database.doubleClick': '双击',
+  'database.browse': '浏览',
+  'database.copyTableName': '复制表名',
+  'database.generateSelect': '生成 SELECT *',
+  'database.generateCount': '生成 COUNT',
+  'database.generateInsertTemplate': '生成 INSERT 模板',
+  'database.renameTable': '重命名表',
+  'database.deleteTable': '删除表',
+  'database.sortNameAsc': '名称 A-Z',
+  'database.sortNameDesc': '名称 Z-A',
+  'database.sortRowCountDesc': '行数最多',
+  'database.sortColumnCountDesc': '列数最多',
+  'database.groupBySystemUser': '按系统/用户',
+  'database.groupByFirstLetter': '按首字母',
+  'database.groupNone': '平铺',
+  'database.noUserTablesHint1': '暂无用户表，可通过',
+  'database.noUserTablesHint2': '执行',
+  'database.noUserTablesHint3': '或',
+  'database.noUserTablesHint4': '创建',
+  'database.importCSVExcel': '导入 CSV/Excel',
+  'database.noSystemTables': '暂无系统表',
+  'database.noTablesWithPrefix': '暂无{prefix}开头的表',
+  'database.noMatchWithTerm': '未找到匹配「{term}」的表',
 
   // ProjectManager
   'projectManager.title': '项目管理',
@@ -680,6 +874,9 @@ const zhCNTranslations: Record<string, string> = {
   'projectManager.selectFile': '选择文件',
   'projectManager.projectList': '项目列表',
   'projectManager.switch': '切换',
+  'projectManager.rename': '重命名',
+  'projectManager.enterNewName': '输入新项目名称',
+  'projectManager.projectRenamed': '项目已重命名',
   'projectManager.pleaseEnterProjectName': '请输入项目名称',
   'projectManager.projectCreated': '项目创建成功',
   'projectManager.projectSwitched': '已切换到项目',
@@ -687,6 +884,90 @@ const zhCNTranslations: Record<string, string> = {
   'projectManager.projectDeleted': '项目已删除',
   'projectManager.pleaseSelectDatabaseFile': '请先选择数据库文件',
   'projectManager.customDatabaseOpened': '已切换到自定义数据库',
+  'projectManager.duplicate': '复制',
+  'projectManager.export': '导出',
+  'projectManager.importProject': '导入项目',
+  'projectManager.importButton': '导入',
+  'projectManager.copySuffix': '副本',
+  'projectManager.projectDuplicated': '项目已复制',
+  'projectManager.projectImported': '项目已导入',
+  'projectManager.projectExported': '项目已导出到',
+  'projectManager.confirmSwitchToImported': '是否切换到刚导入的项目？',
+  'projectManager.confirmDeleteWithName': '确定要删除项目「{name}」吗？此操作不可恢复。',
+  'projectManager.createdAt': '创建时间',
+  'projectManager.currentProject': '当前',
+
+  // 任务运行日志
+  'taskLogs.selectTaskHint': '请在左侧选择任务查看执行记录',
+  'taskLogs.totalRuns': '总运行',
+  'taskLogs.success': '成功',
+  'taskLogs.failed': '失败',
+  'taskLogs.noLogs': '暂无执行记录',
+
+  // 自动化任务
+  'task.statusEnabled': '已启用',
+  'task.statusDisabled': '已禁用',
+  'task.statusPaused': '已暂停',
+  'task.actionRefreshChart': '刷新图表',
+  'task.actionRefreshDashboard': '刷新仪表盘',
+  'task.emptyHint': '暂无任务。点击...',
+  'task.searchPlaceholder': '搜索任务名称...',
+  'task.scheduleModeFilter': '调度模式筛选',
+  'task.retryTimeout': '默认重试次数/默认超时',
+  'task.namePlaceholder': '例如：每小时数据统计',
+  'task.chartId': '图表 ID',
+  'task.dashboardId': '仪表盘 ID',
+  'task.descriptionPlaceholder': '可选描述...',
+  'task.running': '执行中',
+  'task.scheduleHint': '设置定时执行 SQL',
+  'task.scheduleExecution': '定时执行 SQL',
+  'task.typeSQL': 'SQL 执行',
+  'task.typeExportCSV': '导出 CSV',
+  'task.runSuccess': '成功',
+  'task.runFailed': '失败',
+  'task.runRunning': '运行中',
+  'task.runSkipped': '跳过',
+  'task.scheduleIntervalDays': '间隔 {value} 天',
+  'task.scheduleIntervalHours': '间隔 {value} 小时',
+  'task.scheduleIntervalMinutes': '间隔 {value} 分钟',
+  'task.scheduleIntervalSeconds': '间隔 {value} 秒',
+  'task.scheduleCron': 'Cron: {value}',
+  'task.scheduleManualOnly': '仅手动触发',
+  'task.toastDisabled': '任务已禁用：{name}',
+  'task.toastEnabled': '任务已启用：{name}',
+  'task.toastOperationFailed': '操作失败：{error}',
+  'task.toastRunStarted': '任务已运行：{name}',
+  'task.toastRunFailed': '任务执行失败：{error}',
+  'task.confirmDelete': '确认删除任务 "{name}" 吗？此操作不可恢复。',
+  'task.toastDeleted': '任务已删除',
+  'task.pageTitle': '自动化任务',
+  'task.statTotal': '任务总数',
+  'task.statEnabled': '已启用',
+  'task.statFailed': '异常任务',
+  'task.filterAllStates': '所有状态',
+  'task.filterStateRunning': '运行中',
+  'task.filterStateDisabled': '已禁用',
+  'task.filterStatePaused': '已暂停',
+  'task.filterAllTypes': '所有类型',
+  'task.filterAllSchedules': '所有调度',
+  'task.filterScheduleManual': '手动触发',
+  'task.filterScheduleInterval': '间隔调度',
+  'task.filterScheduleCron': 'Cron 调度',
+  'task.thName': '名称',
+  'task.thType': '类型',
+  'task.thState': '状态',
+  'task.thSchedule': '调度',
+  'task.thLastRun': '上次运行',
+  'task.thNextRun': '下次运行',
+  'task.thActions': '操作',
+  'task.btnDisable': '禁用',
+  'task.btnEnable': '启用',
+  'task.paginationInfoPrefix': '共 ',
+  'task.paginationInfoMiddle': ' 个任务，第 ',
+  'task.paginationInfoSuffix': ' 页',
+  'task.prevPage': '上一页',
+  'task.nextPage': '下一页',
+  'task.pageSizeOption': '{size} 条/页',
 
   // QueryHistory
   'queryHistory.title': '查询历史',
@@ -701,6 +982,8 @@ const zhCNTranslations: Record<string, string> = {
   'queryHistory.rows': '行',
   'queryHistory.error': '错误',
   'queryHistory.execute': '执行',
+  'queryHistory.copy': '复制',
+  'queryHistory.copied': '已复制',
   'queryHistory.confirmDelete': '确定要删除这条历史记录吗？',
 
   // Hooks
@@ -742,6 +1025,10 @@ const zhCNTranslations: Record<string, string> = {
   'sidebar.queryHistory': '查询历史',
   'sidebar.snippets': '代码片段',
   'sidebar.trash': '回收站',
+  'sidebar.resizeHint': '拖拽调整宽度，双击恢复默认 (250px)',
+
+  // Filter
+  'filter.all': '全部',
 
   // Workspace
   'workspace.newTab': '新建标签页',
@@ -759,12 +1046,50 @@ const zhCNTranslations: Record<string, string> = {
   'sqlEditor.saved': '已保存',
   'sqlEditor.saving': '保存中...',
   'sqlEditor.unsaved': '未保存',
+  'sqlEditor.scheduleExecution': '⚡ 定时执行',
+  'sqlEditor.querySuccessNoResults': '查询执行成功，但未返回任何结果',
 
   // StatusBar
   'status.connected': '已连接',
   'status.notConnected': '未连接',
   'status.tables': '个表',
   'status.ready': '准备就绪',
+
+  // Welcome
+  'welcome.tagline': '轻量本地高性能数据分析工具',
+  'welcome.getStarted': '开始使用',
+  'welcome.watchTutorial': '📚 观看教程',
+  'welcome.openSettings': '⚙️ 打开设置',
+
+  // Guide
+  'guide.skip': '跳过引导',
+  'guide.project.title': '项目',
+  'guide.project.desc1': '一个项目对应一个独立的数据库，',
+  'guide.project.desc2': '不同项目之间相互独立。',
+  'guide.project.desc3': '通过新建项目或切换项目，',
+  'guide.project.desc4': '选择您的工作数据库。',
+  'guide.import.title': '数据导入',
+  'guide.import.supportedFormats': '支持的文件格式',
+  'guide.query.title': '编写 SQL 查询',
+  'guide.query.desc1': '使用强大的 SQL 编辑器查询和分析您的数据。',
+  'guide.query.desc2': '支持语法高亮、自动补全和实时执行。',
+  'guide.query.shortcuts': '快捷操作',
+  'guide.query.shortcut1': '▶️ Ctrl+Enter 执行查询',
+  'guide.query.shortcut2': '💾 Ctrl+S 保存到文件',
+  'guide.query.shortcut3': '📋 双击数据表自动生成 SQL',
+  'guide.query.shortcut4': '📈 查询结果可直接生成图表',
+  'guide.done.title': '准备好了！',
+  'guide.done.desc1': 'QuickerSQL 已准备就绪，您现在可以开始使用了。',
+  'guide.done.desc2': '开始您的数据分析之旅吧！',
+  'guide.done.nextSteps': '接下来可以：',
+  'guide.done.tip1': '在左侧查看您的数据表',
+  'guide.done.tip2': '在右侧编写 SQL 查询',
+  'guide.done.tip3': '点击执行查看结果',
+  'guide.done.tip4': '切换到图表标签页创建可视化',
+  'guide.done.tip5': '在仪表盘组合多个图表',
+  'guide.prev': '← 上一步',
+  'guide.next': '下一步 →',
+  'guide.startUsing': '🦆 开始使用 QuickerSQL',
 };
 
 const enUSTranslations: Record<string, string> = {
@@ -775,6 +1100,12 @@ const enUSTranslations: Record<string, string> = {
   'common.confirm': 'Confirm',
   'common.delete': 'Delete',
   'common.edit': 'Edit',
+  'common.layout': 'Layout',
+  'common.cancelSelection': 'Cancel Selection',
+  'common.runNow': 'Run Now',
+  'common.remove': 'Remove',
+  'common.searchPlaceholder': 'Search...',
+  'common.inputPlaceholder': 'Input...',
   'common.refresh': 'Refresh',
   'common.search': 'Search',
   'common.loading': 'Loading...',
@@ -784,12 +1115,16 @@ const enUSTranslations: Record<string, string> = {
   'common.back': 'Back',
   'common.selectAll': 'Select All',
   'common.selectNone': 'Select None',
+  'common.create': 'Create',
+  'common.creating': 'Creating...',
 
   'header.project': 'Project',
   'header.csvImport': 'CSV Import',
   'header.sqlQuery': 'SQL Query',
   'header.dashboard': 'Dashboard',
   'header.settings': 'Settings',
+  'header.automation': 'Automation',
+  'header.noProject': 'No project',
 
   'toolbar.newProject': 'New Project',
   'toolbar.newSQL': 'New SQL Query',
@@ -853,6 +1188,8 @@ const enUSTranslations: Record<string, string> = {
   'query.copySelectedRows': 'Copy selected rows',
   'query.exportMenu': 'Export',
   'query.copyAll': 'Copy all data',
+  'query.explainPlan': 'Execution Plan',
+  'query.copyToClipboard': 'Click to copy to clipboard',
 
   'settings.title': 'Settings',
   'settings.appearance': 'Appearance',
@@ -900,15 +1237,20 @@ const enUSTranslations: Record<string, string> = {
   'import.useAddButtonHint': 'Please use the "Add File" button to select files, thank you!',
   'import.addFile': 'Add File',
   'import.clickToAdd': 'Click to add file',
-  'import.supportedFormats': 'Supports CSV, Excel files',
+  'import.supportedFormats': 'Supports CSV, Excel, JSON, Parquet, TXT files',
   'import.releaseToAdd': 'Release to add file',
   'import.success': 'Successfully imported table',
   'import.fail': 'Import failed',
+  'import.noTasks': 'No import tasks',
+  'import.selectFileHint': 'Select CSV/Excel/JSON/Parquet/TXT file, or drag here',
   'import.unknownError': 'Unknown error',
   'import.field': 'Field',
   'import.sample': 'Sample',
   'import.autoInfer': 'Auto infer',
   'import.fieldConfiguration': 'Field Configuration',
+  'import.delimiter': 'Delimiter',
+  'import.delimiterPlaceholder': 'Auto detect',
+  'import.delimiterHint': 'e.g. , or \\t',
   'import.importSuccess': 'Import Successful',
   'import.importFailed': 'Import Failed',
   'import.errorFileNotFound': 'File not found or invalid path',
@@ -936,6 +1278,76 @@ const enUSTranslations: Record<string, string> = {
   'chart.defaultColorScheme': 'Default Color Scheme',
   'chart.defaultChartType': 'Default Chart Type',
   'chart.animation': 'Enable Animation',
+  'chart.renderFailed': 'Chart render failed',
+  'chart.noSavedCharts': 'No saved charts',
+
+  // Dashboard
+  'dashboard.empty': 'No charts',
+  'dashboard.unauthorized': 'Not authorized for current dashboard',
+
+  // Chart (Task 2)
+  'chart.sectionBasic': 'Basic Info',
+  'chart.fieldName': 'Name',
+  'chart.chartNamePlaceholder': 'Chart name',
+  'chart.showOnTop': 'Show on chart top',
+  'chart.description': 'Description',
+  'chart.descriptionPlaceholder': 'Optional description',
+  'chart.tags': 'Tags (comma-separated)',
+  'chart.tagsPlaceholder': 'e.g. sales, 2024, Q1',
+  'chart.sectionConfig': 'Chart Config',
+  'chart.chartType': 'Chart Type',
+  'chart.xAxisField': 'X Axis Field',
+  'chart.xAxisPlaceholder': 'e.g. month, date, region',
+  'chart.yAxisFields': 'Y Axis Fields (comma-separated)',
+  'chart.yAxisPlaceholder': 'e.g. sales, profit, cost',
+  'chart.sectionQuery': 'Data Query (SQL)',
+  'chart.sectionAuthorization': 'Authorization',
+  'chart.allDashboards': 'All Dashboards',
+  'chart.addToCurrentHint': 'Add a copy to current dashboard',
+  'chart.createTaskHint': 'Create scheduled refresh task',
+  'chart.addToDashboard': 'Add to Dashboard',
+  'chart.chartLibrary': 'Chart Library',
+  'chart.namePlaceholder': 'e.g. Monthly Sales Trend',
+  'chart.tagInputHint': 'Press Enter after input',
+  'chart.searchPlaceholder': 'Search charts...',
+  'chart.authFilterHint': 'Filter by authorization',
+  'chart.scheduleRefresh': 'Schedule Refresh',
+  'chart.deleteChart': 'Delete Chart',
+
+  // Dashboard (Task 2)
+  'dashboard.removeFromDashboard': 'Remove from Dashboard',
+  'dashboard.dragToResize': 'Drag to resize',
+  'dashboard.openChartLibrary': 'Open chart library',
+  'dashboard.refreshAllCharts': 'Refresh All Charts',
+  'dashboard.scheduleRefresh': 'Schedule Refresh',
+  'dashboard.exportPng': 'Export as PNG',
+  'dashboard.canvasSettings': 'Canvas Settings',
+  'dashboard.deleteDashboard': 'Delete Dashboard',
+  'dashboard.autoFit': '0=Auto Fit',
+  'dashboard.namePlaceholder': 'e.g. Sales Dashboard',
+  'dashboard.confirmSaveLayout': '{count} chart layouts have been modified.\n\nClick "{confirm}" to save changes and exit edit mode,\nclick "{cancel}" to continue editing.',
+  'dashboard.layoutSavePartialFailed': '⚠️ Some layouts failed to save ({failedCount}/{totalCount} items). Please retry or check your network connection.',
+  'dashboard.confirmRemoveChart': 'Are you sure you want to remove this chart from the dashboard?',
+  'dashboard.noDashboards': 'No dashboards yet',
+  'dashboard.createFirstDashboardHint': 'Create your first dashboard to start visual data analysis',
+  'dashboard.dashboardNamePrompt': 'Dashboard name:',
+  'dashboard.newDashboardName': 'New Dashboard',
+  'dashboard.dashboardName': 'Dashboard Name',
+  'dashboard.createDashboard': 'Create Dashboard',
+  'dashboard.createFailed': 'Failed to create dashboard, please retry',
+  'dashboard.editModeHint': 'Edit Mode — Drag to move / Resize from bottom-right corner / Arrow keys to nudge (Shift for larger steps) / Delete to remove / Esc to exit',
+  'dashboard.itemsModified': '· {count} items modified',
+
+  // Snippets
+  'snippets.empty': 'No SQL snippets',
+  'snippets.createFirstHint': 'Click "New" to create your first snippet',
+  'snippets.searchPlaceholder': 'Search snippets...',
+  'snippets.insertToEditor': 'Insert to Editor',
+  'snippets.namePlaceholder': 'Snippet name',
+  'snippets.sqlPlaceholder': 'Enter SQL',
+  'snippets.descPlaceholder': 'Description (optional)',
+  'snippets.categoryName': 'Category',
+  'snippets.tagsPlaceholder': 'e.g. query, stats, daily',
 
   'appearance.theme': 'Theme',
   'appearance.themeLight': 'Light',
@@ -1067,6 +1479,9 @@ const enUSTranslations: Record<string, string> = {
   'settings.editor.autoIndent': 'Auto Indent',
   'settings.editor.highlightLine': 'Highlight Current Line',
   'settings.editor.bracketMatching': 'Bracket Matching',
+  'settings.editor.showLineNumbers': 'Show Line Numbers',
+  'settings.editor.showMinimap': 'Show Minimap',
+  'settings.editor.enableCodeFolding': 'Enable Code Folding',
   'settings.editor.autoSave': 'Auto Save',
   'settings.editor.saveInterval': 'Auto Save Interval (seconds)',
   'settings.editor.insertSpaces': 'Use Spaces Instead of Tab',
@@ -1114,7 +1529,23 @@ const enUSTranslations: Record<string, string> = {
   'settings.import.skipEmptyRows': 'Skip Empty Rows',
   'settings.import.firstRowAsHeader': 'First Row as Header',
   'settings.import.importBatchSize': 'Batch Import Row Count',
+  'settings.import.importBatchSize.100': '100',
+  'settings.import.importBatchSize.500': '500',
+  'settings.import.importBatchSize.1000': '1000',
+  'settings.import.importBatchSize.2000': '2000',
+  'settings.import.importBatchSize.5000': '5000',
+  'settings.import.importBatchSize.10000': '10000',
   'settings.import.maxImportFileSize': 'Max Import File Size (MB)',
+  'settings.import.maxImportFileSize.10': '10',
+  'settings.import.maxImportFileSize.50': '50',
+  'settings.import.maxImportFileSize.100': '100',
+  'settings.import.maxImportFileSize.200': '200',
+  'settings.import.maxImportFileSize.500': '500',
+  'settings.import.maxImportFileSize.1000': '1000',
+  'settings.import.maxImportFileSize.2000': '2000',
+  'settings.import.maxImportFileSize.5000': '5000',
+  'settings.import.importTimeout': 'Import Timeout (seconds)',
+  'settings.import.importTimeoutDescription': 'Maximum wait time for a single import operation before it is cancelled',
 
   // Visualization settings
   'settings.visualization.defaultChartType': 'Default Chart Type',
@@ -1166,6 +1597,8 @@ const enUSTranslations: Record<string, string> = {
   'settings.cache.cacheStrategy.memory': 'Memory',
   'settings.cache.cacheStrategy.disk': 'Disk',
   'settings.cache.cacheStrategy.hybrid': 'Hybrid',
+  'cache.missCount': 'Miss count (misses)',
+  'cache.autoRefresh': 'Auto Refresh',
 
   // Security settings
   'settings.security.enablePasswordProtect': 'Enable Password Protection',
@@ -1173,6 +1606,22 @@ const enUSTranslations: Record<string, string> = {
   'settings.security.lockTimeout': 'Auto Lock Time (minutes)',
   'settings.security.sessionTimeout': 'Session Timeout (minutes)',
   'settings.security.enableAuditLog': 'Enable Audit Log',
+
+  // Data profile
+  'profile.rowCount': 'Row count:',
+
+  // Security category additional features
+  'settings.activityLog': 'Activity Log Management',
+  'settings.activityLogDesc': 'View all operation records performed by the user in the software',
+  'settings.viewActivityLog': 'View Activity Log',
+  'settings.firstLaunch': 'First Launch Settings',
+  'settings.firstLaunchDesc': 'After reset, the welcome screen and guide tutorial will be shown on next launch',
+  'settings.resetFirstLaunch': 'Reset First Launch Status',
+  'settings.resetFirstLaunchConfirm': 'Are you sure you want to reset first launch status? The welcome screen will be shown on next launch.',
+  'settings.resetFirstLaunchSuccess': 'Reset successful. The welcome screen will be shown after restarting.',
+  'settings.restartApp': 'Restart Application',
+  'settings.restartAppDesc': 'Restart the application to apply some settings',
+  'settings.restartAppConfirm': 'Are you sure you want to restart the application?',
 
   // Advanced settings
   'settings.advanced.developerMode': 'Developer Mode',
@@ -1188,6 +1637,18 @@ const enUSTranslations: Record<string, string> = {
   'settings.advanced.dataDir': 'Data Directory',
   'settings.advanced.tempDir': 'Temp File Directory',
 
+  'settings.restoreDefault': 'Restore Default',
+  'settings.notSet': 'Not set',
+  'settings.invalidShortcut': '✗ Invalid shortcut format',
+  'settings.validShortcut': '✓ Valid shortcut',
+  'settings.shortcutConflict': '⚠ Shortcut conflict with {name}',
+  'settings.booleanOn': 'On',
+  'settings.booleanOff': 'Off',
+  'settings.inDevelopment': 'In development',
+  'settings.noItemsInCategory': 'No settings in this category',
+  'settings.viewWelcomePage': '👋 View Welcome Page',
+  'settings.viewGuide': '📚 View Guide',
+  'settings.shortcutHint': 'e.g. Ctrl+Enter',
   // Shortcut settings
   'settings.shortcuts.newFile': 'New File',
   'settings.shortcuts.openFile': 'Open File',
@@ -1245,12 +1706,122 @@ const enUSTranslations: Record<string, string> = {
   'settings.automation.notifyOnFailure': 'Notify on Task Failure',
   'settings.automation.maxConcurrentTasks': 'Max Concurrent Tasks',
 
+  // Automation tasks
+  'task.statusEnabled': 'Enabled',
+  'task.statusDisabled': 'Disabled',
+  'task.statusPaused': 'Paused',
+  'task.actionRefreshChart': 'Refresh Chart',
+  'task.actionRefreshDashboard': 'Refresh Dashboard',
+  'task.emptyHint': 'No tasks. Click "New Task" to create your first automation task',
+  'task.searchPlaceholder': 'Search tasks...',
+  'task.scheduleModeFilter': 'Schedule Mode Filter',
+  'task.retryTimeout': 'Retry/Timeout',
+  'task.namePlaceholder': 'e.g. Hourly Stats',
+  'task.chartId': 'Chart ID',
+  'task.dashboardId': 'Dashboard ID',
+  'task.descriptionPlaceholder': 'Optional description...',
+  'task.running': 'Running',
+  'task.scheduleHint': 'Set scheduled execution',
+  'task.scheduleExecution': 'Schedule SQL Execution',
+  'task.typeSQL': 'SQL Execution',
+  'task.typeExportCSV': 'Export CSV',
+  'task.runSuccess': 'Success',
+  'task.runFailed': 'Failed',
+  'task.runRunning': 'Running',
+  'task.runSkipped': 'Skipped',
+  'task.scheduleIntervalDays': 'Every {value} day(s)',
+  'task.scheduleIntervalHours': 'Every {value} hour(s)',
+  'task.scheduleIntervalMinutes': 'Every {value} minute(s)',
+  'task.scheduleIntervalSeconds': 'Every {value} second(s)',
+  'task.scheduleCron': 'Cron: {value}',
+  'task.scheduleManualOnly': 'Manual only',
+  'task.toastDisabled': 'Task disabled: {name}',
+  'task.toastEnabled': 'Task enabled: {name}',
+  'task.toastOperationFailed': 'Operation failed: {error}',
+  'task.toastRunStarted': 'Task started: {name}',
+  'task.toastRunFailed': 'Task execution failed: {error}',
+  'task.confirmDelete': 'Are you sure you want to delete task "{name}"? This action cannot be undone.',
+  'task.toastDeleted': 'Task deleted',
+  'task.pageTitle': 'Automation Tasks',
+  'task.statTotal': 'Total Tasks',
+  'task.statEnabled': 'Enabled',
+  'task.statFailed': 'Failed Tasks',
+  'task.filterAllStates': 'All States',
+  'task.filterStateRunning': 'Running',
+  'task.filterStateDisabled': 'Disabled',
+  'task.filterStatePaused': 'Paused',
+  'task.filterAllTypes': 'All Types',
+  'task.filterAllSchedules': 'All Schedules',
+  'task.filterScheduleManual': 'Manual',
+  'task.filterScheduleInterval': 'Interval',
+  'task.filterScheduleCron': 'Cron',
+  'task.thName': 'Name',
+  'task.thType': 'Type',
+  'task.thState': 'State',
+  'task.thSchedule': 'Schedule',
+  'task.thLastRun': 'Last Run',
+  'task.thNextRun': 'Next Run',
+  'task.thActions': 'Actions',
+  'task.btnDisable': 'Disable',
+  'task.btnEnable': 'Enable',
+  'task.paginationInfoPrefix': 'Total ',
+  'task.paginationInfoMiddle': ' tasks, page ',
+  'task.paginationInfoSuffix': '',
+  'task.prevPage': 'Previous',
+  'task.nextPage': 'Next',
+  'task.pageSizeOption': '{size} per page',
+
   // DatabaseExplorer
   'databaseExplorer.searchPlaceholder': 'Search tables...',
   'databaseExplorer.confirmDeleteTable': 'Are you sure you want to delete this table? Deleted tables will be moved to trash and can be recovered.',
   'databaseExplorer.tableDeleted': 'Table deleted and moved to trash!',
   'databaseExplorer.deleteFailed': 'Delete failed, please check the console.',
   'databaseExplorer.noMatch': 'No matching tables found',
+  'database.trash': 'Trash',
+  'database.dropTable': 'Delete Table',
+  'database.sortBy': 'Sort By',
+  'database.groupMode': 'Group Mode',
+  'database.refresh': 'Refresh List',
+  'database.tableNamePlaceholder': 'Your table name',
+  'database.userTables': 'User Tables',
+  'database.systemTables': 'System Tables',
+  'database.allTables': 'All',
+  'database.other': 'Other',
+  'database.systemTableNotDeletable': "System table '{name}' cannot be deleted or modified",
+  'database.confirmDeleteLargeTable': "Table '{name}' ({count} rows) will be deleted.\nIt can be restored from \"{trash}\". Continue?",
+  'database.confirmDeleteTable': "Delete table '{name}'?",
+  'database.renameTablePrompt': 'Rename table "{name}" to:',
+  'database.tableNameCannotBeEmpty': 'Table name cannot be empty',
+  'database.systemTableBadge': 'System',
+  'database.rowCountSuffix': 'rows',
+  'database.columnCountSuffix': 'cols',
+  'database.indexCountSuffix': 'idx',
+  'database.loadingColumns': 'Loading columns...',
+  'database.noColumns': 'No columns',
+  'database.viewTop100Rows': 'View Top 100 Rows',
+  'database.doubleClick': 'Double-click',
+  'database.browse': 'Browse',
+  'database.copyTableName': 'Copy Table Name',
+  'database.generateSelect': 'Generate SELECT *',
+  'database.generateCount': 'Generate COUNT',
+  'database.generateInsertTemplate': 'Generate INSERT Template',
+  'database.renameTable': 'Rename Table',
+  'database.deleteTable': 'Delete Table',
+  'database.sortNameAsc': 'Name A-Z',
+  'database.sortNameDesc': 'Name Z-A',
+  'database.sortRowCountDesc': 'Most Rows',
+  'database.sortColumnCountDesc': 'Most Columns',
+  'database.groupBySystemUser': 'By System/User',
+  'database.groupByFirstLetter': 'By First Letter',
+  'database.groupNone': 'Flat',
+  'database.noUserTablesHint1': 'No user tables yet. Use',
+  'database.noUserTablesHint2': 'to execute',
+  'database.noUserTablesHint3': 'or',
+  'database.noUserTablesHint4': 'to create',
+  'database.importCSVExcel': 'Import CSV/Excel',
+  'database.noSystemTables': 'No system tables',
+  'database.noTablesWithPrefix': 'No tables starting with {prefix}',
+  'database.noMatchWithTerm': 'No tables matching "{term}"',
 
   // ProjectManager
   'projectManager.title': 'Project Management',
@@ -1261,6 +1832,9 @@ const enUSTranslations: Record<string, string> = {
   'projectManager.selectFile': 'Select File',
   'projectManager.projectList': 'Project List',
   'projectManager.switch': 'Switch',
+  'projectManager.rename': 'Rename',
+  'projectManager.enterNewName': 'Enter new project name',
+  'projectManager.projectRenamed': 'Project renamed successfully',
   'projectManager.pleaseEnterProjectName': 'Please enter project name',
   'projectManager.projectCreated': 'Project created successfully',
   'projectManager.projectSwitched': 'Switched to project',
@@ -1268,6 +1842,25 @@ const enUSTranslations: Record<string, string> = {
   'projectManager.projectDeleted': 'Project deleted',
   'projectManager.pleaseSelectDatabaseFile': 'Please select a database file first',
   'projectManager.customDatabaseOpened': 'Switched to custom database',
+  'projectManager.duplicate': 'Duplicate',
+  'projectManager.export': 'Export',
+  'projectManager.importProject': 'Import Project',
+  'projectManager.importButton': 'Import',
+  'projectManager.copySuffix': 'Copy',
+  'projectManager.projectDuplicated': 'Project duplicated successfully',
+  'projectManager.projectImported': 'Project imported successfully',
+  'projectManager.projectExported': 'Project exported to',
+  'projectManager.confirmSwitchToImported': 'Switch to the imported project?',
+  'projectManager.confirmDeleteWithName': 'Are you sure you want to delete project "{name}"? This cannot be undone.',
+  'projectManager.createdAt': 'Created',
+  'projectManager.currentProject': 'Current',
+
+  // Task logs
+  'taskLogs.selectTaskHint': 'Please select a task on the left to view execution logs',
+  'taskLogs.totalRuns': 'Total Runs',
+  'taskLogs.success': 'Success',
+  'taskLogs.failed': 'Failed',
+  'taskLogs.noLogs': 'No execution logs',
 
   // QueryHistory
   'queryHistory.title': 'Query History',
@@ -1282,6 +1875,8 @@ const enUSTranslations: Record<string, string> = {
   'queryHistory.rows': 'rows',
   'queryHistory.error': 'Error',
   'queryHistory.execute': 'Execute',
+  'queryHistory.copy': 'Copy',
+  'queryHistory.copied': 'Copied',
   'queryHistory.confirmDelete': 'Are you sure you want to delete this history?',
 
   // Hooks
@@ -1323,6 +1918,10 @@ const enUSTranslations: Record<string, string> = {
   'sidebar.queryHistory': 'Query History',
   'sidebar.snippets': 'Snippets',
   'sidebar.trash': 'Trash',
+  'sidebar.resizeHint': 'Drag to resize, double-click to reset (250px)',
+
+  // Filter
+  'filter.all': 'All',
 
   // Workspace
   'workspace.newTab': 'New Tab',
@@ -1340,12 +1939,50 @@ const enUSTranslations: Record<string, string> = {
   'sqlEditor.saved': 'Saved',
   'sqlEditor.saving': 'Saving...',
   'sqlEditor.unsaved': 'Unsaved',
+  'sqlEditor.scheduleExecution': '⚡ Schedule Execution',
+  'sqlEditor.querySuccessNoResults': 'Query executed successfully, but no results returned',
 
   // StatusBar
   'status.connected': 'Connected',
   'status.notConnected': 'Not Connected',
   'status.tables': 'tables',
   'status.ready': 'Ready',
+
+  // Welcome
+  'welcome.tagline': 'Lightweight Local High-Performance Data Analysis Tool',
+  'welcome.getStarted': 'Get Started',
+  'welcome.watchTutorial': '📚 Watch Tutorial',
+  'welcome.openSettings': '⚙️ Open Settings',
+
+  // Guide
+  'guide.skip': 'Skip Guide',
+  'guide.project.title': 'Projects',
+  'guide.project.desc1': 'Each project corresponds to an independent database,',
+  'guide.project.desc2': 'and projects are separate from each other.',
+  'guide.project.desc3': 'By creating or switching projects,',
+  'guide.project.desc4': 'you can choose your working database.',
+  'guide.import.title': 'Data Import',
+  'guide.import.supportedFormats': 'Supported File Formats',
+  'guide.query.title': 'Write SQL Queries',
+  'guide.query.desc1': 'Use the powerful SQL editor to query and analyze your data.',
+  'guide.query.desc2': 'Supports syntax highlighting, auto-completion, and real-time execution.',
+  'guide.query.shortcuts': 'Quick Actions',
+  'guide.query.shortcut1': '▶️ Ctrl+Enter to execute query',
+  'guide.query.shortcut2': '💾 Ctrl+S to save to file',
+  'guide.query.shortcut3': '📋 Double-click table to auto-generate SQL',
+  'guide.query.shortcut4': '📈 Query results can generate charts directly',
+  'guide.done.title': 'All Set!',
+  'guide.done.desc1': 'QuickerSQL is ready, you can start using it now.',
+  'guide.done.desc2': 'Start your data analysis journey!',
+  'guide.done.nextSteps': 'Next steps:',
+  'guide.done.tip1': 'View your data tables on the left',
+  'guide.done.tip2': 'Write SQL queries on the right',
+  'guide.done.tip3': 'Click execute to view results',
+  'guide.done.tip4': 'Switch to chart tab to create visualizations',
+  'guide.done.tip5': 'Combine multiple charts in dashboards',
+  'guide.prev': '← Previous',
+  'guide.next': 'Next →',
+  'guide.startUsing': '🦆 Start Using QuickerSQL',
 };
 
 const getLocaleText = (locale: LocaleCode): Record<string, string> => {
@@ -1356,11 +1993,101 @@ const getTranslations = (locale: LocaleCode): Record<string, string> => {
   return locale === 'zh-CN' ? zhCNTranslations : enUSTranslations;
 };
 
+const padZero = (num: number, len: number = 2): string => {
+  return String(num).padStart(len, '0');
+};
+
+const formatDateByPattern = (date: Date, pattern: DateFormat): string => {
+  const year = date.getFullYear();
+  const month = padZero(date.getMonth() + 1);
+  const day = padZero(date.getDate());
+  switch (pattern) {
+    case 'YYYY-MM-DD':
+      return `${year}-${month}-${day}`;
+    case 'DD/MM/YYYY':
+      return `${day}/${month}/${year}`;
+    case 'MM/DD/YYYY':
+      return `${month}/${day}/${year}`;
+    default:
+      return `${year}-${month}-${day}`;
+  }
+};
+
+const formatTimeByPattern = (date: Date, pattern: TimeFormat): string => {
+  const hours = date.getHours();
+  const minutes = padZero(date.getMinutes());
+  const seconds = padZero(date.getSeconds());
+  switch (pattern) {
+    case '24h':
+      return `${padZero(hours)}:${minutes}:${seconds}`;
+    case '12h': {
+      const period = hours >= 12 ? 'PM' : 'AM';
+      const hour12 = hours % 12 || 12;
+      return `${padZero(hour12)}:${minutes}:${seconds} ${period}`;
+    }
+    default:
+      return `${padZero(hours)}:${minutes}:${seconds}`;
+  }
+};
+
+const formatNumberByPattern = (num: number, pattern: NumberFormat): string => {
+  const isNegative = num < 0;
+  const absNum = Math.abs(num);
+  const intPart = Math.floor(absNum);
+  const decPart = Math.round((absNum - intPart) * 100);
+
+  let thousandsSep: string;
+  let decimalSep: string;
+
+  switch (pattern) {
+    case '1,000.00':
+      thousandsSep = ',';
+      decimalSep = '.';
+      break;
+    case '1.000,00':
+      thousandsSep = '.';
+      decimalSep = ',';
+      break;
+    case '1 000.00':
+      thousandsSep = ' ';
+      decimalSep = '.';
+      break;
+    default:
+      thousandsSep = ',';
+      decimalSep = '.';
+  }
+
+  const intStr = intPart.toString();
+  let formattedInt = '';
+  for (let i = 0; i < intStr.length; i++) {
+    if (i > 0 && (intStr.length - i) % 3 === 0) {
+      formattedInt += thousandsSep;
+    }
+    formattedInt += intStr[i];
+  }
+
+  const decStr = padZero(decPart);
+  const result = `${formattedInt}${decimalSep}${decStr}`;
+
+  return isNegative ? `-${result}` : result;
+};
+
 export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [languageSetting] = useSetting('locale', 'language');
+  const [dateFormatSetting] = useSetting('locale', 'dateFormat');
+  const [timeFormatSetting] = useSetting('locale', 'timeFormat');
+  const [numberFormatSetting] = useSetting('locale', 'numberFormat');
+  const [firstDayOfWeekSetting] = useSetting('locale', 'firstDayOfWeek');
+  const [timezoneSetting] = useSetting('locale', 'timezone');
+
   const [locale, setLocale] = useState<LocaleCode>('zh-CN');
   const [translations, setTranslations] = useState<Record<string, string>>(zhCNTranslations);
   const [localeText, setLocaleText] = useState<Record<string, string>>(zhCNLocaleText);
+  const [dateFormat, setDateFormat] = useState<DateFormat>('YYYY-MM-DD');
+  const [timeFormat, setTimeFormat] = useState<TimeFormat>('24h');
+  const [numberFormat, setNumberFormat] = useState<NumberFormat>('1,000.00');
+  const [firstDayOfWeek, setFirstDayOfWeek] = useState<FirstDayOfWeek>('monday');
+  const [timezone, setTimezone] = useState<string>('local');
 
   useEffect(() => {
     if (languageSetting === 'zh-CN' || languageSetting === 'en-US') {
@@ -1373,6 +2100,36 @@ export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setLocaleText(zhCNLocaleText);
     }
   }, [languageSetting]);
+
+  useEffect(() => {
+    if (dateFormatSetting === 'YYYY-MM-DD' || dateFormatSetting === 'DD/MM/YYYY' || dateFormatSetting === 'MM/DD/YYYY') {
+      setDateFormat(dateFormatSetting);
+    }
+  }, [dateFormatSetting]);
+
+  useEffect(() => {
+    if (timeFormatSetting === '12h' || timeFormatSetting === '24h') {
+      setTimeFormat(timeFormatSetting);
+    }
+  }, [timeFormatSetting]);
+
+  useEffect(() => {
+    if (numberFormatSetting === '1,000.00' || numberFormatSetting === '1.000,00' || numberFormatSetting === '1 000.00') {
+      setNumberFormat(numberFormatSetting);
+    }
+  }, [numberFormatSetting]);
+
+  useEffect(() => {
+    if (firstDayOfWeekSetting === 'sunday' || firstDayOfWeekSetting === 'monday') {
+      setFirstDayOfWeek(firstDayOfWeekSetting);
+    }
+  }, [firstDayOfWeekSetting]);
+
+  useEffect(() => {
+    if (timezoneSetting !== undefined) {
+      setTimezone(timezoneSetting);
+    }
+  }, [timezoneSetting]);
 
   const t = useCallback((key: string, vars?: Record<string, string | number>): string => {
     const hasTranslation = key in translations;
@@ -1388,8 +2145,43 @@ export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return result;
   }, [translations]);
 
+  const formatDate = useCallback((date: Date | string | number): string => {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) {
+      return '';
+    }
+    return formatDateByPattern(d, dateFormat);
+  }, [dateFormat]);
+
+  const formatTime = useCallback((date: Date | string | number): string => {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) {
+      return '';
+    }
+    return formatTimeByPattern(d, timeFormat);
+  }, [timeFormat]);
+
+  const formatNumber = useCallback((num: number): string => {
+    if (typeof num !== 'number' || isNaN(num)) {
+      return '';
+    }
+    return formatNumberByPattern(num, numberFormat);
+  }, [numberFormat]);
+
   return (
-    <LocaleContext.Provider value={{ locale, t, localeText }}>
+    <LocaleContext.Provider value={{
+      locale,
+      t,
+      localeText,
+      dateFormat,
+      timeFormat,
+      numberFormat,
+      firstDayOfWeek,
+      timezone,
+      formatDate,
+      formatTime,
+      formatNumber,
+    }}>
       {children}
     </LocaleContext.Provider>
   );
@@ -1398,11 +2190,18 @@ export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 export const useLocale = (): LocaleContextValue => {
   const context = useContext(LocaleContext);
   if (!context) {
+    const defaultDateFormat: DateFormat = 'YYYY-MM-DD';
+    const defaultTimeFormat: TimeFormat = '24h';
+    const defaultNumberFormat: NumberFormat = '1,000.00';
+    const defaultFirstDayOfWeek: FirstDayOfWeek = 'monday';
+    const defaultTranslations = zhCNTranslations;
+
     return {
       locale: 'zh-CN',
-      t: (key: string, vars?: Record<string, string | number>) => {
-        let result = key;
-        if (import.meta.env.DEV) {
+      t: (key: string, vars?: Record<string, string | number>): string => {
+        const hasTranslation = key in defaultTranslations;
+        let result = hasTranslation ? defaultTranslations[key] : key;
+        if (!hasTranslation && import.meta.env.DEV) {
           console.warn(`[i18n] Missing translation key (fallback): "${key}"`);
         }
         if (vars) {
@@ -1413,6 +2212,25 @@ export const useLocale = (): LocaleContextValue => {
         return result;
       },
       localeText: zhCNLocaleText,
+      dateFormat: defaultDateFormat,
+      timeFormat: defaultTimeFormat,
+      numberFormat: defaultNumberFormat,
+      firstDayOfWeek: defaultFirstDayOfWeek,
+      timezone: 'local',
+      formatDate: (date: Date | string | number): string => {
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return '';
+        return formatDateByPattern(d, defaultDateFormat);
+      },
+      formatTime: (date: Date | string | number): string => {
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return '';
+        return formatTimeByPattern(d, defaultTimeFormat);
+      },
+      formatNumber: (num: number): string => {
+        if (typeof num !== 'number' || isNaN(num)) return '';
+        return formatNumberByPattern(num, defaultNumberFormat);
+      },
     };
   }
   return context;

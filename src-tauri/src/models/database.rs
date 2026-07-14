@@ -20,6 +20,9 @@ pub struct SqlStatementResult {
     pub columns: Option<Vec<String>>,
     pub rows: Option<Vec<Vec<String>>>,
     pub affected_rows: Option<u64>,
+    pub engine: Option<String>,
+    #[serde(rename = "executionTimeMs")]
+    pub execution_time_ms: Option<i64>,
 }
 
 /// 批量 SQL 执行结果
@@ -31,10 +34,16 @@ pub struct BatchExecuteResult {
 }
 
 /// 项目信息
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectInfo {
-    pub name: String,
-    pub db_path: String,
+    pub id: String,                    // UUID
+    pub name: String,                  // 项目显示名
+    pub db_path: String,               // 数据库文件相对路径
+    pub created_at: String,            // ISO 8601 时间
+    pub updated_at: String,            // ISO 8601 时间
+    pub last_opened_at: Option<String>, // 最近打开时间
+    pub description: Option<String>,    // 描述
 }
 
 /// Sheet 信息
@@ -83,6 +92,8 @@ pub struct ImportRequestV2 {
     pub table_name: String,
     pub has_header: bool,
     pub fields: Vec<FieldMeta>,
+    pub batch_size: Option<usize>,
+    pub delimiter: Option<String>,
 }
 
 /// 数据库信息

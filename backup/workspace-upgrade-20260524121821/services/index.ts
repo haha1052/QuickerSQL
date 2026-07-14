@@ -1,1 +1,0 @@
-export { tauriService } from './tauri';

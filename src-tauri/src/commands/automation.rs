@@ -73,11 +73,48 @@ pub fn disable_automation_task(
 }
 
 #[tauri::command]
-pub fn run_automation_task_now(
+pub async fn run_automation_task_now(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<TaskRun, String> {
-    TaskService::run_task_now(&state.db_manager, &id)
+    // Phase 16: 获取信号量许可（任务并发控制）
+    let _permit = state.task_semaphore.acquire().await.map_err(|e| {
+        format!("获取任务信号量失败: {}", e)
+    })?;
+
+    // 读取 notifyOnFailure 设置
+    let notify_on_failure = {
+        let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+        crate::services::SettingsService::get_setting(&conn, "automation", "notifyOnFailure")
+            .ok()
+            .flatten()
+            .map(|s| !s.value.eq_ignore_ascii_case("false"))
+            .unwrap_or(true)
+    };
+
+    // 执行任务
+    let result = TaskService::run_task_now(&state.db_manager, &id);
+
+    // 如果任务失败且启用通知，记录警告日志
+    if let Err(ref err_msg) = result {
+        if notify_on_failure {
+            // 获取任务名称用于日志
+            let task_name = {
+                match TaskService::get_task(&state.db_manager.get_connection().map_err(|e| e.to_string())?, &id) {
+                    Ok(task) => task.name,
+                    Err(_) => id.clone(),
+                }
+            };
+            log::warn!(
+                "[任务失败通知] 任务 \"{}\" (ID: {}) 执行失败: {}",
+                task_name,
+                id,
+                err_msg
+            );
+        }
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -96,4 +133,53 @@ pub fn ensure_automation_tables(
 ) -> Result<bool, String> {
     let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
     TaskService::ensure_tables_exists(&conn).map(|_| true)
+}
+
+#[tauri::command]
+pub fn list_task_dependencies(
+    state: State<'_, TauriAppState>,
+    task_id: String,
+) -> Result<Vec<TaskDependency>, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    TaskService::list_dependencies(&conn, &task_id)
+}
+
+#[tauri::command]
+pub fn add_task_dependency(
+    state: State<'_, TauriAppState>,
+    task_id: String,
+    dep_type: String,
+    dep_config: String,
+) -> Result<TaskDependency, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    TaskService::add_dependency(&conn, &task_id, &dep_type, &dep_config)
+}
+
+#[tauri::command]
+pub fn update_task_dependency(
+    state: State<'_, TauriAppState>,
+    dep_id: String,
+    dep_config: String,
+) -> Result<TaskDependency, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    TaskService::update_dependency(&conn, &dep_id, &dep_config)
+}
+
+#[tauri::command]
+pub fn delete_task_dependency(
+    state: State<'_, TauriAppState>,
+    dep_id: String,
+) -> Result<bool, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    TaskService::delete_dependency(&conn, &dep_id)
+}
+
+#[tauri::command]
+pub fn replace_task_dependencies(
+    state: State<'_, TauriAppState>,
+    task_id: String,
+    deps: Vec<(String, String)>,
+) -> Result<Vec<TaskDependency>, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    TaskService::replace_dependencies(&conn, &task_id, deps)
 }

@@ -1,22 +1,106 @@
 //! 项目管理相关 Tauri 命令
+//!
+//! v2.0 重构：适配新的 ProjectService（基于 UUID + 注册表）
+//! - 命令参数从项目名改为项目 ID
+//! - 新增 duplicate_project、import_project、export_project、get_current_project_id
+//! - 保留 open_project、open_database_from_path、export_database、get_current_db_path
+//!
+//! 架构约束：
+//! - commands 层只做参数校验 + 调用 Service + 返回 Result
+//! - 禁止直接拼接 SQL（audit log description 用 format! 不算 SQL 拼接）
+//! - 禁止 unwrap()/expect()，用 map_err 转化错误
 use crate::TauriAppState;
+use crate::database::MutexGuardConnection;
+use crate::models::ProjectInfo;
 use crate::services::ProjectService;
+use std::path::{Path, PathBuf};
 use tauri::State;
-use std::path::PathBuf;
+use tauri::Emitter;
+
+// ==================== 内部辅助函数 ====================
+
+/// 初始化系统表（连接切换后调用）
+///
+/// 提取自 switch_project / open_database_from_path 的公共逻辑：
+/// - 旧表名迁移（_settings → __settings）
+/// - 确保所有系统表存在
+fn init_system_tables(conn: &MutexGuardConnection<'_>) {
+    if let Err(e) = crate::services::MigrationService::run_legacy_table_migrations(conn) {
+        log::warn!("旧表名迁移失败: {}", e);
+    }
+    if let Err(e) = crate::services::SettingsService::ensure_settings_table_exists(conn) {
+        log::warn!("初始化设置表失败: {}", e);
+    }
+    if let Err(e) = crate::services::TaskService::ensure_tables_exists(conn) {
+        log::warn!("初始化自动化任务表失败: {}", e);
+    }
+    if let Err(e) = crate::services::QueryHistoryService::ensure_query_history_table_exists(conn) {
+        log::warn!("初始化查询历史表失败: {}", e);
+    }
+    if let Err(e) = crate::services::AuditLogService::ensure_audit_log_table_exists(conn) {
+        log::warn!("初始化审计日志表失败: {}", e);
+    }
+    if let Err(e) = crate::services::TrashService::ensure_trash_table_exists(conn) {
+        log::warn!("初始化回收站表失败: {}", e);
+    }
+    if let Err(e) = crate::services::DashboardService::ensure_tables_exist(conn) {
+        log::warn!("初始化仪表盘表失败: {}", e);
+    }
+    if let Err(e) = crate::services::AppStateService::ensure_app_state_table_exists(conn) {
+        log::warn!("初始化应用状态表失败: {}", e);
+    }
+    if let Err(e) = crate::services::AppStateService::ensure_workspace_tables_exist(conn) {
+        log::warn!("初始化工作区表失败: {}", e);
+    }
+}
+
+/// 通过当前 db_path 反查注册表获取 project_id
+///
+/// 返回：
+/// - Ok(Some(id))：当前数据库对应注册表中的某个项目
+/// - Ok(None)：当前数据库不在注册表中（可能是旧数据未迁移）
+fn get_current_project_id_inner(state: &State<'_, TauriAppState>) -> Result<Option<String>, String> {
+    let current_db_path = state.db_path.lock().map_err(|e| e.to_string())?;
+    let projects = ProjectService::list_projects()?;
+    for project in projects {
+        let project_db_path = ProjectService::resolve_db_path(&project.db_path)?;
+        if *current_db_path == project_db_path {
+            return Ok(Some(project.id));
+        }
+    }
+    Ok(None)
+}
+
+/// 清理文件名中的非法字符（Windows 文件系统）
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
+}
+
+// ==================== 项目 CRUD 命令 ====================
 
 /// 创建新项目
+///
+/// 调用 ProjectService::create 生成 UUID 目录 + 注册表记录。
+/// 成功后记录审计日志。前端会用返回的 ProjectInfo.id 调用 switch_project。
 #[tauri::command]
-pub fn create_project(state: State<'_, TauriAppState>, project_name: String) -> Result<String, String> {
+pub fn create_project(
+    state: State<'_, TauriAppState>,
+    project_name: String,
+    description: Option<String>,
+) -> Result<ProjectInfo, String> {
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-    let result = ProjectService::create(&project_name)
-        .map(|path| path.to_string_lossy().to_string())
-        .map_err(|e| e.to_string());
+    let result = ProjectService::create(&project_name, description.as_deref());
 
-    if result.is_ok() {
+    if let Ok(ref project_info) = result {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
             module: "project".to_string(),
             action: "create".to_string(),
-            description: format!("创建项目: {}", project_name),
+            description: format!("创建项目: {} ({})", project_info.name, project_info.id),
             status: "success".to_string(),
             duration_ms: None,
             details: None,
@@ -27,13 +111,369 @@ pub fn create_project(state: State<'_, TauriAppState>, project_name: String) -> 
     result
 }
 
-/// 打开项目
+/// 列出所有项目
+#[tauri::command]
+pub fn list_projects() -> Result<Vec<ProjectInfo>, String> {
+    ProjectService::list_projects()
+}
+
+/// 重命名项目（按 ID 重命名，不动文件系统）
+///
+/// 新实现只更新注册表和 __project_info，不需要关闭/重连数据库。
+#[tauri::command]
+pub fn rename_project(
+    state: State<'_, TauriAppState>,
+    project_id: String,
+    new_name: String,
+) -> Result<ProjectInfo, String> {
+    if new_name.trim().is_empty() {
+        return Err("项目名称不能为空".to_string());
+    }
+
+    let result = ProjectService::rename_project(&project_id, &new_name);
+
+    if result.is_ok() {
+        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "rename".to_string(),
+            description: format!("重命名项目: id={}, new_name={}", project_id, new_name),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    result
+}
+
+/// 删除项目（按 ID 删除）
+///
+/// 如果删除的是当前项目，先切换到 default 项目以释放文件锁。
+#[tauri::command]
+pub fn delete_project(state: State<'_, TauriAppState>, project_id: String) -> Result<String, String> {
+    // 1. 检查是否为当前项目，如果是则先切换到 default
+    let current_project_id = get_current_project_id_inner(&state)?;
+    if let Some(current_id) = current_project_id {
+        if current_id == project_id {
+            // 切换到 default 项目（避免删除当前已连接的库）
+            let default_db_path = ProjectService::get_default_db_path()?;
+            state.set_db_path(default_db_path.clone())?;
+            state.db_manager.close_connection();
+            state.db_manager
+                .connect("sqlite", &default_db_path)
+                .map_err(|e| e.to_string())?;
+
+            // 系统表初始化
+            {
+                let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+                init_system_tables(&conn);
+            }
+        }
+    }
+
+    // 2. 删除项目
+    let result = ProjectService::delete_project(&project_id)
+        .map(|_| format!("项目 '{}' 已删除", project_id));
+
+    // 3. 记录审计日志
+    if result.is_ok() {
+        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "delete".to_string(),
+            description: format!("删除项目: {}", project_id),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    result
+}
+
+/// 切换到指定项目（按 ID 切换）
+///
+/// ⚠️ 关键约束：调用 `state.db_manager.connect()` 之前，必须确保没有任何
+/// `MutexGuardConnection` 在作用域内持有 `active_connection` 的锁，否则
+/// 会发生 "同一线程重复获取同一 Mutex" 的**死锁**。
+#[tauri::command]
+pub fn switch_project(
+    state: State<'_, TauriAppState>,
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ProjectInfo, String> {
+    // 1. 调用 Service 更新 last_opened_at 并获取项目信息
+    let project_info = ProjectService::switch_project(&project_id)?;
+
+    // 2. 解析绝对路径
+    let db_path = ProjectService::resolve_db_path(&project_info.db_path)?;
+
+    if !db_path.exists() {
+        return Err(format!("项目 '{}' 的数据库文件不存在", project_id));
+    }
+
+    // 3. 先更新 db_path（内部不获取 active_connection 锁）
+    state.set_db_path(db_path.clone())?;
+
+    // 4. 关闭旧连接（显式释放 active_connection 的锁）
+    state.db_manager.close_connection();
+
+    // 5. 建立新连接（此时 active_connection 不被任何 MutexGuard 持有）
+    state.db_manager
+        .connect("sqlite", &db_path)
+        .map_err(|e| e.to_string())?;
+
+    // 6. 系统表初始化 + 审计日志
+    {
+        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        init_system_tables(&conn);
+
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "switch".to_string(),
+            description: format!("切换到项目: {} ({})", project_info.name, project_id),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    // 7. 异步触发 DuckDB 重新初始化（参考 preload_duckdb 命令的实现）
+    {
+        let db_manager = state.db_manager.clone();
+        let db_path_for_duckdb = db_path.clone();
+        let duckdb_conn = state.duckdb_conn.clone();
+        let app_handle = app.clone();
+
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            log::info!("[DuckDB] 预加载开始（switch_project 触发）");
+
+            let table_names = match db_manager.get_connection() {
+                Ok(sqlite_conn) => {
+                    match crate::database::meta::list_user_table_names(&sqlite_conn) {
+                        Ok(names) => names,
+                        Err(e) => {
+                            log::warn!("[DuckDB] 从 SQLite 获取表名失败: {}", e);
+                            Vec::new()
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[DuckDB] 获取 SQLite 连接失败: {}", e);
+                    Vec::new()
+                }
+            };
+
+            log::info!(
+                "[DuckDB] 预加载：从 SQLite 获取到 {} 个用户表",
+                table_names.len()
+            );
+
+            let driver = crate::database::duckdb::DuckDbDriver::new();
+
+            match driver.connect_memory() {
+                Ok(conn) => {
+                    let _ = conn.execute("LOAD sqlite;", &[]);
+
+                    let sqlite_path_str = db_path_for_duckdb
+                        .to_string_lossy()
+                        .replace("'", "''");
+                    let attach_sql = format!(
+                        "ATTACH '{}' AS sqlite_db (TYPE SQLITE);",
+                        sqlite_path_str
+                    );
+
+                    if conn.execute(&attach_sql, &[]).is_ok() {
+                        let mut success_count = 0;
+                        for table_name in &table_names {
+                            if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
+                                let quoted_table =
+                                    crate::database::SqlIdentifier::quote_identifier(table_name);
+                                let create_view_sql = format!(
+                                    "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                                    quoted_table, quoted_table
+                                );
+                                if conn.execute(&create_view_sql, &[]).is_ok() {
+                                    success_count += 1;
+                                }
+                            }
+                        }
+
+                        let _ = conn.execute("SET preserve_insertion_order = false;", &[]);
+
+                        if let Ok(mut guard) = duckdb_conn.lock() {
+                            *guard = Some(std::sync::Arc::new(std::sync::Mutex::new(conn)));
+                            let duration_ms = t0.elapsed().as_millis() as i64;
+                            log::info!(
+                                "[DuckDB] 预加载完成（switch_project），已创建 {}/{} 个 VIEW，耗时 {}ms",
+                                success_count,
+                                table_names.len(),
+                                duration_ms
+                            );
+                            
+                            let status = crate::models::DuckDbInitStatus {
+                                success: true,
+                                view_count: success_count as i32,
+                                total_tables: table_names.len() as i32,
+                                duration_ms,
+                                trigger: "switch_project".to_string(),
+                            };
+                            let _ = app_handle.emit("duckdb_init_completed", status);
+                        } else {
+                            log::warn!("[DuckDB] 预加载完成，但无法保存连接（Mutex poison）");
+                            
+                            let status = crate::models::DuckDbInitStatus {
+                                success: false,
+                                view_count: 0,
+                                total_tables: table_names.len() as i32,
+                                duration_ms: t0.elapsed().as_millis() as i64,
+                                trigger: "switch_project".to_string(),
+                            };
+                            let _ = app_handle.emit("duckdb_init_completed", status);
+                        }
+                    } else {
+                        log::warn!("[DuckDB] 预加载失败：ATTACH SQLite 失败");
+                        
+                        let status = crate::models::DuckDbInitStatus {
+                            success: false,
+                            view_count: 0,
+                            total_tables: table_names.len() as i32,
+                            duration_ms: t0.elapsed().as_millis() as i64,
+                            trigger: "switch_project".to_string(),
+                        };
+                        let _ = app_handle.emit("duckdb_init_completed", status);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[DuckDB] 预加载失败：创建内存连接失败: {}", e);
+                    
+                    let status = crate::models::DuckDbInitStatus {
+                        success: false,
+                        view_count: 0,
+                        total_tables: table_names.len() as i32,
+                        duration_ms: t0.elapsed().as_millis() as i64,
+                        trigger: "switch_project".to_string(),
+                    };
+                    let _ = app_handle.emit("duckdb_init_completed", status);
+                }
+            }
+        });
+    }
+
+    Ok(project_info)
+}
+
+/// 复制项目（文件级复制 + 新 ID）
+///
+/// 完整复制源项目的所有数据（表、查询历史、仪表盘、自动化任务、设置）。
+#[tauri::command]
+pub fn duplicate_project(
+    state: State<'_, TauriAppState>,
+    source_id: String,
+    new_name: String,
+) -> Result<ProjectInfo, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let result = ProjectService::duplicate_project(&source_id, &new_name);
+
+    if let Ok(ref project_info) = result {
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "duplicate".to_string(),
+            description: format!(
+                "复制项目: source={}, new={} ({})",
+                source_id, project_info.name, project_info.id
+            ),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    result
+}
+
+/// 导入项目（从外部 .db/.qsql 文件）
+#[tauri::command]
+pub fn import_project(
+    state: State<'_, TauriAppState>,
+    source_file_path: String,
+    new_name: String,
+) -> Result<ProjectInfo, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let source_path = Path::new(&source_file_path);
+    let result = ProjectService::import_project(source_path, &new_name);
+
+    if let Ok(ref project_info) = result {
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "import".to_string(),
+            description: format!(
+                "导入项目: {} ({}, source={})",
+                project_info.name, project_info.id, source_file_path
+            ),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    result
+}
+
+/// 导出项目到指定路径
+#[tauri::command]
+pub fn export_project(
+    state: State<'_, TauriAppState>,
+    project_id: String,
+    dest_path: String,
+) -> Result<String, String> {
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let dest = Path::new(&dest_path);
+    let result = ProjectService::export_project(&project_id, dest)
+        .map(|_| format!("项目已导出到: {}", dest_path));
+
+    if result.is_ok() {
+        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
+            module: "project".to_string(),
+            action: "export".to_string(),
+            description: format!("导出项目: id={}, dest={}", project_id, dest_path),
+            status: "success".to_string(),
+            duration_ms: None,
+            details: None,
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+    }
+
+    result
+}
+
+/// 获取当前项目 ID
+///
+/// 通过当前 db_path 反查注册表获取 project_id。
+/// 如果找不到（可能是旧数据未迁移），返回 Err 提示用户迁移。
+#[tauri::command]
+pub fn get_current_project_id(state: State<'_, TauriAppState>) -> Result<String, String> {
+    match get_current_project_id_inner(&state)? {
+        Some(id) => Ok(id),
+        None => Err("当前数据库未在项目注册表中找到，可能需要迁移旧数据".to_string()),
+    }
+}
+
+// ==================== 保留的命令 ====================
+
+/// 打开项目（保留原签名，按 db_path 打开）
 #[tauri::command]
 pub fn open_project(state: State<'_, TauriAppState>, db_path: String) -> Result<bool, String> {
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
     let path = PathBuf::from(db_path.clone());
-    let result = ProjectService::open(&path)
-        .map_err(|e| e.to_string());
+    let result = ProjectService::open(&path);
 
     if result.is_ok() {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -50,144 +490,14 @@ pub fn open_project(state: State<'_, TauriAppState>, db_path: String) -> Result<
     result
 }
 
-/// 列出所有项目
-#[tauri::command]
-pub fn list_projects() -> Result<Vec<String>, String> {
-    ProjectService::list_projects()
-        .map_err(|e| e.to_string())
-}
-
-/// 删除项目
-#[tauri::command]
-pub fn delete_project(state: State<'_, TauriAppState>, project_name: String) -> Result<String, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-    let result = ProjectService::delete_project(&project_name)
-        .map(|_| format!("项目 '{}' 已删除", project_name))
-        .map_err(|e| e.to_string());
-
-    if result.is_ok() {
-        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
-            module: "project".to_string(),
-            action: "delete".to_string(),
-            description: format!("删除项目: {}", project_name),
-            status: "success".to_string(),
-            duration_ms: None,
-            details: None,
-        };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
-    }
-
-    result
-}
-
-/// 重命名项目
-#[tauri::command]
-pub fn rename_project(state: State<'_, TauriAppState>, old_name: String, new_name: String) -> Result<String, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-    let result = ProjectService::rename_project(&old_name, &new_name)
-        .map(|_| format!("项目已从 '{}' 重命名为 '{}'", old_name, new_name))
-        .map_err(|e| e.to_string());
-
-    if result.is_ok() {
-        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
-            module: "project".to_string(),
-            action: "rename".to_string(),
-            description: format!("重命名项目: {} -> {}", old_name, new_name),
-            status: "success".to_string(),
-            duration_ms: None,
-            details: None,
-        };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
-    }
-
-    result
-}
-
-/// 切换到指定项目（切换数据库）
-///
-/// ⚠️ 关键约束：调用 `state.db_manager.connect()` 之前，必须确保没有任何
-/// `MutexGuardConnection` 在作用域内持有 `active_connection` 的锁，否则
-/// 会发生 "同一线程重复获取同一 Mutex" 的**死锁**。
-#[tauri::command]
-pub fn switch_project(state: State<'_, TauriAppState>, project_name: String) -> Result<String, String> {
-    let db_path = dirs::data_dir()
-        .ok_or("无法获取数据目录".to_string())?
-        .join("quickersql")
-        .join(&project_name)
-        .join("meta.db");
-
-    if !db_path.exists() {
-        return Err(format!("项目 '{}' 的数据库文件不存在", project_name));
-    }
-
-    // 1️⃣ 先更新 db_path（内部不获取 active_connection 锁）
-    state.set_db_path(db_path.clone())?;
-
-    // 2️⃣ 关闭旧连接（显式释放 active_connection 的锁）
-    //    这里直接调用 close_connection() 清空 active_connection 中的 Option
-    //    注意：之前的旧 conn 会在 drop 时释放锁，这里再次确认清空
-    state.db_manager.close_connection();
-
-    // 3️⃣ 建立新连接（此时 active_connection 不被任何 MutexGuard 持有）
-    //    connect() 内部会 lock_active_connection()，无死锁风险
-    state.db_manager.connect("sqlite", &db_path).map_err(|e| e.to_string())?;
-
-    // 4️⃣ 做一次新数据库的系统表初始化和迁移
-    //    （因为切到了一个全新的 SQLite 文件，里面可能没有 __ 前缀的系统表）
-    let result_msg: String;
-    {
-        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-        // 旧表名迁移（如 _settings → __settings）
-        if let Err(e) = crate::services::MigrationService::run_legacy_table_migrations(&conn) {
-            log::warn!("旧表名迁移失败: {}", e);
-        }
-        // 确保系统表存在
-        if let Err(e) = crate::services::SettingsService::ensure_settings_table_exists(&conn) {
-            log::warn!("初始化设置表失败: {}", e);
-        }
-        if let Err(e) = crate::services::TaskService::ensure_tables_exists(&conn) {
-            log::warn!("初始化自动化任务表失败: {}", e);
-        }
-        if let Err(e) = crate::services::QueryHistoryService::ensure_query_history_table_exists(&conn) {
-            log::warn!("初始化查询历史表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AuditLogService::ensure_audit_log_table_exists(&conn) {
-            log::warn!("初始化审计日志表失败: {}", e);
-        }
-        if let Err(e) = crate::services::TrashService::ensure_trash_table_exists(&conn) {
-            log::warn!("初始化回收站表失败: {}", e);
-        }
-        if let Err(e) = crate::services::DashboardService::ensure_tables_exist(&conn) {
-            log::warn!("初始化仪表盘表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AppStateService::ensure_app_state_table_exists(&conn) {
-            log::warn!("初始化应用状态表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AppStateService::ensure_workspace_tables_exist(&conn) {
-            log::warn!("初始化工作区表失败: {}", e);
-        }
-
-        // 写入 audit log
-        let audit_request = crate::models::audit_log::RecordAuditLogRequest {
-            module: "project".to_string(),
-            action: "switch".to_string(),
-            description: format!("切换到项目: {}", project_name),
-            status: "success".to_string(),
-            duration_ms: None,
-            details: None,
-        };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
-        result_msg = format!("已切换到项目: {}", project_name);
-    }
-
-    Ok(result_msg)
-}
-
 /// 从指定路径打开数据库
 ///
 /// ⚠️ 与 `switch_project` 相同的约束：connect() 之前必须无任何 MutexGuardConnection 在作用域内。
 #[tauri::command]
-pub fn open_database_from_path(state: State<'_, TauriAppState>, db_path: String) -> Result<String, String> {
+pub fn open_database_from_path(
+    state: State<'_, TauriAppState>,
+    db_path: String,
+) -> Result<String, String> {
     let path = PathBuf::from(db_path.clone());
 
     if !path.exists() {
@@ -201,39 +511,14 @@ pub fn open_database_from_path(state: State<'_, TauriAppState>, db_path: String)
     state.db_manager.close_connection();
 
     // 3. 建立新连接
-    state.db_manager.connect("sqlite", &path).map_err(|e| e.to_string())?;
+    state.db_manager
+        .connect("sqlite", &path)
+        .map_err(|e| e.to_string())?;
 
-    // 4. 初始化新数据库的系统表 + 记录审计日志
-    //    （内层 scope 确保 conn 会被 drop 后才能再次调用 get_connection）
+    // 4. 初始化系统表 + 审计日志
     {
         let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-        if let Err(e) = crate::services::MigrationService::run_legacy_table_migrations(&conn) {
-            log::warn!("旧表名迁移失败: {}", e);
-        }
-        if let Err(e) = crate::services::SettingsService::ensure_settings_table_exists(&conn) {
-            log::warn!("初始化设置表失败: {}", e);
-        }
-        if let Err(e) = crate::services::TaskService::ensure_tables_exists(&conn) {
-            log::warn!("初始化自动化任务表失败: {}", e);
-        }
-        if let Err(e) = crate::services::QueryHistoryService::ensure_query_history_table_exists(&conn) {
-            log::warn!("初始化查询历史表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AuditLogService::ensure_audit_log_table_exists(&conn) {
-            log::warn!("初始化审计日志表失败: {}", e);
-        }
-        if let Err(e) = crate::services::TrashService::ensure_trash_table_exists(&conn) {
-            log::warn!("初始化回收站表失败: {}", e);
-        }
-        if let Err(e) = crate::services::DashboardService::ensure_tables_exist(&conn) {
-            log::warn!("初始化仪表盘表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AppStateService::ensure_app_state_table_exists(&conn) {
-            log::warn!("初始化应用状态表失败: {}", e);
-        }
-        if let Err(e) = crate::services::AppStateService::ensure_workspace_tables_exist(&conn) {
-            log::warn!("初始化工作区表失败: {}", e);
-        }
+        init_system_tables(&conn);
 
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
             module: "project".to_string(),
@@ -257,8 +542,7 @@ pub fn export_database(state: State<'_, TauriAppState>, dest_path: String) -> Re
     let dest = PathBuf::from(dest_path.clone());
 
     let result = ProjectService::export_database(&source_path, &dest)
-        .map(|_| format!("数据库已导出到: {}", dest.to_string_lossy()))
-        .map_err(|e| e.to_string());
+        .map(|_| format!("数据库已导出到: {}", dest.to_string_lossy()));
 
     if result.is_ok() {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -282,9 +566,13 @@ pub fn get_current_db_path(state: State<'_, TauriAppState>) -> Result<String, St
     Ok(path.to_string_lossy().to_string())
 }
 
-/// 批量导出选中的项目
+/// 批量导出选中的项目（按 ID）
 #[tauri::command]
-pub fn export_selected_projects(state: State<'_, TauriAppState>, selected_projects: Vec<String>, dest_dir: String) -> Result<Vec<String>, String> {
+pub fn export_selected_projects(
+    state: State<'_, TauriAppState>,
+    selected_project_ids: Vec<String>,
+    dest_dir: String,
+) -> Result<Vec<String>, String> {
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
     let dest_path = PathBuf::from(&dest_dir);
 
@@ -294,21 +582,15 @@ pub fn export_selected_projects(state: State<'_, TauriAppState>, selected_projec
 
     let mut exported_paths = Vec::new();
 
-    for project_name in &selected_projects {
-        let project_db_path = dirs::data_dir()
-            .ok_or("无法获取数据目录".to_string())?
-            .join("quickersql")
-            .join(&project_name)
-            .join("meta.db");
+    for project_id in &selected_project_ids {
+        let project_info = ProjectService::get_project_info(project_id)
+            .map_err(|e| format!("获取项目 '{}' 信息失败: {}", project_id, e))?;
 
-        if !project_db_path.exists() {
-            return Err(format!("项目 '{}' 的数据库不存在", project_name));
-        }
+        let safe_name = sanitize_filename(&project_info.name);
+        let export_file = dest_path.join(format!("{}.db", safe_name));
 
-        let export_file = dest_path.join(format!("{}.db", project_name));
-
-        ProjectService::export_database(&project_db_path, &export_file)
-            .map_err(|e| format!("导出项目 '{}' 失败: {}", project_name, e))?;
+        ProjectService::export_project(project_id, &export_file)
+            .map_err(|e| format!("导出项目 '{}' 失败: {}", project_id, e))?;
 
         exported_paths.push(export_file.to_string_lossy().to_string());
     }
@@ -316,10 +598,14 @@ pub fn export_selected_projects(state: State<'_, TauriAppState>, selected_projec
     let audit_request = crate::models::audit_log::RecordAuditLogRequest {
         module: "project".to_string(),
         action: "batch_export".to_string(),
-        description: format!("批量导出 {} 个项目到: {}", selected_projects.len(), dest_dir),
+        description: format!(
+            "批量导出 {} 个项目到: {}",
+            selected_project_ids.len(),
+            dest_dir
+        ),
         status: "success".to_string(),
         duration_ms: None,
-        details: Some(format!("projects={:?}", selected_projects)),
+        details: Some(format!("project_ids={:?}", selected_project_ids)),
     };
     let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
 

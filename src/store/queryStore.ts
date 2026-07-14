@@ -7,6 +7,7 @@ interface QueryState {
   activeQueryId: string;
   queryLoading: string | null;
   queryHistory: QueryHistoryItem[];
+  jumpToLine: number | null;
   
   setSqlQueries: (queries: SqlQuery[]) => void;
   addSqlQuery: () => void;
@@ -16,7 +17,9 @@ interface QueryState {
   setQueryLoading: (id: string | null) => void;
   setQueryResult: (id: string, result: QueryResult | null) => void;
   setBatchResults: (id: string, batchResults: SqlStatementResult[] | null) => void;
-  addToHistory: (sql: string, success?: boolean, rowCount?: number | null) => void;
+  setJumpToLine: (lineNumber: number | null) => void;
+  addToHistory: (sql: string, success?: boolean, rowCount?: number | null, maxSize?: number) => void;
+  trimHistory: (maxSize: number) => void;
   removeFromHistory: (id: string) => void;
   clearHistory: () => void;
 }
@@ -36,6 +39,7 @@ export const useQueryStore = create<QueryState>()(
       activeQueryId: '1',
       queryLoading: null,
       queryHistory: [],
+      jumpToLine: null,
 
       setSqlQueries: (queries) => set({ sqlQueries: queries }),
       
@@ -92,7 +96,9 @@ export const useQueryStore = create<QueryState>()(
         ),
       })),
       
-      addToHistory: (sql, success, rowCount) => set((state) => {
+      setJumpToLine: (lineNumber) => set({ jumpToLine: lineNumber }),
+      
+      addToHistory: (sql, success, rowCount, maxSize) => set((state) => {
         const newItem: QueryHistoryItem = {
           id: `history_${Date.now()}`,
           sql,
@@ -101,13 +107,20 @@ export const useQueryStore = create<QueryState>()(
           row_count: rowCount ?? null,
           is_favorite: false,
         };
-        // 移除重复的历史记录，保持最新的在前
+        const limit = maxSize ?? 100;
         const filtered = state.queryHistory.filter(h => h.sql !== sql);
         return {
-          queryHistory: [newItem, ...filtered].slice(0, 100), // 最多保留100条
+          queryHistory: [newItem, ...filtered].slice(0, limit),
         };
       }),
-      
+
+      trimHistory: (maxSize) => set((state) => {
+        if (state.queryHistory.length <= maxSize) return state;
+        return {
+          queryHistory: state.queryHistory.slice(0, maxSize),
+        };
+      }),
+
       removeFromHistory: (id) => set((state) => ({
         queryHistory: state.queryHistory.filter(h => h.id !== id),
       })),
@@ -118,7 +131,13 @@ export const useQueryStore = create<QueryState>()(
       name: 'quickersql-query',
       partialize: (state) => ({
         queryHistory: state.queryHistory,
-        sqlQueries: state.sqlQueries,
+        sqlQueries: state.sqlQueries.map((q) => ({
+          id: q.id,
+          name: q.name,
+          sql: q.sql,
+          result: null,
+          batchResults: null,
+        })),
         activeQueryId: state.activeQueryId,
       }),
     }

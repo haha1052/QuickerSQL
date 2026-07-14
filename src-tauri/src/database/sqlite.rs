@@ -5,6 +5,12 @@ use super::traits::*;
 
 pub struct SqliteDriver;
 
+impl Default for SqliteDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SqliteDriver {
     pub fn new() -> Self {
         SqliteDriver
@@ -31,11 +37,15 @@ impl DatabaseDriver for SqliteDriver {
         let conn = Connection::open_with_flags(path, flags)
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
+        // SQLite 连接配置
+        // busy_timeout 设置为 30 秒（对应 connectionTimeout 默认值）
+        // 这个值控制数据库被锁定时等待的时间
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA cache_size=-20000;
-             PRAGMA temp_store=MEMORY;"
+             PRAGMA temp_store=MEMORY;
+             PRAGMA busy_timeout=30000;"
         ).map_err(|e| DatabaseError::ConfigurationFailed(e.to_string()))?;
 
         Ok(Box::new(SqliteConnection {
@@ -56,11 +66,14 @@ impl DatabaseDriver for SqliteDriver {
         let conn = Connection::open_with_flags(path, flags)
             .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
 
+        // SQLite 连接配置
+        // busy_timeout 设置为 30 秒（对应 connectionTimeout 默认值）
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA cache_size=-20000;
-             PRAGMA temp_store=MEMORY;"
+             PRAGMA temp_store=MEMORY;
+             PRAGMA busy_timeout=30000;"
         ).map_err(|e| DatabaseError::ConfigurationFailed(e.to_string()))?;
 
         Ok(Box::new(SqliteConnection {

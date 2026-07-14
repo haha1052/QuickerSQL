@@ -1,15 +1,16 @@
 import React from 'react';
 import type { TabType } from '../../types';
-import { useAppContext } from '../../AppWrapper';
 import { SettingsIcon } from './Icons';
 import { useLocale } from '../../context/LocaleContext';
 import { windowService } from '../../services/tauri';
+import { useSettingsStore } from '../../store';
 
 interface HeaderProps {
   currentProject: string;
   activeTab: TabType;
   onProjectClick: () => void;
   onTabChange: (tab: TabType) => void;
+  onSettingsClick?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,12 +18,17 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   onProjectClick,
   onTabChange,
+  onSettingsClick,
 }) => {
-  const { goToSettings } = useAppContext();
+  const { openSettingsModal } = useSettingsStore();
   const { t } = useLocale();
 
   const handleGoToSettings = () => {
-    goToSettings();
+    if (onSettingsClick) {
+      onSettingsClick();
+    } else {
+      openSettingsModal();
+    }
   };
 
   const handleMinimize = (e: React.MouseEvent) => {
@@ -58,7 +64,7 @@ export const Header: React.FC<HeaderProps> = ({
           </svg>
           <span className="header-project-label">{t('header.project')}</span>
           <span className="header-project-name">
-            {currentProject || '未选择'}
+            {currentProject || t('header.noProject')}
           </span>
         </button>
 
@@ -89,7 +95,7 @@ export const Header: React.FC<HeaderProps> = ({
           className={activeTab === 'automation' ? 'header-tab header-tab-active' : 'header-tab'}
           onClick={() => onTabChange('automation')}
         >
-          自动化任务
+          {t('header.automation')}
         </button>
       </div>
 

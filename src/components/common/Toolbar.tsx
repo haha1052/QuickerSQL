@@ -256,75 +256,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     }
   };
 
-  // 记录历史 - 仅写入前端 store（后端 execute_sql 内部会自动持久化，避免重复记录）
-  const recordQueryHistoryToStore = (
-    sql: string,
-    success: boolean,
-    rowCount: number | null,
-    _errorMessage: string | null,
-    _name?: string | null,
-  ) => {
-    // 同步到前端 store （用于立即刷新查询历史面板）
-    useQueryStore.getState().addToHistory(sql, success, rowCount);
-  };
-
-  const handleRunQuery = async () => {
-    const { sqlQueries, activeQueryId } = useQueryStore.getState();
-    const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
-    
-    if (!activeQuery || !activeQuery.sql.trim()) {
-      setMessage(t('toolbar.pleaseEnterSQL'), 'warning');
-      return;
-    }
-
-    try {
-      const response = await tauriService.executeSql(activeQuery.sql);
-      
-      if (response.success && response.data) {
-        setMessage(t('toolbar.querySuccess'), 'success');
-        
-        const { setBatchResults } = useQueryStore.getState();
-        setBatchResults(activeQueryId, response.data.results);
-        
-        // 计算总行数
-        const totalRowCount = response.data.results
-          .filter((r) => r.success && r.rows)
-          .reduce((sum: number, r) => sum + (r.rows?.length ?? 0), 0);
-        
-        // 统一记录到历史（双重写入）
-        recordQueryHistoryToStore(
-          activeQuery.sql,
-          true,
-          totalRowCount || null,
-          null,
-          activeQuery.name
-        );
-      } else {
-        setMessage(`${t('toolbar.queryFail')}: ${response.error}`, 'error');
-        
-        // 统一记录到历史（失败情况）
-        recordQueryHistoryToStore(
-          activeQuery.sql,
-          false,
-          null,
-          response.error || null,
-          activeQuery.name
-        );
-      }
-    } catch (e) {
-      setMessage(`${t('toolbar.queryFail')}: ${String(e)}`, 'error');
-      
-      // 统一记录到历史（异常情况）
-      recordQueryHistoryToStore(
-        activeQuery.sql,
-        false,
-        null,
-        String(e),
-        activeQuery.name
-      );
-    }
-  };
-
   const handleOpenFile = async () => {
     try {
       const selected = await open({
@@ -338,8 +269,12 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       });
 
       if (selected) {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const content = await invoke<string>('read_text_file', { path: selected });
+        const result = await tauriService.readTextFile(selected);
+        if (!result.success || result.data === undefined) {
+          setMessage(`${t('common.error')}: ${result.error || 'Failed to read file'}`, 'error');
+          return;
+        }
+        const content = result.data;
         
         const { addSqlQuery, updateSqlQuery, setActiveQueryId } = useQueryStore.getState();
         addSqlQuery();
@@ -544,22 +479,16 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
   // 仪表盘 Tab：简洁工具栏（仅显示仪表盘相关操作）
   if (activeTab === 'dashboard') {
-    return (
-      <div style={styles.toolbar}>
-        <div style={styles.toolbarLeft}>
-          <span style={{ color: 'var(--text-secondary)', fontSize: '12px' }}>
-            📊 仪表盘模式
-          </span>
-        </div>
-        <div style={styles.toolbarRight}>
-        </div>
-      </div>
-    );
+    return null;
+  }
+
+  // 自动化任务 Tab：不显示工具栏
+  if (activeTab === 'automation') {
+    return null;
   }
 
   const toolbarStyle = compact ? styles.toolbarCompact : styles.sqlToolbar;
   const toolbarBtnStyle = compact ? styles.toolbarBtnCompact : styles.sqlToolbarBtn;
-  const toolbarBtnPrimaryStyle = compact ? styles.toolbarBtnPrimaryCompact : styles.sqlToolbarBtnPrimary;
   const dividerStyle = compact ? styles.divider : styles.sqlDivider;
   const iconSize = compact ? 14 : 14;
 
@@ -587,13 +516,6 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
         {!compact && <div style={dividerStyle} />}
 
-        <button style={toolbarBtnPrimaryStyle} onClick={handleRunQuery} title={t('toolbar.runQuery')}>
-          <PlayIcon size={iconSize} />
-          {!compact && <span style={styles.btnText}>{t('toolbar.run')}</span>}
-        </button>
-
-        {!compact && <div style={dividerStyle} />}
-
         <button
           style={toolbarBtnStyle}
           onClick={handleRefresh}
@@ -615,10 +537,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             ref={layoutButtonRef}
             style={toolbarBtnStyle}
             onClick={() => setLayoutMenuOpen(!layoutMenuOpen)}
-            title="布局"
+            title={t('common.layout')}
           >
             <GridIcon size={iconSize} />
-            {!compact && <span style={styles.btnText}>布局</span>}
+            {!compact && <span style={styles.btnText}>{t('common.layout')}</span>}
             <ChevronDownIcon size={12} />
           </button>
           {layoutMenuOpen && (
@@ -711,18 +633,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-primary)',
     transition: 'all 0.2s',
   },
-  toolbarBtnPrimaryCompact: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '4px 8px',
-    background: 'var(--primary)',
-    color: 'white',
-    border: '1px solid var(--primary)',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '12px',
-  },
   toolbarBtnActive: {
     background: 'var(--primary-bg)',
     borderColor: 'var(--primary)',
@@ -772,19 +682,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     color: 'var(--text-primary)',
     transition: 'all 0.2s',
-  },
-  sqlToolbarBtnPrimary: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    height: '24px',
-    padding: '0 10px',
-    background: 'var(--primary)',
-    color: 'white',
-    border: '1px solid var(--primary)',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '12px',
   },
   sqlDivider: {
     width: '1px',

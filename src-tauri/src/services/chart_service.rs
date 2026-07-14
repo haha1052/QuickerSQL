@@ -12,6 +12,12 @@ pub enum ChartType {
     StackedBar,    // 堆叠柱状图
     Area,          // 面积图
     Scatter,       // 散点图
+    HorizontalBar, // 条形图
+    Doughnut,      // 环形图
+    DualAxis,      // 双轴图
+    Radar,         // 雷达图
+    Funnel,        // 漏斗图
+    Gauge,         // 仪表盘
 }
 
 /// 数据列类型
@@ -58,6 +64,7 @@ pub struct EChartsConfig {
     pub series: Vec<EChartsSeries>,
     #[serde(rename = "dataZoom")]
     pub data_zoom: Option<Vec<EChartsDataZoom>>,
+    pub radar: Option<EChartsRadar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,10 +105,28 @@ pub struct EChartsSeries {
     pub name: String,
     #[serde(rename = "type")]
     pub series_type: String,
-    pub data: Vec<f64>,
+    pub data: serde_json::Value,
     pub stack: Option<String>,
     #[serde(rename = "areaStyle")]
     pub area_style: Option<serde_json::Value>,
+    pub radius: Option<Vec<String>>,
+    #[serde(rename = "yAxisIndex")]
+    pub y_axis_index: Option<i32>,
+    #[serde(rename = "itemStyle")]
+    pub item_style: Option<serde_json::Value>,
+    #[serde(rename = "axisLine")]
+    pub axis_line: Option<serde_json::Value>,
+    #[serde(rename = "pointer")]
+    pub pointer: Option<serde_json::Value>,
+    #[serde(rename = "detail")]
+    pub detail: Option<serde_json::Value>,
+    pub value: Option<f64>,
+    #[serde(rename = "splitLine")]
+    pub split_line: Option<serde_json::Value>,
+    #[serde(rename = "axisTick")]
+    pub axis_tick: Option<serde_json::Value>,
+    #[serde(rename = "axisLabel")]
+    pub axis_label: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +135,17 @@ pub struct EChartsDataZoom {
     pub zoom_type: String,
     pub start: f64,
     pub end: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EChartsRadar {
+    pub indicator: Vec<EChartsRadarIndicator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EChartsRadarIndicator {
+    pub name: String,
+    pub max: f64,
 }
 
 /// 图表服务
@@ -212,14 +248,19 @@ impl ChartService {
         if !category_columns.is_empty() && !numeric_columns.is_empty() {
             // 类别 + 数值 -> 推荐柱状图、饼图
             recommendations.push(ChartType::Bar);
+            recommendations.push(ChartType::HorizontalBar);
             recommendations.push(ChartType::Pie);
+            recommendations.push(ChartType::Doughnut);
             recommendations.push(ChartType::StackedBar);
             recommendations.push(ChartType::Line);
         }
 
         if numeric_columns.len() >= 2 {
-            // 多个数值列 -> 推荐散点图
+            // 多个数值列 -> 推荐散点图、双轴图
             recommendations.push(ChartType::Scatter);
+            if !category_columns.is_empty() {
+                recommendations.push(ChartType::DualAxis);
+            }
         }
 
         // 如果有日期列 -> 推荐折线图
@@ -233,6 +274,21 @@ impl ChartService {
         if has_datetime {
             recommendations.push(ChartType::Line);
             recommendations.push(ChartType::Area);
+        }
+
+        // 雷达图：有一个类别列 + 多个数值列（>=3个指标效果好）
+        if !category_columns.is_empty() && numeric_columns.len() >= 2 {
+            recommendations.push(ChartType::Radar);
+        }
+
+        // 漏斗图：有一个类别列 + 一个数值列
+        if category_columns.len() >= 1 && numeric_columns.len() >= 1 {
+            recommendations.push(ChartType::Funnel);
+        }
+
+        // 仪表盘：至少有一个数值列
+        if !numeric_columns.is_empty() {
+            recommendations.push(ChartType::Gauge);
         }
 
         // 默认推荐
@@ -252,7 +308,22 @@ impl ChartService {
             return Err("数据为空".to_string());
         }
 
-        // 找到X轴和Y轴列的索引
+        match config.chart_type {
+            ChartType::Radar => Self::generate_radar_config(data, config),
+            ChartType::Funnel => Self::generate_funnel_config(data, config),
+            ChartType::Gauge => Self::generate_gauge_config(data, config),
+            ChartType::Doughnut => Self::generate_doughnut_config(data, config),
+            ChartType::Pie => Self::generate_pie_config(data, config),
+            ChartType::DualAxis => Self::generate_dual_axis_config(data, config),
+            ChartType::HorizontalBar => Self::generate_horizontal_bar_config(data, config),
+            _ => Self::generate_standard_config(data, config),
+        }
+    }
+
+    fn generate_standard_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
         let x_axis_idx = data.columns.iter()
             .position(|c| c == &config.x_axis_column)
             .ok_or_else(|| format!("找不到X轴列: {}", config.x_axis_column))?;
@@ -265,12 +336,10 @@ impl ChartService {
             return Err("找不到Y轴列".to_string());
         }
 
-        // 获取X轴数据
         let x_axis_data: Vec<String> = data.rows.iter()
             .filter_map(|row| row.get(x_axis_idx).cloned())
             .collect();
 
-        // 生成series数据
         let mut series_list: Vec<EChartsSeries> = Vec::new();
 
         for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
@@ -293,18 +362,27 @@ impl ChartService {
                         ChartType::StackedBar => "bar",
                         ChartType::Area => "line",
                         ChartType::Scatter => "scatter",
+                        _ => "bar",
                     }.to_string(),
-                    data: series_data,
+                    data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
                     stack: None,
                     area_style: None,
+                    radius: None,
+                    y_axis_index: None,
+                    item_style: None,
+                    axis_line: None,
+                    pointer: None,
+                    detail: None,
+                    value: None,
+                    split_line: None,
+                    axis_tick: None,
+                    axis_label: None,
                 };
 
-                // 设置堆叠
                 if config.chart_type == ChartType::StackedBar {
                     series.stack = Some("total".to_string());
                 }
 
-                // 设置面积
                 if config.chart_type == ChartType::Area {
                     series.area_style = Some(serde_json::json!({}));
                 }
@@ -313,7 +391,6 @@ impl ChartService {
             }
         }
 
-        // 生成ECharts配置
         let echarts_config = EChartsConfig {
             title: EChartsTitle {
                 text: config.title.clone(),
@@ -346,10 +423,7 @@ impl ChartService {
                 name: config.x_axis_name.clone(),
             }],
             y_axis: vec![EChartsAxis {
-                axis_type: Some(match config.chart_type {
-                    ChartType::Scatter => "value",
-                    _ => "value",
-                }.to_string()),
+                axis_type: Some("value".to_string()),
                 data: None,
                 name: config.y_axis_name.clone(),
             }],
@@ -370,6 +444,582 @@ impl ChartService {
             } else {
                 None
             },
+            radar: None,
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_horizontal_bar_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let y_axis_idx = data.columns.iter()
+            .position(|c| c == &config.x_axis_column)
+            .ok_or_else(|| format!("找不到Y轴列: {}", config.x_axis_column))?;
+
+        let x_axis_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        if x_axis_indices.is_empty() {
+            return Err("找不到X轴列".to_string());
+        }
+
+        let y_axis_data: Vec<String> = data.rows.iter()
+            .filter_map(|row| row.get(y_axis_idx).cloned())
+            .collect();
+
+        let mut series_list: Vec<EChartsSeries> = Vec::new();
+
+        for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
+            let x_axis_idx_val = x_axis_indices.get(idx).copied();
+
+            if let Some(x_idx) = x_axis_idx_val {
+                let series_data: Vec<f64> = data.rows.iter()
+                    .filter_map(|row| {
+                        row.get(x_idx)
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                    })
+                    .collect();
+
+                let series = EChartsSeries {
+                    name: y_col.clone(),
+                    series_type: "bar".to_string(),
+                    data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
+                    stack: None,
+                    area_style: None,
+                    radius: None,
+                    y_axis_index: None,
+                    item_style: None,
+                    axis_line: None,
+                    pointer: None,
+                    detail: None,
+                    value: None,
+                    split_line: None,
+                    axis_tick: None,
+                    axis_label: None,
+                };
+
+                series_list.push(series);
+            }
+        }
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "axis".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: config.y_axis_columns.clone(),
+                top: "30".to_string(),
+            },
+            x_axis: vec![EChartsAxis {
+                axis_type: Some("value".to_string()),
+                data: None,
+                name: config.y_axis_name.clone(),
+            }],
+            y_axis: vec![EChartsAxis {
+                axis_type: Some("category".to_string()),
+                data: Some(y_axis_data),
+                name: config.x_axis_name.clone(),
+            }],
+            series: series_list,
+            data_zoom: if config.show_datazoom && data.rows.len() > 20 {
+                Some(vec![
+                    EChartsDataZoom {
+                        zoom_type: "inside".to_string(),
+                        start: 0.0,
+                        end: 100.0,
+                    },
+                    EChartsDataZoom {
+                        zoom_type: "slider".to_string(),
+                        start: 0.0,
+                        end: 100.0,
+                    },
+                ])
+            } else {
+                None
+            },
+            radar: None,
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_pie_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let name_idx = data.columns.iter()
+            .position(|c| c == &config.x_axis_column)
+            .ok_or_else(|| format!("找不到名称列: {}", config.x_axis_column))?;
+
+        let value_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        if value_indices.is_empty() {
+            return Err("找不到数值列".to_string());
+        }
+
+        let first_value_idx = value_indices.first().copied()
+            .ok_or_else(|| "没有数值列".to_string())?;
+
+        let pie_data: Vec<serde_json::Value> = data.rows.iter()
+            .filter_map(|row| {
+                let name = row.get(name_idx).cloned()?;
+                let value = row.get(first_value_idx)
+                    .and_then(|v| v.trim().parse::<f64>().ok())?;
+                Some(serde_json::json!({
+                    "name": name,
+                    "value": value
+                }))
+            })
+            .collect();
+
+        let series = EChartsSeries {
+            name: config.y_axis_columns.first().cloned().unwrap_or_default(),
+            series_type: "pie".to_string(),
+            data: serde_json::to_value(&pie_data).map_err(|e| e.to_string())?,
+            stack: None,
+            area_style: None,
+            radius: Some(vec!["0%".to_string(), "70%".to_string()]),
+            y_axis_index: None,
+            item_style: None,
+            axis_line: None,
+            pointer: None,
+            detail: None,
+            value: None,
+            split_line: None,
+            axis_tick: None,
+            axis_label: None,
+        };
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "item".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: config.y_axis_columns.clone(),
+                top: "30".to_string(),
+            },
+            x_axis: vec![],
+            y_axis: vec![],
+            series: vec![series],
+            data_zoom: None,
+            radar: None,
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_doughnut_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let mut pie_config = Self::generate_pie_config(data, config)?;
+        if let Some(series) = pie_config.series.first_mut() {
+            series.radius = Some(vec!["40%".to_string(), "70%".to_string()]);
+        }
+        Ok(pie_config)
+    }
+
+    fn generate_dual_axis_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let x_axis_idx = data.columns.iter()
+            .position(|c| c == &config.x_axis_column)
+            .ok_or_else(|| format!("找不到X轴列: {}", config.x_axis_column))?;
+
+        let y_axis_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        if y_axis_indices.len() < 2 {
+            return Err("双轴图需要至少2个数值列".to_string());
+        }
+
+        let x_axis_data: Vec<String> = data.rows.iter()
+            .filter_map(|row| row.get(x_axis_idx).cloned())
+            .collect();
+
+        let mut series_list: Vec<EChartsSeries> = Vec::new();
+
+        for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
+            let y_axis_idx = y_axis_indices.get(idx).copied();
+
+            if let Some(y_idx) = y_axis_idx {
+                let series_data: Vec<f64> = data.rows.iter()
+                    .filter_map(|row| {
+                        row.get(y_idx)
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                    })
+                    .collect();
+
+                let is_first = idx == 0;
+                let series = EChartsSeries {
+                    name: y_col.clone(),
+                    series_type: if is_first { "bar".to_string() } else { "line".to_string() },
+                    data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
+                    stack: None,
+                    area_style: None,
+                    radius: None,
+                    y_axis_index: Some(if is_first { 0 } else { 1 }),
+                    item_style: None,
+                    axis_line: None,
+                    pointer: None,
+                    detail: None,
+                    value: None,
+                    split_line: None,
+                    axis_tick: None,
+                    axis_label: None,
+                };
+
+                series_list.push(series);
+            }
+        }
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "axis".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: config.y_axis_columns.clone(),
+                top: "30".to_string(),
+            },
+            x_axis: vec![EChartsAxis {
+                axis_type: Some("category".to_string()),
+                data: Some(x_axis_data),
+                name: config.x_axis_name.clone(),
+            }],
+            y_axis: vec![
+                EChartsAxis {
+                    axis_type: Some("value".to_string()),
+                    data: None,
+                    name: config.y_axis_columns.first().cloned(),
+                },
+                EChartsAxis {
+                    axis_type: Some("value".to_string()),
+                    data: None,
+                    name: config.y_axis_columns.get(1).cloned(),
+                },
+            ],
+            series: series_list,
+            data_zoom: if config.show_datazoom && data.rows.len() > 20 {
+                Some(vec![
+                    EChartsDataZoom {
+                        zoom_type: "inside".to_string(),
+                        start: 0.0,
+                        end: 100.0,
+                    },
+                    EChartsDataZoom {
+                        zoom_type: "slider".to_string(),
+                        start: 0.0,
+                        end: 100.0,
+                    },
+                ])
+            } else {
+                None
+            },
+            radar: None,
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_radar_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let indicator_col_idx = data.columns.iter()
+            .position(|c| c == &config.x_axis_column)
+            .ok_or_else(|| format!("找不到指标名列: {}", config.x_axis_column))?;
+
+        let value_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        if value_indices.is_empty() {
+            return Err("找不到数值列".to_string());
+        }
+
+        let indicators: Vec<EChartsRadarIndicator> = data.rows.iter()
+            .filter_map(|row| {
+                let name = row.get(indicator_col_idx).cloned()?;
+                let mut max_val = 0.0f64;
+                for &v_idx in &value_indices {
+                    if let Some(v) = row.get(v_idx)
+                        .and_then(|v| v.trim().parse::<f64>().ok())
+                    {
+                        if v > max_val {
+                            max_val = v;
+                        }
+                    }
+                }
+                let max = if max_val > 0.0 {
+                    max_val * 1.2
+                } else {
+                    100.0
+                };
+                Some(EChartsRadarIndicator { name, max })
+            })
+            .collect();
+
+        let mut series_list: Vec<EChartsSeries> = Vec::new();
+
+        for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
+            let v_idx = value_indices.get(idx).copied();
+
+            if let Some(col_idx) = v_idx {
+                let series_values: Vec<f64> = data.rows.iter()
+                    .filter_map(|row| {
+                        row.get(col_idx)
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                    })
+                    .collect();
+
+                let series = EChartsSeries {
+                    name: y_col.clone(),
+                    series_type: "radar".to_string(),
+                    data: serde_json::to_value(&[serde_json::json!({
+                        "value": series_values,
+                        "name": y_col
+                    })]).map_err(|e| e.to_string())?,
+                    stack: None,
+                    area_style: None,
+                    radius: None,
+                    y_axis_index: None,
+                    item_style: None,
+                    axis_line: None,
+                    pointer: None,
+                    detail: None,
+                    value: None,
+                    split_line: None,
+                    axis_tick: None,
+                    axis_label: None,
+                };
+
+                series_list.push(series);
+            }
+        }
+
+        let legend_data: Vec<String> = config.y_axis_columns.clone();
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "item".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: legend_data,
+                top: "30".to_string(),
+            },
+            x_axis: vec![],
+            y_axis: vec![],
+            series: series_list,
+            data_zoom: None,
+            radar: Some(EChartsRadar { indicator: indicators }),
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_funnel_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let name_idx = data.columns.iter()
+            .position(|c| c == &config.x_axis_column)
+            .ok_or_else(|| format!("找不到阶段列: {}", config.x_axis_column))?;
+
+        let value_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        let first_value_idx = value_indices.first().copied()
+            .ok_or_else(|| "找不到数值列".to_string())?;
+
+        let funnel_data: Vec<serde_json::Value> = data.rows.iter()
+            .filter_map(|row| {
+                let name = row.get(name_idx).cloned()?;
+                let value = row.get(first_value_idx)
+                    .and_then(|v| v.trim().parse::<f64>().ok())?;
+                Some(serde_json::json!({
+                    "name": name,
+                    "value": value
+                }))
+            })
+            .collect();
+
+        let series = EChartsSeries {
+            name: config.y_axis_columns.first().cloned().unwrap_or_default(),
+            series_type: "funnel".to_string(),
+            data: serde_json::to_value(&funnel_data).map_err(|e| e.to_string())?,
+            stack: None,
+            area_style: None,
+            radius: None,
+            y_axis_index: None,
+            item_style: Some(serde_json::json!({
+                "borderColor": "#fff",
+                "borderWidth": 2
+            })),
+            axis_line: None,
+            pointer: None,
+            detail: None,
+            value: None,
+            split_line: None,
+            axis_tick: None,
+            axis_label: None,
+        };
+
+        let legend_names: Vec<String> = data.rows.iter()
+            .filter_map(|row| row.get(name_idx).cloned())
+            .collect();
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "item".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: legend_names,
+                top: "30".to_string(),
+            },
+            x_axis: vec![],
+            y_axis: vec![],
+            series: vec![series],
+            data_zoom: None,
+            radar: None,
+        };
+
+        Ok(echarts_config)
+    }
+
+    fn generate_gauge_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let value_indices: Vec<usize> = config.y_axis_columns.iter()
+            .filter_map(|col| data.columns.iter().position(|c| c == col))
+            .collect();
+
+        let first_value_idx = value_indices.first().copied()
+            .ok_or_else(|| "找不到数值列".to_string())?;
+
+        let first_value = data.rows.first()
+            .and_then(|row| row.get(first_value_idx))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .ok_or_else(|| "无法读取仪表盘数值".to_string())?;
+
+        let series = EChartsSeries {
+            name: config.y_axis_columns.first().cloned().unwrap_or_default(),
+            series_type: "gauge".to_string(),
+            data: serde_json::Value::Array(vec![]),
+            stack: None,
+            area_style: None,
+            radius: None,
+            y_axis_index: None,
+            item_style: None,
+            axis_line: Some(serde_json::json!({
+                "lineStyle": {
+                    "width": 30,
+                    "color": [
+                        [0.3, "#67e8f9"],
+                        [0.7, "#fbbf24"],
+                        [1.0, "#ef4444"]
+                    ]
+                }
+            })),
+            pointer: Some(serde_json::json!({
+                "itemStyle": {
+                    "color": "auto"
+                }
+            })),
+            detail: Some(serde_json::json!({
+                "valueAnimation": true,
+                "formatter": "{value}",
+                "color": "inherit",
+                "fontSize": 30,
+                "offsetCenter": [0, "60%"]
+            })),
+            value: Some(first_value),
+            split_line: Some(serde_json::json!({
+                "distance": -30,
+                "length": 8,
+                "lineStyle": {
+                    "color": "#fff",
+                    "width": 2
+                }
+            })),
+            axis_tick: Some(serde_json::json!({
+                "distance": -30,
+                "length": 4,
+                "lineStyle": {
+                    "color": "#fff",
+                    "width": 1
+                }
+            })),
+            axis_label: Some(serde_json::json!({
+                "distance": -20,
+                "color": "#fff",
+                "fontSize": 12
+            })),
+        };
+
+        let echarts_config = EChartsConfig {
+            title: EChartsTitle {
+                text: config.title.clone(),
+                left: "center".to_string(),
+            },
+            tooltip: EChartsTooltip {
+                trigger: "item".to_string(),
+                axis_pointer: EChartsAxisPointer {
+                    pointer_type: "shadow".to_string(),
+                },
+            },
+            legend: EChartsLegend {
+                data: vec![],
+                top: "30".to_string(),
+            },
+            x_axis: vec![],
+            y_axis: vec![],
+            series: vec![series],
+            data_zoom: None,
+            radar: None,
         };
 
         Ok(echarts_config)
@@ -476,5 +1126,266 @@ mod tests {
 
         let result = ChartService::quick_generate(columns, rows);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_horizontal_bar_chart() {
+        let columns = vec![
+            "城市".to_string(),
+            "销量".to_string(),
+        ];
+        let rows = vec![
+            vec!["北京".to_string(), "100".to_string()],
+            vec!["上海".to_string(), "200".to_string()],
+            vec!["广州".to_string(), "150".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::HorizontalBar,
+            x_axis_column: "城市".to_string(),
+            y_axis_columns: vec!["销量".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: false,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert_eq!(echarts.y_axis.len(), 1);
+        assert_eq!(echarts.y_axis[0].axis_type.as_deref(), Some("category"));
+        assert_eq!(echarts.x_axis.len(), 1);
+        assert_eq!(echarts.x_axis[0].axis_type.as_deref(), Some("value"));
+        assert_eq!(echarts.series.len(), 1);
+        assert_eq!(echarts.series[0].series_type, "bar");
+    }
+
+    #[test]
+    fn test_doughnut_chart() {
+        let columns = vec![
+            "品类".to_string(),
+            "销售额".to_string(),
+        ];
+        let rows = vec![
+            vec!["电子产品".to_string(), "1000".to_string()],
+            vec!["服装".to_string(), "500".to_string()],
+            vec!["食品".to_string(), "300".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::Doughnut,
+            x_axis_column: "品类".to_string(),
+            y_axis_columns: vec!["销售额".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: true,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert_eq!(echarts.series.len(), 1);
+        assert_eq!(echarts.series[0].series_type, "pie");
+        assert!(echarts.series[0].radius.is_some());
+        let radius = echarts.series[0].radius.as_ref().unwrap();
+        assert_eq!(radius.len(), 2);
+        assert_eq!(radius[0], "40%");
+        assert_eq!(radius[1], "70%");
+    }
+
+    #[test]
+    fn test_dual_axis_chart() {
+        let columns = vec![
+            "月份".to_string(),
+            "销量".to_string(),
+            "利润".to_string(),
+        ];
+        let rows = vec![
+            vec!["1月".to_string(), "100".to_string(), "30".to_string()],
+            vec!["2月".to_string(), "200".to_string(), "60".to_string()],
+            vec!["3月".to_string(), "150".to_string(), "45".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::DualAxis,
+            x_axis_column: "月份".to_string(),
+            y_axis_columns: vec!["销量".to_string(), "利润".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: true,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert_eq!(echarts.y_axis.len(), 2);
+        assert_eq!(echarts.series.len(), 2);
+        assert_eq!(echarts.series[0].series_type, "bar");
+        assert_eq!(echarts.series[1].series_type, "line");
+        assert_eq!(echarts.series[0].y_axis_index, Some(0));
+        assert_eq!(echarts.series[1].y_axis_index, Some(1));
+    }
+
+    #[test]
+    fn test_radar_chart() {
+        let columns = vec![
+            "指标".to_string(),
+            "产品A".to_string(),
+            "产品B".to_string(),
+        ];
+        let rows = vec![
+            vec!["销售".to_string(), "80".to_string(), "90".to_string()],
+            vec!["管理".to_string(), "70".to_string(), "85".to_string()],
+            vec!["技术".to_string(), "90".to_string(), "75".to_string()],
+            vec!["服务".to_string(), "85".to_string(), "80".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::Radar,
+            x_axis_column: "指标".to_string(),
+            y_axis_columns: vec!["产品A".to_string(), "产品B".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: true,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert!(echarts.radar.is_some());
+        let radar = echarts.radar.unwrap();
+        assert_eq!(radar.indicator.len(), 4);
+        assert_eq!(echarts.series.len(), 2);
+        assert_eq!(echarts.series[0].series_type, "radar");
+    }
+
+    #[test]
+    fn test_funnel_chart() {
+        let columns = vec![
+            "阶段".to_string(),
+            "人数".to_string(),
+        ];
+        let rows = vec![
+            vec!["访问".to_string(), "1000".to_string()],
+            vec!["咨询".to_string(), "500".to_string()],
+            vec!["订单".to_string(), "200".to_string()],
+            vec!["成交".to_string(), "100".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::Funnel,
+            x_axis_column: "阶段".to_string(),
+            y_axis_columns: vec!["人数".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: true,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert_eq!(echarts.series.len(), 1);
+        assert_eq!(echarts.series[0].series_type, "funnel");
+    }
+
+    #[test]
+    fn test_gauge_chart() {
+        let columns = vec![
+            "完成率".to_string(),
+        ];
+        let rows = vec![
+            vec!["75.5".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::Gauge,
+            x_axis_column: "完成率".to_string(),
+            y_axis_columns: vec!["完成率".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: false,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_ok());
+
+        let echarts = result.unwrap();
+        assert_eq!(echarts.series.len(), 1);
+        assert_eq!(echarts.series[0].series_type, "gauge");
+        assert_eq!(echarts.series[0].value, Some(75.5));
+        assert!(echarts.series[0].axis_line.is_some());
+    }
+
+    #[test]
+    fn test_recommend_includes_new_charts() {
+        let columns = vec![
+            "类别".to_string(),
+            "数值1".to_string(),
+            "数值2".to_string(),
+            "数值3".to_string(),
+        ];
+        let rows = vec![
+            vec!["A".to_string(), "10".to_string(), "20".to_string(), "30".to_string()],
+            vec!["B".to_string(), "15".to_string(), "25".to_string(), "35".to_string()],
+            vec!["C".to_string(), "12".to_string(), "22".to_string(), "32".to_string()],
+        ];
+
+        let recommendations = ChartService::recommend_chart_type(&columns, &rows);
+        assert!(recommendations.contains(&ChartType::HorizontalBar));
+        assert!(recommendations.contains(&ChartType::Doughnut));
+        assert!(recommendations.contains(&ChartType::DualAxis));
+        assert!(recommendations.contains(&ChartType::Radar));
+        assert!(recommendations.contains(&ChartType::Funnel));
+        assert!(recommendations.contains(&ChartType::Gauge));
+    }
+
+    #[test]
+    fn test_dual_axis_needs_two_numeric_columns() {
+        let columns = vec![
+            "类别".to_string(),
+            "数值1".to_string(),
+        ];
+        let rows = vec![
+            vec!["A".to_string(), "10".to_string()],
+            vec!["B".to_string(), "15".to_string()],
+        ];
+
+        let config = ChartConfig {
+            chart_type: ChartType::DualAxis,
+            x_axis_column: "类别".to_string(),
+            y_axis_columns: vec!["数值1".to_string()],
+            title: None,
+            x_axis_name: None,
+            y_axis_name: None,
+            show_legend: false,
+            show_datazoom: false,
+        };
+
+        let data = ChartData { columns, rows };
+        let result = ChartService::to_echarts_config(&data, &config);
+        assert!(result.is_err());
     }
 }

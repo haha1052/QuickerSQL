@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FileQueue } from './FileQueue';
 import { DataPreview } from './DataPreview';
@@ -12,6 +12,8 @@ import type { ImportItem } from '../../types';
 interface DataImportProps {
   onImportComplete?: () => void;
 }
+
+const SUPPORTED_EXTENSIONS = ['csv', 'xlsx', 'xls', 'json', 'jsonl', 'parquet', 'txt'];
 
 export const DataImport: React.FC<DataImportProps> = ({
   onImportComplete,
@@ -27,15 +29,23 @@ export const DataImport: React.FC<DataImportProps> = ({
   // 获取数据导入设置
   const [skipEmptyRows] = useSetting('import', 'skipEmptyRows');
   const [firstRowAsHeader] = useSetting('import', 'firstRowAsHeader');
+  const [autoDetectEncoding] = useSetting('import', 'autoDetectEncoding');
+  const [defaultEncoding] = useSetting('import', 'defaultEncoding');
+  const [importBatchSize] = useSetting('import', 'importBatchSize');
+  const [maxImportFileSize] = useSetting('import', 'maxImportFileSize');
   
   const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
+  const isProcessingDrop = useRef(false);
+  const lastDropTimestamp = useRef(0);
+  const processFilePathsRef = useRef<((filePaths: string[]) => Promise<void>) | null>(null);
 
   const handleFileSelect = (id: string) => {
     setActiveImportItemId(id);
   };
 
   const generateTableName = (fileName: string, sheetName?: string): string => {
-    const baseName = fileName.replace(/\.(csv|xlsx?|xls)$/i, '');
+    const baseName = fileName.replace(/\.(csv|xlsx?|xls|json|jsonl|parquet|txt)$/i, '');
     if (sheetName) {
       return `${baseName}_${sheetName}`;
     }
@@ -44,7 +54,12 @@ export const DataImport: React.FC<DataImportProps> = ({
 
   const loadCsvFile = async (filePath: string, fileName: string): Promise<ImportItem | null> => {
     try {
-      const response = await tauriService.loadCsv(filePath);
+      const batchSizeNum = parseInt(importBatchSize || '1000', 10);
+      const response = await tauriService.loadCsv(filePath, {
+        autoDetectEncoding: autoDetectEncoding === 'true',
+        defaultEncoding,
+        batchSize: isNaN(batchSizeNum) ? undefined : batchSizeNum,
+      });
       if (response.success && response.data) {
         const id = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         
@@ -81,7 +96,8 @@ export const DataImport: React.FC<DataImportProps> = ({
         };
       }
     } catch (e) {
-      setMessage(`${t('import.loadCSVFail')}: ${String(e)}`, 'error');
+      console.error('[DataImport] Failed to load CSV file:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
     }
     return null;
   };
@@ -159,31 +175,187 @@ export const DataImport: React.FC<DataImportProps> = ({
 
       return items;
     } catch (e) {
-      setMessage(`${t('import.loadExcelFail')}: ${String(e)}`, 'error');
+      console.error('[DataImport] Failed to load Excel file:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
       return [];
     }
   };
 
-  const handleAddFiles = async () => {
+  const loadJsonFile = async (filePath: string, fileName: string): Promise<ImportItem | null> => {
     try {
-      const selected = await open({
-        multiple: true,
-        filters: [
-          {
-            name: t('toolbar.dataFiles'),
-            extensions: ['csv', 'xlsx', 'xls'],
+      const response = await tauriService.loadJson(filePath);
+      if (response.success && response.data) {
+        const id = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        let rows = response.data.rows;
+        if (skipEmptyRows === 'true') {
+          rows = rows.filter((row: string[]) => row.some((cell) => cell.trim() !== ''));
+        }
+        
+        const hasHeader = firstRowAsHeader === 'true';
+        let headers = hasHeader 
+          ? (response.data.headers || []) 
+          : (response.data.headers.length > 0 
+              ? response.data.headers.map((_, i) => `column_${i + 1}`) 
+              : rows[0]?.map((_, i) => `column_${i + 1}`) || []);
+        
+        return {
+          id,
+          fileType: 'json',
+          filePath,
+          fileName,
+          preview: {
+            headers: response.data.headers || [],
+            rows,
           },
-        ],
-      });
+          hasHeader,
+          tableName: generateTableName(fileName),
+          fields: headers.map((name: string) => ({
+            name: name || `col_${headers.indexOf(name) + 1}`,
+            dataType: 'TEXT' as const,
+          })),
+          selected: true,
+          status: 'idle',
+          isParent: false,
+        };
+      }
+    } catch (e) {
+      console.error('[DataImport] Failed to load JSON file:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+    }
+    return null;
+  };
 
-      if (!selected) return;
+  const loadParquetFile = async (filePath: string, fileName: string): Promise<ImportItem | null> => {
+    try {
+      const response = await tauriService.loadParquet(filePath);
+      if (response.success && response.data) {
+        const id = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        let rows = response.data.rows;
+        if (skipEmptyRows === 'true') {
+          rows = rows.filter((row: string[]) => row.some((cell) => cell.trim() !== ''));
+        }
+        
+        const hasHeader = firstRowAsHeader === 'true';
+        let headers = hasHeader 
+          ? (response.data.headers || []) 
+          : (response.data.headers.length > 0 
+              ? response.data.headers.map((_, i) => `column_${i + 1}`) 
+              : rows[0]?.map((_, i) => `column_${i + 1}`) || []);
+        
+        return {
+          id,
+          fileType: 'parquet',
+          filePath,
+          fileName,
+          preview: {
+            headers: response.data.headers || [],
+            rows,
+          },
+          hasHeader,
+          tableName: generateTableName(fileName),
+          fields: headers.map((name: string) => ({
+            name: name || `col_${headers.indexOf(name) + 1}`,
+            dataType: 'TEXT' as const,
+          })),
+          selected: true,
+          status: 'idle',
+          isParent: false,
+        };
+      }
+    } catch (e) {
+      console.error('[DataImport] Failed to load Parquet file:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+    }
+    return null;
+  };
 
-      const files = Array.isArray(selected) ? selected : [selected];
+  const loadTxtFile = async (filePath: string, fileName: string): Promise<ImportItem | null> => {
+    try {
+      const response = await tauriService.loadTxt(filePath);
+      if (response.success && response.data) {
+        const id = `import_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        let rows = response.data.rows;
+        if (skipEmptyRows === 'true') {
+          rows = rows.filter((row: string[]) => row.some((cell) => cell.trim() !== ''));
+        }
+        
+        const hasHeader = firstRowAsHeader === 'true';
+        let headers = hasHeader 
+          ? (response.data.headers || []) 
+          : (response.data.headers.length > 0 
+              ? response.data.headers.map((_, i) => `column_${i + 1}`) 
+              : rows[0]?.map((_, i) => `column_${i + 1}`) || []);
+        
+        return {
+          id,
+          fileType: 'txt',
+          filePath,
+          fileName,
+          preview: {
+            headers: response.data.headers || [],
+            rows,
+          },
+          hasHeader,
+          tableName: generateTableName(fileName),
+          fields: headers.map((name: string) => ({
+            name: name || `col_${headers.indexOf(name) + 1}`,
+            dataType: 'TEXT' as const,
+          })),
+          selected: true,
+          status: 'idle',
+          isParent: false,
+          delimiter: '',
+        };
+      }
+    } catch (e) {
+      console.error('[DataImport] Failed to load TXT file:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+    }
+    return null;
+  };
+
+  const processFilePaths = useCallback(async (filePaths: string[]) => {
+    const now = Date.now();
+    if (now - lastDropTimestamp.current < 200) return;
+    if (isProcessingDrop.current) return;
+    if (filePaths.length === 0) return;
+
+    const existingPaths = new Set(importItems.map((item) => item.filePath));
+    const uniquePaths = filePaths.filter((path) => !existingPaths.has(path));
+    if (uniquePaths.length === 0) return;
+
+    lastDropTimestamp.current = now;
+    isProcessingDrop.current = true;
+
+    try {
+      const maxFileSizeNum = parseInt(maxImportFileSize || '100', 10);
+      const maxFileSizeBytes = isNaN(maxFileSizeNum) ? 100 * 1024 * 1024 : maxFileSizeNum * 1024 * 1024;
       const newItems: ImportItem[] = [];
 
-      for (const filePath of files) {
+      for (const filePath of uniquePaths) {
         const fileName = filePath.split(/[\\/]/).pop() || 'unknown';
         const extension = fileName.split('.').pop()?.toLowerCase();
+
+        if (!SUPPORTED_EXTENSIONS.includes(extension || '')) {
+          continue;
+        }
+
+        // 检查文件大小
+        try {
+          const metaResult = await tauriService.getFileMetadata(filePath);
+          if (metaResult.success && metaResult.data) {
+            if (metaResult.data.size > maxFileSizeBytes) {
+              const fileSizeMB = (metaResult.data.size / (1024 * 1024)).toFixed(2);
+              setMessage(`文件 "${fileName}" 过大（${fileSizeMB}MB），超过最大限制 ${maxFileSizeNum}MB，请拆分文件后再导入`, 'error');
+              continue;
+            }
+          }
+        } catch (e) {
+          console.warn('[DataImport] Failed to get file metadata:', e);
+        }
 
         if (extension === 'csv') {
           const item = await loadCsvFile(filePath, fileName);
@@ -191,6 +363,15 @@ export const DataImport: React.FC<DataImportProps> = ({
         } else if (['xlsx', 'xls'].includes(extension || '')) {
           const items = await loadExcelFile(filePath, fileName);
           newItems.push(...items);
+        } else if (['json', 'jsonl'].includes(extension || '')) {
+          const item = await loadJsonFile(filePath, fileName);
+          if (item) newItems.push(item);
+        } else if (extension === 'parquet') {
+          const item = await loadParquetFile(filePath, fileName);
+          if (item) newItems.push(item);
+        } else if (extension === 'txt') {
+          const item = await loadTxtFile(filePath, fileName);
+          if (item) newItems.push(item);
         }
       }
 
@@ -203,9 +384,45 @@ export const DataImport: React.FC<DataImportProps> = ({
         setMessage(t('import.addedFiles', { count: newItems.filter(i => !i.isParent).length }), 'success');
       }
     } catch (e) {
-      setMessage(`${t('import.selectFileFail')}: ${String(e)}`, 'error');
+      console.error('[DataImport] Failed to process file paths:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+    } finally {
+      isProcessingDrop.current = false;
+    }
+  }, [setMessage, maxImportFileSize, loadCsvFile, loadExcelFile, loadJsonFile, loadParquetFile, loadTxtFile, addImportItems, setActiveImportItemId, t, importItems]);
+
+  useEffect(() => {
+    processFilePathsRef.current = processFilePaths;
+  }, [processFilePaths]);
+
+  const handleAddFiles = async () => {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [
+          {
+            name: t('toolbar.dataFiles'),
+            extensions: SUPPORTED_EXTENSIONS,
+          },
+        ],
+      });
+
+      if (!selected) return;
+
+      const files = Array.isArray(selected) ? selected : [selected];
+      await processFilePaths(files);
+    } catch (e) {
+      console.error('[DataImport] Failed to select files:', e);
+      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
     }
   };
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current += 1;
+    setIsDragging(true);
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -216,23 +433,53 @@ export const DataImport: React.FC<DataImportProps> = ({
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    }
   }, []);
 
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
+  const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    dragCounter.current = 0;
     setIsDragging(false);
+    // 文件处理统一交给 Tauri 原生拖放事件监听器，避免 DOM onDrop 与原生事件重复处理。
+  }, []);
 
-    // 由于浏览器安全限制，无法直接获取拖拽文件的真实路径
-    // 提示用户使用文件选择对话框
-    setMessage(t('import.useAddButtonHint'), 'info');
-  }, [setMessage]);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    tauriService
+      .onDragDropEvent((paths) => {
+        if (paths.length > 0) {
+          void processFilePathsRef.current?.(paths);
+        }
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch((e) => {
+        console.error('[DataImport] Failed to register native drag-drop listener:', e);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   if (importItems.length === 0) {
     return (
       <div
         style={styles.emptyContainer}
+        onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -244,12 +491,13 @@ export const DataImport: React.FC<DataImportProps> = ({
           }}
           onClick={handleAddFiles}
         >
-          <UploadIcon size={48} color={isDragging ? 'var(--primary)' : 'var(--text-tertiary)'} />
+          <div style={styles.emptyImportIcon}>📥</div>
+          <div style={styles.emptyImportTitle}>{t('import.noTasks')}</div>
+          <div style={styles.emptyImportDesc}>{t('import.selectFileHint')}</div>
           <div style={styles.addButton}>
             <FilePlusIcon size={18} />
-            <span>{t('import.addFile')}</span>
+            <span>选择文件</span>
           </div>
-          <p style={styles.dropText}>{t('import.clickToAdd')}</p>
           <p style={styles.supportedFormats}>{t('import.supportedFormats')}</p>
         </div>
       </div>
@@ -258,7 +506,11 @@ export const DataImport: React.FC<DataImportProps> = ({
 
   return (
     <div
-      style={styles.container}
+      style={{
+        ...styles.container,
+        ...(isDragging ? styles.containerActive : {}),
+      }}
+      onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -282,6 +534,10 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     position: 'relative',
   },
+  containerActive: {
+    boxShadow: 'inset 0 0 0 3px var(--primary)',
+    background: 'var(--primary-bg)',
+  },
   emptyContainer: {
     flex: 1,
     display: 'flex',
@@ -303,6 +559,22 @@ const styles: Record<string, React.CSSProperties> = {
   dropZoneActive: {
     borderColor: 'var(--primary)',
     background: 'var(--primary-bg)',
+  },
+  emptyImportIcon: {
+    fontSize: '48px',
+    marginBottom: '8px',
+  },
+  emptyImportTitle: {
+    fontSize: '20px',
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+    marginTop: '8px',
+  },
+  emptyImportDesc: {
+    fontSize: '14px',
+    color: 'var(--text-secondary)',
+    marginTop: '8px',
+    textAlign: 'center',
   },
   addButton: {
     display: 'flex',

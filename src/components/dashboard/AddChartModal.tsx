@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
+import { useLocale } from '../../context/LocaleContext';
 
 interface AddChartModalProps {
   dashboardId: string;
@@ -15,6 +16,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
 }) => {
   const { savedCharts, dashboards, loadSavedCharts, addChartToDashboard, error } = useDashboardStore();
   const { addToast } = useToastStore();
+  const { t } = useLocale();
   const [search, setSearch] = useState('');
   const [selectedChartId, setSelectedChartId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -80,7 +82,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
         <div style={styles.body}>
           <input
             style={styles.search}
-            placeholder="搜索图表..."
+            placeholder={t('chart.searchPlaceholder')}
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -90,7 +92,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
               {error ? (
                 <div style={{ color: '#e74c3c', marginBottom: '8px' }}>错误: {error}</div>
               ) : null}
-              <div>暂无保存的图表</div>
+              <div>{t('chart.noSavedCharts')}</div>
               <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
                 当前已保存 {savedCharts.length} 个图表
               </div>
@@ -131,7 +133,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
         </div>
 
         <div style={styles.footer}>
-          <button style={styles.cancelBtn} onClick={onClose}>取消</button>
+          <button style={styles.cancelBtn} onClick={onClose}>{t('common.cancel')}</button>
           <button
             style={styles.confirmBtn}
             onClick={handleAdd}

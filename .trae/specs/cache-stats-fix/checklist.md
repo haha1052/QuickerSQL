@@ -1,0 +1,12 @@
+- [x] 检查点 1: 缓存过期不计入 misses，计入 expired_count
+- [x] 检查点 2: CacheStats 包含 expiredCount 字段
+- [x] 检查点 3: 设置项 cacheSize 单位为"条"，标签正确
+- [x] 检查点 4: CacheSettingsSync 不再做 MB→条目转换
+- [x] 检查点 5: QueryCacheStatsPanel 配置值从设置系统读取
+- [x] 检查点 6: 应用配置时同步更新设置系统
+- [x] 检查点 7: 命中率趋势图 Y 轴最大值为 100%
+- [x] 检查点 8: cargo check --quiet 通过
+- [x] 检查点 9: cargo test 全部通过（14个缓存测试）
+- [x] 检查点 10: npx tsc --noEmit --pretty 通过
+- [x] 检查点 11: SQL 注入检测无新增风险
+- [x] 检查点 12: unwrap 检测无新增（测试代码除外）

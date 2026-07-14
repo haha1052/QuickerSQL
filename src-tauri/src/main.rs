@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    tv_sc_lib::run()
+    quickersql_lib::run()
 }

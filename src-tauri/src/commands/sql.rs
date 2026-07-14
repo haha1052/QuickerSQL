@@ -14,12 +14,16 @@
 use crate::TauriAppState;
 use crate::models::database::BatchExecuteResult;
 use crate::models::database::SqlStatementResult;
+use crate::models::sql_snippet::SqlSnippet;
 use crate::services::SqlExecutionService;
-use crate::services::query_cache_service::{CacheStats, is_cacheable, make_cache_key};
+use crate::services::SqlSnippetService;
+use crate::services::query_cache_service::{CacheStrategy, CacheStats, is_cacheable, make_cache_key};
 use tauri::State;
+use tauri::Emitter;
+use super::ApiResponse;
 
 #[tauri::command]
-pub fn execute_sql(
+pub async fn execute_sql(
     state: State<'_, TauriAppState>,
     sql: String,
 ) -> Result<BatchExecuteResult, String> {
@@ -27,22 +31,37 @@ pub fn execute_sql(
         return Err("未连接到数据库".to_string());
     }
 
-    let sqlite_conn = state
-        .db_manager
-        .get_connection()
-        .map_err(|e| e.to_string())?;
+    let duckdb_opt = {
+        let sqlite_conn = state
+            .db_manager
+            .get_connection()
+            .map_err(|e| e.to_string())?;
 
-    let duckdb_opt = match state.get_duckdb_connection() {
-        Ok(arc) => Some(arc),
-        Err(e) => {
-            log::warn!("DuckDB not initialized, using SQLite: {}", e);
-            None
+        // Phase 16: 获取信号量许可（SQL 查询并发控制）
+        // 注意：sqlite_conn 在此块结束时被 drop，之后的 await 不会跨越 MutexGuard
+        let duckdb_result = state.get_duckdb_connection();
+        drop(sqlite_conn);
+
+        let _permit = state.query_semaphore.acquire().await.map_err(|e| {
+            format!("获取查询信号量失败: {}", e)
+        })?;
+
+        match duckdb_result {
+            Ok(arc) => Some(arc),
+            Err(e) => {
+                log::warn!("DuckDB not initialized, using SQLite: {}", e);
+                None
+            }
         }
     };
 
     let cache_enabled = state.query_cache.is_enabled();
 
     // ========== 缓存命中快路径（多语句全命中 / 单语句命中） ==========
+    let sqlite_conn = state
+        .db_manager
+        .get_connection()
+        .map_err(|e| e.to_string())?;
     // 说明：这里仅做"全命中直接短路"的优化；部分命中场景交给 `execute_sql_batch`
     // 内部按句处理缓存/执行/写回。
     if cache_enabled {
@@ -53,6 +72,7 @@ pub fn execute_sql(
             if SqlExecutionService::is_all_readonly(&stmts) {
                 let mut cached_results: Vec<SqlStatementResult> = Vec::new();
                 let mut all_hit = true;
+                let cache_engine = if duckdb_opt.is_some() { "duckdb" } else { "sqlite" };
                 for stmt in &stmts {
                     let key = make_cache_key(stmt, &[]);
                     match state.query_cache.get(&key) {
@@ -63,6 +83,8 @@ pub fn execute_sql(
                             columns: Some(qr.columns),
                             rows: Some(qr.rows),
                             affected_rows: None,
+                            engine: Some(cache_engine.to_string()),
+                            execution_time_ms: Some(0),
                         }),
                         None => {
                             all_hit = false;
@@ -93,6 +115,7 @@ pub fn execute_sql(
                         cached_result.rows.len(),
                         cached_result.columns.len()
                     );
+                    let cache_engine = if duckdb_opt.is_some() { "duckdb" } else { "sqlite" };
                     return Ok(BatchExecuteResult {
                         results: vec![SqlStatementResult {
                             statement: sql.clone(),
@@ -101,6 +124,8 @@ pub fn execute_sql(
                             columns: Some(cached_result.columns),
                             rows: Some(cached_result.rows),
                             affected_rows: None,
+                            engine: Some(cache_engine.to_string()),
+                            execution_time_ms: Some(0),
                         }],
                         success_count: 1,
                         fail_count: 0,
@@ -114,15 +139,13 @@ pub fn execute_sql(
     let query_cache_ref: Option<&crate::services::query_cache_service::QueryCacheService> =
         if cache_enabled { Some(&state.query_cache) } else { None };
 
-    let result = SqlExecutionService::execute_sql_batch(
+    SqlExecutionService::execute_sql_batch(
         &sqlite_conn,
         duckdb_opt,
         &state.db_manager,
         &sql,
         query_cache_ref,
-    );
-
-    result
+    )
 }
 
 /// 获取当前查询缓存的统计快照（容量/条目数/命中/未命中/命中率/开关）
@@ -133,11 +156,12 @@ pub fn get_query_cache_stats(state: State<'_, TauriAppState>) -> CacheStats {
     state.query_cache.stats()
 }
 
-/// 动态调整查询缓存配置（容量/TTL/开关）
+/// 动态调整查询缓存配置（容量/TTL/开关/策略）
 ///
 /// - `capacity`: 缓存容量上限（至少 1）
 /// - `ttl_seconds`: 单条缓存有效期（秒，至少 5）
 /// - `enabled`: 是否启用缓存
+/// - `strategy`: 缓存策略（"lru" 或 "none"）
 ///
 /// 返回 `true` 表示配置已成功更新。
 #[tauri::command]
@@ -146,8 +170,10 @@ pub fn configure_query_cache(
     capacity: usize,
     ttl_seconds: u64,
     enabled: bool,
+    strategy: Option<String>,
 ) -> bool {
-    state.query_cache.configure(capacity, ttl_seconds, enabled);
+    let cache_strategy = strategy.as_deref().map(CacheStrategy::from);
+    state.query_cache.configure(capacity, ttl_seconds, enabled, cache_strategy);
     true
 }
 
@@ -159,4 +185,251 @@ pub fn clear_query_cache(state: State<'_, TauriAppState>) -> CacheStats {
     state.query_cache.invalidate_all();
     log::info!("查询缓存已清空（手动触发）");
     state.query_cache.stats()
+}
+
+#[tauri::command]
+pub fn list_sql_snippets(
+    state: State<'_, TauriAppState>,
+    category: Option<String>,
+) -> Result<Vec<SqlSnippet>, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::list_snippets(&conn, category.as_deref())
+}
+
+#[tauri::command]
+pub fn get_sql_snippet(
+    state: State<'_, TauriAppState>,
+    id: String,
+) -> Result<Option<SqlSnippet>, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::get_snippet(&conn, &id)
+}
+
+#[tauri::command]
+pub fn create_sql_snippet(
+    state: State<'_, TauriAppState>,
+    name: String,
+    sql: String,
+    description: Option<String>,
+    category: Option<String>,
+    tags: Option<String>,
+) -> Result<SqlSnippet, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    if name.trim().is_empty() {
+        return Err("片段名称不能为空".to_string());
+    }
+    if sql.trim().is_empty() {
+        return Err("SQL 内容不能为空".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::create_snippet(
+        &conn,
+        &name,
+        &sql,
+        description.as_deref(),
+        category.as_deref(),
+        tags.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn update_sql_snippet(
+    state: State<'_, TauriAppState>,
+    id: String,
+    name: String,
+    sql: String,
+    description: Option<String>,
+    category: Option<String>,
+    tags: Option<String>,
+    is_favorite: Option<bool>,
+) -> Result<SqlSnippet, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    if name.trim().is_empty() {
+        return Err("片段名称不能为空".to_string());
+    }
+    if sql.trim().is_empty() {
+        return Err("SQL 内容不能为空".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::update_snippet(
+        &conn,
+        &id,
+        &name,
+        &sql,
+        description.as_deref(),
+        category.as_deref(),
+        tags.as_deref(),
+        is_favorite,
+    )
+}
+
+#[tauri::command]
+pub fn delete_sql_snippet(
+    state: State<'_, TauriAppState>,
+    id: String,
+) -> Result<(), String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::delete_snippet(&conn, &id)
+}
+
+#[tauri::command]
+pub fn toggle_snippet_favorite(
+    state: State<'_, TauriAppState>,
+    id: String,
+) -> Result<bool, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    SqlSnippetService::toggle_favorite(&conn, &id)
+}
+
+#[tauri::command]
+pub fn preload_duckdb(
+    state: State<'_, TauriAppState>,
+    app: tauri::AppHandle,
+) -> Result<ApiResponse<String>, String> {
+    if !state.db_manager.is_connected() {
+        return Ok(ApiResponse {
+            success: false,
+            message: "未连接到数据库".into(),
+            data: None,
+        });
+    }
+
+    let db_manager = state.db_manager.clone();
+    let db_path = {
+        let guard = state.db_path.lock().map_err(|e| e.to_string())?;
+        guard.clone()
+    };
+    let duckdb_conn = state.duckdb_conn.clone();
+    let app_handle = app.clone();
+
+    std::thread::spawn(move || {
+        let t0 = std::time::Instant::now();
+        log::info!("[DuckDB] 预加载开始");
+        
+        let table_names = match db_manager.get_connection() {
+            Ok(sqlite_conn) => {
+                match crate::database::meta::list_user_table_names(&sqlite_conn) {
+                    Ok(names) => names,
+                    Err(e) => {
+                        log::warn!("[DuckDB] 从 SQLite 获取表名失败: {}", e);
+                        Vec::new()
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("[DuckDB] 获取 SQLite 连接失败: {}", e);
+                Vec::new()
+            }
+        };
+
+        log::info!("[DuckDB] 预加载：从 SQLite 获取到 {} 个用户表", table_names.len());
+
+        let driver = crate::database::duckdb::DuckDbDriver::new();
+
+        match driver.connect_memory() {
+            Ok(conn) => {
+                let _ = conn.execute("LOAD sqlite;", &[]);
+
+                let sqlite_path_str = db_path.to_string_lossy().replace("'", "''");
+                let attach_sql = format!("ATTACH '{}' AS sqlite_db (TYPE SQLITE);", sqlite_path_str);
+
+                if conn.execute(&attach_sql, &[]).is_ok() {
+                    let mut success_count = 0;
+                    for table_name in &table_names {
+                        if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
+                            let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+                            let create_view_sql = format!(
+                                "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                                quoted_table, quoted_table
+                            );
+                            if conn.execute(&create_view_sql, &[]).is_ok() {
+                                success_count += 1;
+                            }
+                        }
+                    }
+
+                    let _ = conn.execute("SET preserve_insertion_order = false;", &[]);
+
+                    if let Ok(mut guard) = duckdb_conn.lock() {
+                        *guard = Some(std::sync::Arc::new(std::sync::Mutex::new(conn)));
+                        let duration_ms = t0.elapsed().as_millis() as i64;
+                        log::info!("[DuckDB] 预加载完成，已创建 {}/{} 个 VIEW，耗时 {}ms", success_count, table_names.len(), duration_ms);
+                        
+                        let status = crate::models::DuckDbInitStatus {
+                            success: true,
+                            view_count: success_count as i32,
+                            total_tables: table_names.len() as i32,
+                            duration_ms,
+                            trigger: "preload".to_string(),
+                        };
+                        let _ = app_handle.emit("duckdb_init_completed", status);
+                    } else {
+                        log::warn!("[DuckDB] 预加载完成，但无法保存连接（Mutex poison）");
+                        
+                        let status = crate::models::DuckDbInitStatus {
+                            success: false,
+                            view_count: 0,
+                            total_tables: table_names.len() as i32,
+                            duration_ms: t0.elapsed().as_millis() as i64,
+                            trigger: "preload".to_string(),
+                        };
+                        let _ = app_handle.emit("duckdb_init_completed", status);
+                    }
+                } else {
+                    log::warn!("[DuckDB] 预加载失败：ATTACH SQLite 失败");
+                    
+                    let status = crate::models::DuckDbInitStatus {
+                        success: false,
+                        view_count: 0,
+                        total_tables: table_names.len() as i32,
+                        duration_ms: t0.elapsed().as_millis() as i64,
+                        trigger: "preload".to_string(),
+                    };
+                    let _ = app_handle.emit("duckdb_init_completed", status);
+                }
+            }
+            Err(e) => {
+                log::warn!("[DuckDB] 预加载失败：创建内存连接失败: {}", e);
+                
+                let status = crate::models::DuckDbInitStatus {
+                    success: false,
+                    view_count: 0,
+                    total_tables: table_names.len() as i32,
+                    duration_ms: t0.elapsed().as_millis() as i64,
+                    trigger: "preload".to_string(),
+                };
+                let _ = app_handle.emit("duckdb_init_completed", status);
+            }
+        }
+    });
+
+    Ok(ApiResponse {
+        success: true,
+        message: "DuckDB 预加载已启动".into(),
+        data: Some("preloading".into()),
+    })
 }

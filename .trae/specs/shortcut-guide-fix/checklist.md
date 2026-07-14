@@ -1,0 +1,9 @@
+- [x] Checkpoint 1: 引导页中文文案显示"Ctrl+Enter 执行查询"（非"F5"）
+- [x] Checkpoint 2: 引导页中文文案显示"Ctrl+S 保存到文件"（非"保存查询"）
+- [x] Checkpoint 3: 引导页英文文案显示"Ctrl+Enter to execute query"
+- [x] Checkpoint 4: 引导页英文文案显示"Ctrl+S to save to file"
+- [x] Checkpoint 5: 有选中 SQL 时 Ctrl+Enter 执行选中的 SQL
+- [x] Checkpoint 6: 无选中 SQL 时 Ctrl+Enter 执行全部 SQL（与执行按钮行为一致）
+- [x] Checkpoint 7: 选中空白文本时 Ctrl+Enter 执行全部 SQL
+- [x] Checkpoint 8: `npx tsc --noEmit --pretty` 类型检查通过（0 errors）
+- [x] Checkpoint 9: `cargo check --quiet` 编译通过（无后端改动，N/A）

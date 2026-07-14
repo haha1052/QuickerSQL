@@ -7,15 +7,100 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon
 } from './Icons';
-import { useWorkspaceStore } from '../../store';
+import { useWorkspaceStore, useAppStore, useQueryStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
 import { DatabaseExplorer } from './DatabaseExplorer';
 import QueryHistory from './QueryHistory';
 import TrashPanel from '../trash';
+import { SnippetsPanel } from './SnippetsPanel';
+import type { SqlStatementResult } from '../../types';
 
 export const Sidebar: React.FC = () => {
   const { sidebar, toggleSidebar, setSidebarActiveTab } = useWorkspaceStore();
+  const { setActiveTab, setMessage } = useAppStore();
   const { t } = useLocale();
+
+  const handleExecuteSqlFromHistory = async (sql: string) => {
+    try {
+      setActiveTab('sql');
+      
+      const { useWorkspaceStore, useQueryStore } = await import('../../store');
+      const workspaceState = useWorkspaceStore.getState();
+      const queryState = useQueryStore.getState();
+      
+      queryState.addSqlQuery();
+      const { sqlQueries } = useQueryStore.getState();
+      const newQuery = sqlQueries[sqlQueries.length - 1];
+      queryState.updateSqlQuery(newQuery.id, { sql });
+      queryState.setActiveQueryId(newQuery.id);
+      
+      workspaceState.addTab(
+        {
+          title: t('queryHistory.execute'),
+          type: 'sql',
+          panels: [
+            { id: 'editor', type: 'sql_editor' as const, title: 'SQL Editor', size: 50, active: true, content: null },
+            { id: 'results', type: 'results_grid' as const, title: 'Results', size: 50, active: true, content: null },
+          ],
+          active: true,
+        },
+        { queryId: newQuery.id, initialSql: sql }
+      );
+
+      const newTabId = useWorkspaceStore.getState().activeTabId;
+      useWorkspaceStore.getState().setPanelMode(newTabId, 'default');
+      
+      queryState.setQueryLoading(newQuery.id);
+      try {
+        const { tauriService } = await import('../../services');
+        const response = await tauriService.executeSql(sql);
+        if (response.success && response.data) {
+          const batchResults = response.data.results as SqlStatementResult[];
+          queryState.setBatchResults(newQuery.id, batchResults);
+          const successResults = batchResults.filter((r: SqlStatementResult) => r.success);
+          const totalRows = successResults.reduce((sum: number, item: SqlStatementResult) => sum + (item.rows?.length || 0), 0);
+          const hasSuccess = successResults.length > 0;
+          queryState.addToHistory(sql, hasSuccess, totalRows);
+          if (hasSuccess) {
+            setMessage(`${successResults.length} 条语句执行成功`, 'success');
+          } else {
+            console.error('[Sidebar] Query execution failed: no successful results');
+            setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+          }
+        } else {
+          console.error('[Sidebar] Query execution error:', response.error);
+          setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+          queryState.addToHistory(sql, false);
+        }
+      } catch (err) {
+        console.error('Execute SQL error:', err);
+        setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+        queryState.addToHistory(sql, false);
+      } finally {
+        queryState.setQueryLoading(null);
+      }
+    } catch (err) {
+      console.error('Failed to execute SQL from history:', err);
+      setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+    }
+  };
+
+  const handleInsertSql = (sql: string) => {
+    try {
+      setActiveTab('sql');
+      const queryState = useQueryStore.getState();
+      const activeQueryId = queryState.activeQueryId;
+      if (activeQueryId) {
+        const currentQuery = queryState.sqlQueries.find(q => q.id === activeQueryId);
+        const currentSql = currentQuery?.sql || '';
+        const newSql = currentSql ? currentSql + '\n' + sql : sql;
+        queryState.updateSqlQuery(activeQueryId, { sql: newSql });
+      }
+    } catch (err) {
+      console.error('Failed to insert SQL:', err);
+      setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+    }
+  };
 
   const sidebarItems = [
     { id: 'explorer' as const, icon: DatabaseIcon, label: t('sidebar.dataExplorer') },
@@ -81,21 +166,15 @@ export const Sidebar: React.FC = () => {
 
       <div style={styles.sidebarContent}>
         {sidebar.activeTab === 'explorer' && <DatabaseExplorer />}
-        {sidebar.activeTab === 'history' && <QueryHistory />}
-        {sidebar.activeTab === 'snippets' && <SnippetsPlaceholder t={t} />}
+        {sidebar.activeTab === 'history' && <QueryHistory onExecuteSql={handleExecuteSqlFromHistory} />}
+        {sidebar.activeTab === 'snippets' && <SnippetsPanel onInsertSql={handleInsertSql} />}
         {sidebar.activeTab === 'trash' && <TrashPanel />}
       </div>
     </div>
   );
 };
 
-const SnippetsPlaceholder: React.FC<{ t: (key: string) => string }> = ({ t }) => (
-  <div style={styles.placeholder}>
-    <FileCodeIcon size={32} color="var(--text-tertiary)" />
-    <p>{t('sidebar.snippets')}</p>
-    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('common.comingSoon')}</p>
-  </div>
-);
+export default Sidebar;
 
 const styles: Record<string, React.CSSProperties> = {
   sidebar: {
@@ -167,16 +246,5 @@ const styles: Record<string, React.CSSProperties> = {
     overflowY: 'auto',
     overflowX: 'hidden',
     minHeight: 0,
-  },
-  placeholder: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    minHeight: 0,
-    padding: '40px 20px',
-    color: 'var(--text-secondary)',
-    textAlign: 'center',
   },
 };

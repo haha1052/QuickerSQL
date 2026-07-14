@@ -1,7 +1,7 @@
 import React from 'react';
 import { useLocale } from '../../context/LocaleContext';
 
-export type ChartType = 'bar' | 'line' | 'pie' | 'stackedBar' | 'area' | 'scatter';
+export type ChartType = 'bar' | 'line' | 'pie' | 'stackedBar' | 'area' | 'scatter' | 'horizontalBar' | 'doughnut' | 'dualAxis' | 'radar' | 'funnel' | 'gauge';
 
 interface ChartTypeSelectorProps {
   value: ChartType;
@@ -30,10 +30,22 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
       description: t('chart.suitable.compare'),
     },
     {
+      type: 'horizontalBar',
+      label: '条形图',
+      icon: '📊',
+      description: '适合类别名称较长的对比分析',
+    },
+    {
       type: 'line',
       label: t('chart.line'),
       icon: '📈',
       description: t('chart.suitable.trend'),
+    },
+    {
+      type: 'area',
+      label: t('chart.area'),
+      icon: '📉',
+      description: t('chart.suitable.cumulative'),
     },
     {
       type: 'pie',
@@ -42,22 +54,46 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
       description: t('chart.suitable.proportion'),
     },
     {
+      type: 'doughnut',
+      label: '环形图',
+      icon: '🍩',
+      description: '占比分析，视觉更现代',
+    },
+    {
       type: 'stackedBar',
       label: t('chart.stackedBar'),
       icon: '📊',
       description: t('chart.suitable.multiDimensional'),
     },
     {
-      type: 'area',
-      label: t('chart.area'),
-      icon: '📈',
-      description: t('chart.suitable.cumulative'),
+      type: 'dualAxis',
+      label: '双轴图',
+      icon: '📏',
+      description: '不同量级数据对比',
     },
     {
       type: 'scatter',
       label: t('chart.scatter'),
-      icon: '🕸️',
+      icon: '🔵',
       description: t('chart.suitable.correlation'),
+    },
+    {
+      type: 'radar',
+      label: '雷达图',
+      icon: '🎯',
+      description: '多维指标对比分析',
+    },
+    {
+      type: 'funnel',
+      label: '漏斗图',
+      icon: '🔻',
+      description: '转化流程分析',
+    },
+    {
+      type: 'gauge',
+      label: '仪表盘',
+      icon: '⏱️',
+      description: 'KPI 单指标展示',
     },
   ];
 

@@ -7,27 +7,46 @@
 }
 
 .welcome-content {
-  text-align: center;
   color: white;
   padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 50px;
+}
+
+.welcome-hero {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+.welcome-logo {
+  flex-shrink: 0;
 }
 
 .welcome-logo .logo-emoji {
-  font-size: 120px;
+  font-size: 140px;
   display: block;
-  margin-bottom: 20px;
+  line-height: 1;
 }
 
-.welcome-logo .app-name {
+.welcome-text {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.welcome-text .app-name {
   font-size: 48px;
   font-weight: 700;
-  margin-bottom: 10px;
+  margin: 0;
 }
 
-.welcome-logo .app-tagline {
+.welcome-text .app-tagline {
   font-size: 18px;
   opacity: 0.9;
-  margin-bottom: 50px;
+  margin: 0;
 }
 
 .welcome-actions {

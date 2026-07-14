@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { QueryHistoryItem } from '../../types';
 import { useLocale } from '../../context/LocaleContext';
+import { useAppStore } from '../../store';
 import { computeVisibleRange } from '../../utils/virtual';
 import './QueryHistory.css';
 
@@ -9,12 +10,13 @@ interface QueryHistoryProps {
   onExecuteSql?: (sql: string) => void;
 }
 
-const ITEM_HEIGHT = 96;
+const ITEM_HEIGHT = 50;
 const VIEWPORT_HEIGHT = 520;
 const OVERSCAN = 5;
 
 const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => {
   const { t } = useLocale();
+  const { setMessage } = useAppStore();
   const [historyItems, setHistoryItems] = useState<QueryHistoryItem[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,21 +28,6 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
 
   const range = computeVisibleRange(scrollTop, VIEWPORT_HEIGHT, ITEM_HEIGHT, historyItems.length, OVERSCAN);
   const visibleItems = historyItems.slice(range.start, range.end);
-
-  const formatDate = (dateStr: string): string => {
-    try {
-      const date = new Date(dateStr);
-      return date.toLocaleString('zh-CN');
-    } catch {
-      return dateStr;
-    }
-  };
-
-  const formatDuration = (ms?: number | null): string => {
-    if (ms == null) return '-';
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(2)}s`;
-  };
 
   const loadHistory = useCallback(async () => {
     try {
@@ -91,13 +78,14 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
       const response = await tauriService.deleteQueryHistory(item.id);
 
       if (response.success) {
+        setMessage(t('queryHistory.deleted') || '删除成功', 'success');
         await loadHistory();
       } else {
-        alert(`${t('common.error')}: ${response.error}`);
+        setMessage(`${t('common.error')}: ${response.error}`, 'error');
       }
     } catch (err) {
       console.error('Failed to delete history:', err);
-      alert(`${t('common.error')}: ${err}`);
+      setMessage(`${t('common.error')}: ${err}`, 'error');
     }
   };
 
@@ -180,54 +168,72 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
                   }}
                 >
                   <div className={`history-item ${!item.success ? 'failed' : ''}`}>
-                    <div className="history-item-main">
-                      <div className="history-item-header">
-                        <div className="status-badge">
-                          {item.success ? `✅ ${t('queryHistory.success')}` : `❌ ${t('queryHistory.failed')}`}
-                        </div>
-                        <button
-                          className={`btn-favorite ${item.is_favorite ? 'active' : ''}`}
-                          onClick={() => handleToggleFavorite(item)}
-                          title={item.is_favorite ? t('queryHistory.unfavorite') : t('queryHistory.favorite')}
-                        >
-                          {item.is_favorite ? '⭐' : '☆'}
-                        </button>
-                      </div>
-                      <div className="history-item-sql">
-                        <pre>{item.sql}</pre>
-                      </div>
-                      <div className="history-item-meta">
-                        <span className="meta-item">🕐 {formatDate(item.executed_at)}</span>
-                        {item.execution_time_ms != null && (
-                          <span className="meta-item">⏱️ {formatDuration(item.execution_time_ms)}</span>
-                        )}
-                        {item.row_count != null && (
-                          <span className="meta-item">📊 {item.row_count} {t('queryHistory.rows')}</span>
-                        )}
-                      </div>
-                      {item.error_message && (
-                        <div className="history-item-error">
-                          <strong>{t('queryHistory.error')}:</strong>
-                          {item.error_message}
-                        </div>
-                      )}
+                    <div className="status-badge">
+                      {item.success ? '✅' : '❌'}
                     </div>
-                    <div className="history-item-actions">
-                      <button
-                        className="btn-action btn-execute"
-                        onClick={() => handleExecute(item)}
-                        disabled={loading}
-                      >
-                        {t('queryHistory.execute')}
-                      </button>
-                      <button
-                        className="btn-action btn-delete"
-                        onClick={() => handleDelete(item)}
-                        disabled={loading}
-                      >
-                        {t('common.delete')}
-                      </button>
+                    <div
+                      className="history-item-sql"
+                      title={item.sql}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        const target = e.currentTarget;
+                        const selection = window.getSelection();
+                        const range = document.createRange();
+                        range.selectNodeContents(target);
+                        selection?.removeAllRanges();
+                        selection?.addRange(range);
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        const menu = document.createElement('div');
+                        menu.className = 'sql-context-menu';
+                        menu.innerHTML = `<button>${t('queryHistory.copy')}</button>`;
+                        menu.style.position = 'fixed';
+                        menu.style.left = `${e.clientX}px`;
+                        menu.style.top = `${e.clientY}px`;
+                        document.body.appendChild(menu);
+
+                        const copyBtn = menu.querySelector('button');
+                        copyBtn?.addEventListener('click', async () => {
+                          await navigator.clipboard.writeText(item.sql);
+                          setMessage(t('queryHistory.copied') || '已复制', 'success');
+                          menu.remove();
+                        });
+
+                        const handleClickOutside = (event: MouseEvent) => {
+                          if (!menu.contains(event.target as Node)) {
+                            menu.remove();
+                            document.removeEventListener('click', handleClickOutside);
+                          }
+                        };
+                        document.addEventListener('click', handleClickOutside);
+                      }}
+                    >
+                      {item.sql}
                     </div>
+                    <button
+                      className={`btn-favorite ${item.is_favorite ? 'active' : ''}`}
+                      onClick={() => handleToggleFavorite(item)}
+                      title={item.is_favorite ? t('queryHistory.unfavorite') : t('queryHistory.favorite')}
+                    >
+                      {item.is_favorite ? '⭐' : '☆'}
+                    </button>
+                    <button
+                      className="btn-action btn-execute"
+                      onClick={() => handleExecute(item)}
+                      disabled={loading}
+                      title={t('queryHistory.execute')}
+                    >
+                      ▶
+                    </button>
+                    <button
+                      className="btn-action btn-delete"
+                      onClick={() => handleDelete(item)}
+                      disabled={loading}
+                      title={t('common.delete')}
+                    >
+                      ✕
+                    </button>
                   </div>
                 </div>
               ))}

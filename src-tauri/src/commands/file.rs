@@ -10,6 +10,7 @@ use tauri::State;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::time::{timeout, Duration};
 
 const MAX_EXCEL_FILE_SIZE: u64 = 50 * 1024 * 1024;
@@ -21,10 +22,14 @@ const TRADITIONAL_TIMEOUT_SECS: u64 = 20; // 传统批量插入基础超时
 const LARGE_FILE_THRESHOLD: u64 = 10 * 1024 * 1024; // 10MB 为大文件阈值
 const TIMEOUT_PER_MB_SECS: u64 = 2;      // 每增加 1MB 增加 2 秒超时
 
-/// 计算导入超时时间（根据文件大小动态调整）
-fn calculate_import_timeout(file_size: u64, use_copy: bool) -> Duration {
+/// 计算导入超时时间（优先使用用户设置，否则根据文件大小动态调整）
+fn calculate_import_timeout(file_size: u64, use_copy: bool, user_timeout: Option<u64>) -> Duration {
+    if let Some(timeout_secs) = user_timeout {
+        return Duration::from_secs(timeout_secs);
+    }
+
     let base_timeout = if use_copy { COPY_TIMEOUT_SECS } else { TRADITIONAL_TIMEOUT_SECS };
-    
+
     // 大文件增加额外超时时间
     if file_size > LARGE_FILE_THRESHOLD {
         let extra_mb = (file_size - LARGE_FILE_THRESHOLD) / (1024 * 1024);
@@ -35,11 +40,22 @@ fn calculate_import_timeout(file_size: u64, use_copy: bool) -> Duration {
     }
 }
 
-fn try_decode_all_encodings(data: &[u8]) -> String {
-    if let Ok(text) = std::str::from_utf8(data) {
+fn try_decode_all_encodings(data: &[u8], auto_detect: bool, default_encoding: &str) -> String {
+    if auto_detect {
+        if let Ok(text) = std::str::from_utf8(data) {
+            return text.to_string();
+        }
+        let (text, _) = encoding_rs::GBK.decode_without_bom_handling(data);
         return text.to_string();
     }
-    let (text, _) = encoding_rs::GBK.decode_without_bom_handling(data);
+
+    let encoding = match default_encoding {
+        "GBK" | "GB2312" => encoding_rs::GBK,
+        "UTF-16" => encoding_rs::UTF_16LE,
+        "ASCII" => encoding_rs::UTF_8,
+        _ => encoding_rs::UTF_8,
+    };
+    let (text, _) = encoding.decode_without_bom_handling(data);
     text.to_string()
 }
 
@@ -78,6 +94,10 @@ impl CsvRow {
         fields.push(current);
         Some(CsvRow { fields })
     }
+}
+
+fn parse_txt_line(line: &str, delimiter: &str) -> Vec<String> {
+    line.split(delimiter).map(|s| s.trim().to_string()).collect()
 }
 
 fn extract_excel_preview(range: &calamine::Range<calamine::Data>) -> CsvPreview {
@@ -218,7 +238,7 @@ fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview
     Ok(extract_excel_preview(&range))
 }
 
-fn load_all_csv_data(file_path: &str) -> Result<Vec<Vec<String>>, String> {
+fn load_all_json_data(file_path: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
     let mut file = File::open(file_path)
         .map_err(|e| format!("无法打开文件: {}", e))?;
 
@@ -226,7 +246,67 @@ fn load_all_csv_data(file_path: &str) -> Result<Vec<Vec<String>>, String> {
     file.read_to_end(&mut data)
         .map_err(|e| format!("无法读取文件: {}", e))?;
 
-    let text = try_decode_all_encodings(&data);
+    let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
+
+    if text.trim().is_empty() {
+        return Err("文件为空".to_string());
+    }
+
+    let values = load_json_content(&text)?;
+
+    let mut headers = Vec::new();
+    let mut header_set = std::collections::HashSet::new();
+
+    for value in &values {
+        if let serde_json::Value::Object(obj) = value {
+            for key in obj.keys() {
+                if !header_set.contains(key) {
+                    header_set.insert(key.clone());
+                    headers.push(key.clone());
+                }
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    rows.push(headers.clone());
+
+    for value in values {
+        if let serde_json::Value::Object(obj) = value {
+            let row: Vec<String> = headers.iter()
+                .map(|header| {
+                    obj.get(header)
+                        .map(|v| match v {
+                            serde_json::Value::Null => "".to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Array(arr) => {
+                                serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())
+                            }
+                            serde_json::Value::Object(o) => {
+                                serde_json::to_string(o).unwrap_or_else(|_| "{}".to_string())
+                            }
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+            rows.push(row);
+        }
+    }
+
+    Ok(rows)
+}
+
+fn load_all_csv_data(file_path: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
+    let mut file = File::open(file_path)
+        .map_err(|e| format!("无法打开文件: {}", e))?;
+
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| format!("无法读取文件: {}", e))?;
+
+    let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
     let lines: Vec<&str> = text.lines().collect();
 
     let mut rows = Vec::new();
@@ -237,6 +317,33 @@ fn load_all_csv_data(file_path: &str) -> Result<Vec<Vec<String>>, String> {
         if let Some(csv_row) = CsvRow::parse(line) {
             rows.push(csv_row.fields);
         }
+    }
+
+    Ok(rows)
+}
+
+fn load_all_txt_data(file_path: &str, delimiter: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
+    let mut file = File::open(file_path)
+        .map_err(|e| format!("无法打开文件: {}", e))?;
+
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| format!("无法读取文件: {}", e))?;
+
+    let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
+    let delimiter = if delimiter.is_empty() {
+        detect_delimiter(&text)
+    } else {
+        delimiter.to_string()
+    };
+    let lines: Vec<&str> = text.lines().collect();
+
+    let mut rows = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        rows.push(parse_txt_line(line, &delimiter));
     }
 
     Ok(rows)
@@ -344,7 +451,7 @@ fn prepare_field_info(fields: &[FieldMeta]) -> (Vec<String>, Vec<(String, String
 
     for field in fields {
         let safe_field_name: String = field.name.chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' || ('\u{4e00}' <= c && c <= '\u{9fff}') { c } else { '_' })
+            .map(|c| if c.is_alphanumeric() || c == '_' || ('\u{4e00}'..='\u{9fff}').contains(&c) { c } else { '_' })
             .collect();
         let safe_field_name = if safe_field_name.trim().is_empty() || safe_field_name.chars().all(|c| c == '_') {
             format!("column_{}", column_names.len() + 1)
@@ -370,9 +477,86 @@ fn prepare_field_info(fields: &[FieldMeta]) -> (Vec<String>, Vec<(String, String
     (column_names, column_defs)
 }
 
-/// 加载 CSV 文件预览
+fn load_json_content(text: &str) -> Result<Vec<serde_json::Value>, String> {
+    match serde_json::from_str::<Vec<serde_json::Value>>(text) {
+        Ok(array) => Ok(array),
+        Err(_) => {
+            let mut values = Vec::new();
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(value) => values.push(value),
+                    Err(e) => return Err(format!("JSON Lines 解析失败: {}", e)),
+                }
+            }
+            if values.is_empty() {
+                return Err("无法解析 JSON 数据".to_string());
+            }
+            Ok(values)
+        }
+    }
+}
+
+fn extract_json_headers_and_rows(values: Vec<serde_json::Value>) -> CsvPreview {
+    let mut headers = Vec::new();
+    let mut header_set = std::collections::HashSet::new();
+
+    for value in &values {
+        if let serde_json::Value::Object(obj) = value {
+            for key in obj.keys() {
+                if !header_set.contains(key) {
+                    header_set.insert(key.clone());
+                    headers.push(key.clone());
+                }
+            }
+        }
+    }
+
+    let mut rows = Vec::new();
+    for (i, value) in values.into_iter().enumerate() {
+        if i >= MAX_PREVIEW_ROWS {
+            break;
+        }
+        if let serde_json::Value::Object(obj) = value {
+            let row: Vec<String> = headers.iter()
+                .map(|header| {
+                    obj.get(header)
+                        .map(|v| match v {
+                            serde_json::Value::Null => "".to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Array(arr) => {
+                                serde_json::to_string(arr).unwrap_or_else(|_| "[]".to_string())
+                            }
+                            serde_json::Value::Object(o) => {
+                                serde_json::to_string(o).unwrap_or_else(|_| "{}".to_string())
+                            }
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+            rows.push(row);
+        }
+    }
+
+    CsvPreview { headers, rows }
+}
+
+/// 加载 JSON 文件预览（支持 JSON 数组和 JSON Lines 格式）
 #[tauri::command]
-pub fn load_csv(_state: State<'_, TauriAppState>, file_path: String) -> Result<CsvPreview, String> {
+pub fn load_json(
+    _state: State<'_, TauriAppState>,
+    file_path: String,
+    auto_detect_encoding: Option<bool>,
+    default_encoding: Option<String>,
+) -> Result<CsvPreview, String> {
+    let auto_detect = auto_detect_encoding.unwrap_or(true);
+    let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
+
     let mut file = File::open(&file_path)
         .map_err(|e| format!("无法打开文件: {}", e))?;
 
@@ -380,7 +564,37 @@ pub fn load_csv(_state: State<'_, TauriAppState>, file_path: String) -> Result<C
     file.read_to_end(&mut data)
         .map_err(|e| format!("无法读取文件: {}", e))?;
 
-    let text = try_decode_all_encodings(&data);
+    let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
+
+    if text.trim().is_empty() {
+        return Err("文件为空".to_string());
+    }
+
+    let values = load_json_content(&text)?;
+    Ok(extract_json_headers_and_rows(values))
+}
+
+/// 加载 CSV 文件预览
+#[tauri::command]
+pub fn load_csv(
+    _state: State<'_, TauriAppState>,
+    file_path: String,
+    auto_detect_encoding: Option<bool>,
+    default_encoding: Option<String>,
+    batch_size: Option<usize>,
+) -> Result<CsvPreview, String> {
+    let _ = batch_size; // 预留参数，后续用于分批加载大文件预览
+    let auto_detect = auto_detect_encoding.unwrap_or(true);
+    let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
+
+    let mut file = File::open(&file_path)
+        .map_err(|e| format!("无法打开文件: {}", e))?;
+
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| format!("无法读取文件: {}", e))?;
+
+    let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
 
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
@@ -406,6 +620,150 @@ pub fn load_csv(_state: State<'_, TauriAppState>, file_path: String) -> Result<C
     }
 
     Ok(CsvPreview { headers, rows })
+}
+
+/// 自动检测 TXT 文件分隔符
+///
+/// 候选分隔符：逗号、制表符、分号、竖线。取前 5 行非空行，选择能产生最多一致列数的分隔符；
+/// 若结果相同，优先级为 逗号 > 制表符 > 分号 > 竖线；若均无法分割，回退到制表符。
+fn detect_delimiter(text: &str) -> String {
+    const CANDIDATES: &[&str] = &[",", "\t", ";", "|"];
+    const SAMPLE_LINES: usize = 5;
+
+    let non_empty_lines: Vec<&str> = text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .take(SAMPLE_LINES)
+        .collect();
+
+    if non_empty_lines.is_empty() {
+        return "\t".to_string();
+    }
+
+    let mut best_delimiter = "\t";
+    let mut best_score = 0;
+
+    for &delim_str in CANDIDATES {
+        let counts: Vec<usize> = non_empty_lines
+            .iter()
+            .map(|line| parse_txt_line(line, delim_str).len())
+            .collect();
+
+        let mut freq = std::collections::HashMap::new();
+        for &count in &counts {
+            *freq.entry(count).or_insert(0) += 1;
+        }
+
+        let (mode_count, mode_freq) = freq
+            .into_iter()
+            .max_by_key(|&(count, f)| (f, count))
+            .unwrap_or((1, 0));
+
+        let score = if mode_count > 1 { mode_freq } else { 0 };
+
+        if score > best_score {
+            best_score = score;
+            best_delimiter = delim_str;
+        }
+    }
+
+    if best_score == 0 {
+        "\t".to_string()
+    } else {
+        best_delimiter.to_string()
+    }
+}
+
+/// 加载 TXT 文件预览
+#[tauri::command]
+pub fn load_txt(
+    _state: State<'_, TauriAppState>,
+    file_path: String,
+    delimiter: Option<String>,
+    auto_detect_encoding: Option<bool>,
+    default_encoding: Option<String>,
+) -> Result<CsvPreview, String> {
+    let auto_detect = auto_detect_encoding.unwrap_or(true);
+    let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
+
+    let mut file = File::open(&file_path)
+        .map_err(|e| format!("无法打开文件: {}", e))?;
+
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| format!("无法读取文件: {}", e))?;
+
+    let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Err("文件为空".to_string());
+    }
+
+    let delimiter = delimiter
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| detect_delimiter(&text));
+
+    let headers = parse_txt_line(lines[0], &delimiter);
+
+    let mut rows = Vec::new();
+    for (i, line) in lines.iter().skip(1).enumerate() {
+        if i >= MAX_PREVIEW_ROWS {
+            break;
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        rows.push(parse_txt_line(line, &delimiter));
+    }
+
+    Ok(CsvPreview { headers, rows })
+}
+
+/// 加载 Parquet 文件预览
+#[tauri::command]
+pub fn load_parquet(
+    state: State<'_, TauriAppState>,
+    file_path: String,
+) -> Result<CsvPreview, String> {
+    log::info!("开始加载 Parquet 文件预览: {}", file_path);
+
+    let path = std::path::Path::new(&file_path);
+    if !path.exists() {
+        log::warn!("Parquet 文件不存在: {}", file_path);
+        return Err(format!("文件不存在: {}", file_path));
+    }
+
+    let duckdb_conn = match state.duckdb_conn.lock() {
+        Ok(mut guard) => {
+            if guard.is_none() {
+                log::info!("DuckDB 未初始化，创建临时内存连接");
+                let driver = crate::database::DuckDbDriver::new();
+                let conn = driver.connect_memory()
+                    .map_err(|e| format!("创建 DuckDB 内存连接失败: {}", e))?;
+                *guard = Some(Arc::new(Mutex::new(conn)));
+            }
+            guard.clone()
+        }
+        Err(e) => {
+            log::warn!("获取 DuckDB 连接锁失败，创建临时连接: {}", e);
+            let driver = crate::database::DuckDbDriver::new();
+            let conn = driver.connect_memory()
+                .map_err(|e| format!("创建 DuckDB 内存连接失败: {}", e))?;
+            Some(Arc::new(Mutex::new(conn)))
+        }
+    };
+
+    let duckdb_conn = duckdb_conn.ok_or("无法获取 DuckDB 连接")?;
+
+    let conn_guard = duckdb_conn.lock()
+        .map_err(|e| format!("获取 DuckDB 连接锁失败: {}", e))?;
+
+    let preview = DatabaseService::preview_parquet_file(&**conn_guard, &file_path, MAX_PREVIEW_ROWS)?;
+
+    log::info!("成功加载 Parquet 文件预览，共 {} 行", preview.rows.len());
+    Ok(preview)
 }
 
 /// 获取 Excel 文件的所有 Sheet 信息
@@ -440,21 +798,38 @@ pub fn import_data(state: State<'_, TauriAppState>, request: ImportRequest) -> R
     let schema_slices: Vec<(String, String)> = columns_schema;
     DatabaseService::create_table_from_schema(&conn, &safe_table_name, &schema_slices)?;
 
-    let count = DatabaseService::batch_insert_rows(&conn, &safe_table_name, &column_names, &request.rows)?;
+    let count = DatabaseService::batch_insert_rows(&conn, &safe_table_name, &column_names, &request.rows, None)?;
 
     Ok(format!("成功导入 {} 行到 {} 表 '{}'", count, conn.get_database_type(), safe_table_name))
 }
 
-/// 使用传统方式导入数据（适用于 Excel 和 COPY 失败的情况）
+fn is_json_file(file_path: &str) -> bool {
+    let lower_path = file_path.to_lowercase();
+    lower_path.ends_with(".json") || lower_path.ends_with(".jsonl") || lower_path.ends_with(".ndjson")
+}
+
+fn is_txt_file(file_path: &str) -> bool {
+    file_path.to_lowercase().ends_with(".txt")
+}
+
+/// 使用传统方式导入数据（适用于 Excel、JSON、TXT 和 COPY 失败的情况）
 fn import_using_traditional_method(
     conn: &crate::database::MutexGuardConnection,
     safe_table_name: &str,
     column_names: &[String],
     request: &ImportRequestV2,
 ) -> Result<usize, String> {
-    let all_rows: Vec<Vec<String>> = match &request.sheet_name {
-        Some(sheet) => load_all_excel_data(&request.file_path, sheet)?,
-        None => load_all_csv_data(&request.file_path)?
+    let all_rows: Vec<Vec<String>> = match (
+        &request.sheet_name,
+        is_json_file(&request.file_path),
+        is_txt_file(&request.file_path),
+    ) {
+        (Some(sheet), _, _) => load_all_excel_data(&request.file_path, sheet)?,
+        (None, true, _) => load_all_json_data(&request.file_path, true, "UTF-8")?,
+        (None, false, true) => {
+            load_all_txt_data(&request.file_path, request.delimiter.as_deref().unwrap_or(""), true, "UTF-8")?
+        }
+        (None, false, false) => load_all_csv_data(&request.file_path, true, "UTF-8")?,
     };
 
     let final_rows: Vec<Vec<String>> = if request.has_header {
@@ -473,8 +848,8 @@ fn import_using_traditional_method(
         return Err("没有数据可导入，请检查文件是否包含数据行".to_string());
     }
 
-    log::info!("开始批量插入, batch_size=100");
-    let count = DatabaseService::batch_insert_rows(conn, safe_table_name, column_names, &final_rows)
+    log::info!("开始批量插入, batch_size={:?}", request.batch_size);
+    let count = DatabaseService::batch_insert_rows(conn, safe_table_name, column_names, &final_rows, request.batch_size)
         .map_err(|e| {
             log::error!("批量插入失败: {}", e);
             e
@@ -520,9 +895,43 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
         }
     };
 
-    // 计算超时时间（优先使用 COPY 命令，所以用 COPY 超时）
-    let import_timeout = calculate_import_timeout(file_size, true);
-    log::info!("导入超时设置: {}秒 (文件大小: {}MB)", 
+    // 从设置中读取最大导入文件大小限制
+    let max_file_size_mb = match state.db_manager.get_connection() {
+        Ok(conn) => {
+            match crate::services::SettingsService::get_setting(&conn, "import", "maxImportFileSize") {
+                Ok(Some(setting)) => {
+                    setting.value.parse::<u64>().unwrap_or(100)
+                }
+                _ => 100
+            }
+        }
+        Err(_) => 100
+    };
+    let max_file_size_bytes = max_file_size_mb * 1024 * 1024;
+
+    // 从设置中读取导入超时时间
+    let import_timeout_secs: u64 = match state.db_manager.get_connection() {
+        Ok(conn) => {
+            match crate::services::SettingsService::get_setting(&conn, "import", "importTimeout") {
+                Ok(Some(setting)) => {
+                    let secs: i64 = setting.value.parse().unwrap_or(60);
+                    secs.clamp(5, 3600) as u64
+                }
+                _ => 60
+            }
+        }
+        Err(_) => 60
+    };
+
+    if file_size > max_file_size_bytes {
+        log::warn!("文件大小超过限制: {} bytes > {} bytes ({}MB)", file_size, max_file_size_bytes, max_file_size_mb);
+        return Err(format!("文件过大（{:.2}MB），超过最大限制 {}MB，请拆分文件后再导入", 
+            file_size as f64 / (1024.0 * 1024.0), max_file_size_mb));
+    }
+
+    // 使用用户设置的导入超时时间
+    let import_timeout = calculate_import_timeout(file_size, true, Some(import_timeout_secs));
+    log::info!("导入超时设置: {}秒 (文件大小: {}MB)",
         import_timeout.as_secs(), file_size / (1024 * 1024));
 
     // 克隆必要的 Arc 引用，以便在 spawn_blocking 内使用
@@ -551,68 +960,95 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
 
         let count: usize;
 
-        // 优先使用 DuckDB COPY 命令（最快）
-        // CSV 文件直接使用 COPY，Excel 文件先转临时 CSV 再使用 COPY
-        let file_to_import = if let Some(sheet) = &request.sheet_name {
-            // Excel 文件：先导出为临时 CSV
-            let export_start = Instant::now();
-            log::info!("Excel 文件，正在导出到临时 CSV...");
-            match export_excel_to_temp_csv(&request.file_path, sheet, request.has_header) {
-                Ok(temp_csv_path) => {
-                    log::info!("Excel 导出成功，临时文件: {}, 耗时: {}ms", 
-                        temp_csv_path, export_start.elapsed().as_millis());
-                    Some(temp_csv_path)
-                }
-                Err(e) => {
-                    log::warn!("Excel 导出失败，回退到传统方式: {}", e);
-                    None
-                }
-            }
-        } else {
-            // CSV 文件：直接使用原文件
-            None
-        };
+        let is_parquet_file = request.file_path.to_lowercase().ends_with(".parquet");
 
-        if let Some(csv_path) = file_to_import {
-            // 使用 COPY 命令导入临时 CSV（已处理表头，所以 has_header=false）
-            let copy_start = Instant::now();
-            match DatabaseService::fast_import_csv(&conn, &safe_table_name, &csv_path, false) {
-                Ok(cnt) => {
-                    count = cnt;
-                    log::info!("使用 COPY 命令快速导入完成: {} 行, 耗时: {}ms", 
-                        count, copy_start.elapsed().as_millis());
-                }
-                Err(e) => {
-                    log::warn!("COPY 命令失败，回退到传统方式: {}", e);
-                    count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
-                }
-            }
-            // 清理临时文件（异步删除，避免阻塞）
-            let csv_path_clone = csv_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = tokio::fs::remove_file(&csv_path_clone).await {
-                    log::warn!("异步删除临时文件失败: {} - {}", csv_path_clone, e);
-                } else {
-                    log::info!("异步删除临时文件成功: {}", csv_path_clone);
-                }
-            });
-        } else if request.sheet_name.is_none() {
-            // CSV 文件：直接使用 COPY 命令
-            let copy_start = Instant::now();
-            match DatabaseService::fast_import_csv(&conn, &safe_table_name, &request.file_path, request.has_header) {
-                Ok(cnt) => {
-                    count = cnt;
-                    log::info!("使用 COPY 命令快速导入完成: {} 行, 耗时: {}ms", 
-                        count, copy_start.elapsed().as_millis());
-                }
-                Err(e) => {
-                    log::warn!("COPY 命令失败，回退到传统方式: {}", e);
-                    count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
-                }
-            }
-        } else {
-            // 兜底：使用传统方式
+        if is_json_file(&request.file_path) {
+            log::info!("JSON 文件，使用传统方式导入...");
             count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+        } else if is_txt_file(&request.file_path) {
+            log::info!("TXT 文件，跳过 COPY 命令，使用传统方式导入...");
+            count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+        } else {
+            let file_to_import = if let Some(sheet) = &request.sheet_name {
+                let export_start = Instant::now();
+                log::info!("Excel 文件，正在导出到临时 CSV...");
+                match export_excel_to_temp_csv(&request.file_path, sheet, request.has_header) {
+                    Ok(temp_csv_path) => {
+                        log::info!("Excel 导出成功，临时文件: {}, 耗时: {}ms", 
+                            temp_csv_path, export_start.elapsed().as_millis());
+                        Some(temp_csv_path)
+                    }
+                    Err(e) => {
+                        log::warn!("Excel 导出失败，回退到传统方式: {}", e);
+                        None
+                    }
+                }
+            } else if is_parquet_file {
+                Some("__PARQUET_FILE__".to_string())
+            } else {
+                None
+            };
+
+            if let Some(file_path_or_marker) = file_to_import {
+                if file_path_or_marker == "__PARQUET_FILE__" {
+                    let copy_start = Instant::now();
+                    log::info!("Parquet 文件，使用 DuckDB COPY 命令导入...");
+                    
+                    match DatabaseService::fast_import_parquet(&conn, &safe_table_name, &request.file_path) {
+                        Ok(cnt) => {
+                            count = cnt;
+                            log::info!("使用 DuckDB COPY PARQUET 命令导入完成: {} 行, 耗时: {}ms", 
+                                count, copy_start.elapsed().as_millis());
+                        }
+                        Err(e) => {
+                            log::warn!("DuckDB COPY PARQUET 命令失败，回退到传统方式: {}", e);
+                            count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+                        }
+                    }
+                } else {
+                    let copy_start = Instant::now();
+                    match DatabaseService::fast_import_csv(&conn, &safe_table_name, &file_path_or_marker, false, None) {
+                        Ok(cnt) => {
+                            count = cnt;
+                            log::info!("使用 COPY 命令快速导入完成: {} 行, 耗时: {}ms", 
+                                count, copy_start.elapsed().as_millis());
+                        }
+                        Err(e) => {
+                            log::warn!("COPY 命令失败，回退到传统方式: {}", e);
+                            count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+                        }
+                    }
+                    let csv_path_clone = file_path_or_marker.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = tokio::fs::remove_file(&csv_path_clone).await {
+                            log::warn!("异步删除临时文件失败: {} - {}", csv_path_clone, e);
+                        } else {
+                            log::info!("异步删除临时文件成功: {}", csv_path_clone);
+                        }
+                    });
+                }
+            } else if request.sheet_name.is_none() {
+                let copy_start = Instant::now();
+                match DatabaseService::fast_import_csv(
+                    &conn,
+                    &safe_table_name,
+                    &request.file_path,
+                    request.has_header,
+                    request.delimiter.as_deref(),
+                ) {
+                    Ok(cnt) => {
+                        count = cnt;
+                        log::info!("使用 COPY 命令快速导入完成: {} 行, 耗时: {}ms", 
+                            count, copy_start.elapsed().as_millis());
+                    }
+                    Err(e) => {
+                        log::warn!("COPY 命令失败，回退到传统方式: {}", e);
+                        count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+                    }
+                }
+            } else {
+                count = import_using_traditional_method(&conn, &safe_table_name, &column_names, &request)?;
+            }
         }
 
         log::info!("导入完成: 成功插入 {} 行", count);
@@ -666,4 +1102,17 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content)
         .map_err(|e| format!("写入文件失败: {}", e))
+}
+
+/// 获取文件元数据（大小等）
+#[tauri::command]
+pub fn get_file_metadata(file_path: String) -> Result<(u64, bool), String> {
+    let path = std::path::Path::new(&file_path);
+    if !path.exists() {
+        return Ok((0, false));
+    }
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok((metadata.len(), true)),
+        Err(e) => Err(format!("获取文件元数据失败: {}", e)),
+    }
 }

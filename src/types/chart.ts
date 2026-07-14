@@ -3,7 +3,7 @@ import type { EChartsOption } from 'echarts';
 /**
  * 图表类型枚举，由后端 generateChartConfig 的 chart_type 参数决定
  */
-export type ChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'area' | 'stackedBar';
+export type ChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'area' | 'stackedBar' | 'horizontalBar' | 'doughnut' | 'dualAxis' | 'radar' | 'funnel' | 'gauge';
 
 /**
  * 通用表格数据：二维字符串矩阵 + 列名数组

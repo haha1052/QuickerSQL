@@ -45,6 +45,35 @@ impl AuditLogService {
         conn: &MutexGuardConnection<'_>,
         request: RecordAuditLogRequest,
     ) -> Result<AuditLogItem, String> {
+        let enable_result = conn
+            .query(
+                "SELECT value FROM __settings WHERE category = ? AND key = ?",
+                &[&"security", &"enableAuditLog"],
+            )
+            .map_err(|e| format!("读取审计日志开关设置失败：{}", e))?;
+
+        let enabled = enable_result
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .map(|v| v != "false")
+            .unwrap_or(true);
+
+        if !enabled {
+            let id = uuid::Uuid::new_v4().to_string();
+            let timestamp = Utc::now();
+            return Ok(AuditLogItem {
+                id,
+                timestamp,
+                module: request.module,
+                action: request.action,
+                description: request.description,
+                status: request.status,
+                duration_ms: request.duration_ms,
+                details: request.details,
+            });
+        }
+
         let id = uuid::Uuid::new_v4().to_string();
         let timestamp = Utc::now();
 
@@ -151,6 +180,46 @@ impl AuditLogService {
 
         let result = conn.execute(&delete_sql, &[])
             .map_err(|e| format!("清理过期审计日志失败：{}", e))?;
+
+        Ok(result as i64)
+    }
+
+    /// 按大小清理审计日志（如果超过 max_size_mb，删除最旧的日志直到降到阈值以下）
+    pub fn cleanup_by_size(
+        conn: &MutexGuardConnection<'_>,
+        max_size_mb: i64,
+    ) -> Result<i64, String> {
+        // 估算每条审计日志的平均大小（字节）
+        // 包含：id(36) + timestamp(30) + module(50) + action(50) + description(200) + status(20) + duration_ms(10) + details(500) ≈ 896 字节
+        const AVG_LOG_SIZE_BYTES: i64 = 1024; // 保守估计 1KB
+
+        // 获取当前日志总数
+        let count = Self::count_audit_logs(conn)?;
+
+        // 估算当前总大小
+        let estimated_size_mb = (count * AVG_LOG_SIZE_BYTES) / (1024 * 1024);
+
+        if estimated_size_mb <= max_size_mb {
+            return Ok(0); // 没有超过阈值，无需清理
+        }
+
+        // 计算需要删除的日志数量
+        let target_count = (max_size_mb * 1024 * 1024) / AVG_LOG_SIZE_BYTES;
+        let to_delete = count - target_count;
+
+        if to_delete <= 0 {
+            return Ok(0);
+        }
+
+        // 删除最旧的日志
+        let delete_sql = format!(
+            "DELETE FROM __audit_logs WHERE id IN \
+             (SELECT id FROM __audit_logs ORDER BY timestamp ASC LIMIT {});",
+            to_delete
+        );
+
+        let result = conn.execute(&delete_sql, &[])
+            .map_err(|e| format!("按大小清理审计日志失败：{}", e))?;
 
         Ok(result as i64)
     }

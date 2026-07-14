@@ -138,9 +138,9 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
         <button
           style={styles.scheduleBtn}
           onClick={() => setShowScheduleModal(true)}
-          title="设置定时执行 SQL"
+          title={t('task.scheduleHint')}
         >
-          ⚡ 定时执行
+          {t('sqlEditor.scheduleExecution')}
         </button>
       </div>
       <div style={{ ...styles.panel, height: `${editorSize}%` }}>
@@ -171,7 +171,7 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
                 )
               ) : (
                 <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
-                  <span>查询执行成功，但未返回任何结果</span>
+                  <span>{t('sqlEditor.querySuccessNoResults')}</span>
                 </div>
               )}
             </div>
@@ -211,7 +211,7 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
         onClose={() => setShowScheduleModal(false)}
         initialTaskType="sql"
         initialPayload={{ sql: query.sql || '' }}
-        initialName="定时执行SQL"
+        initialName={t('task.scheduleExecution')}
       />
     </div>
   );

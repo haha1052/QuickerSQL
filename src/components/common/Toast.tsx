@@ -109,6 +109,9 @@ const SingleToast: React.FC<SingleToastProps> = ({ toast, onRemove }) => {
 
   return (
     <div
+      role="alert"
+      aria-live="polite"
+      aria-atomic="true"
       onMouseEnter={() => setIsPaused(true)}
       onMouseLeave={() => setIsPaused(false)}
       style={{

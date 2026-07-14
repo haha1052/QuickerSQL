@@ -1,0 +1,22 @@
+# 快捷键 Handler 对接实施 - Verification Checklist
+
+- [ ] Checkpoint 1: 编辑器 4 个快捷键全部对接（find/replace/goToLine/toggleComment）
+- [ ] Checkpoint 2: 编辑器 Ctrl+F 打开查找框
+- [ ] Checkpoint 3: 编辑器 Ctrl+H 打开替换框
+- [ ] Checkpoint 4: 编辑器 Ctrl+G 打开跳转到行对话框
+- [ ] Checkpoint 5: 编辑器 Ctrl+/ 切换当前行注释
+- [ ] Checkpoint 6: 全局文件操作 4 个快捷键对接（newFile/openFile/saveFile/saveAs）
+- [ ] Checkpoint 7: Ctrl+N 新建 SQL 标签页
+- [ ] Checkpoint 8: Ctrl+O 打开文件对话框
+- [ ] Checkpoint 9: Ctrl+S 触发保存操作
+- [ ] Checkpoint 10: 全局编辑 6 个快捷键可用（undo/redo/copy/paste/cut/selectAll）
+- [ ] Checkpoint 11: 输入框中编辑操作正常工作
+- [ ] Checkpoint 12: 编辑器中编辑操作由 Monaco 正常处理
+- [ ] Checkpoint 13: 导入导出与项目快捷键对接（importData/exportData/newProject）
+- [ ] Checkpoint 14: 编辑器快捷键优先级高于全局快捷键（如 Ctrl+E）
+- [ ] Checkpoint 15: npx tsc --noEmit --pretty 无错误（修改的文件）
+- [ ] Checkpoint 16: cargo check --quiet 无错误
+- [ ] Checkpoint 17: 代码遵循架构分层规范
+- [ ] Checkpoint 18: 快捷键管理系统技术文档已更新
+- [ ] Checkpoint 19: 设置系统现状分析报告已更新
+- [ ] Checkpoint 20: implemented_settings 已更新（新增实现的快捷键）

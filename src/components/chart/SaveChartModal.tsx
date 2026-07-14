@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
+import { useLocale } from '../../context/LocaleContext';
 import type { SavedChart } from '../../types/dashboard';
 
 interface SaveChartModalProps {
@@ -24,6 +25,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const { t } = useLocale();
   const { dashboards, loadDashboards, createSavedChart, addChartToDashboard, createDashboard, activeDashboardId, error: dashboardError } = useDashboardStore();
   const { addToast } = useToastStore();
   const [name, setName] = useState('');
@@ -161,7 +163,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
               style={styles.input}
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="例如：月度销售趋势"
+              placeholder={t('chart.namePlaceholder')}
               autoFocus
             />
 
@@ -170,7 +172,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
               style={styles.textarea}
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="可选描述..."
+              placeholder={t('chart.descriptionPlaceholder')}
             />
 
             <label style={styles.label}>标签</label>
@@ -191,7 +193,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                     setTagInput('');
                   }
                 }}
-                placeholder="输入标签后按 Enter"
+                placeholder={t('chart.tagInputHint')}
               />
             </div>
 
@@ -201,7 +203,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                 checked={addToDashboard}
                 onChange={e => setAddToDashboard(e.target.checked)}
               />
-              添加到仪表盘
+              {t('chart.addToDashboard')}
             </label>
 
             {addToDashboard && (
@@ -278,7 +280,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
             )}
           </div>
           <div style={styles.footer}>
-            <button style={styles.cancelBtn} onClick={onClose}>取消</button>
+            <button style={styles.cancelBtn} onClick={onClose}>{t('common.cancel')}</button>
             <button
               style={styles.saveBtn}
               onClick={handleSave}
@@ -304,12 +306,12 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                 style={styles.input}
                 value={newDashboardName}
                 onChange={e => setNewDashboardName(e.target.value)}
-                placeholder="例如：销售仪表盘"
+                placeholder={t('dashboard.namePlaceholder')}
                 autoFocus
               />
             </div>
             <div style={styles.footer}>
-              <button style={styles.cancelBtn} onClick={() => setShowNewDashboardModal(false)}>取消</button>
+              <button style={styles.cancelBtn} onClick={() => setShowNewDashboardModal(false)}>{t('common.cancel')}</button>
               <button
                 style={styles.saveBtn}
                 onClick={handleCreateNewDashboard}

@@ -117,11 +117,6 @@ impl MigrationService {
             log::warn!("Dashboard migrations failed: {}", e);
         }
 
-        // M7.2 性能优化：为系统表创建业务索引（幂等，重复执行无副作用）
-        if let Err(e) = Self::apply_optimization_indexes(conn) {
-            log::warn!("M7.2 索引优化执行失败（不影响核心功能）：{}", e);
-        }
-
         Ok(migrated_count)
     }
 
@@ -129,7 +124,7 @@ impl MigrationService {
     ///
     /// 所有索引均使用 `CREATE INDEX IF NOT EXISTS`，保证幂等性。
     /// 优化目标：
-    /// - 任务调度查询：`next_run_at, is_enabled` 复合索引
+    /// - 任务调度查询：`next_run_at, state` 复合索引
     /// - 任务执行日志查询：`task_id` 外键索引、`created_at` 时间索引
     /// - 审计日志查询：`created_at` 时间索引
     /// - 查询历史：`executed_at` 排序索引（已有基础索引 idx_history_executed_at，
@@ -139,21 +134,21 @@ impl MigrationService {
         // ===========================
         // __automation_tasks 表索引
         // ===========================
-        // 任务调度器：WHERE next_run_at < ? AND is_enabled = TRUE
+        // 任务调度器：WHERE next_run_at < ? AND state = 'enabled'
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_auto_tasks_next_run_enabled \
-             ON __automation_tasks(next_run_at, is_enabled)",
+             ON __automation_tasks(next_run_at, state)",
             &[],
         )
         .map_err(|e| format!("创建 idx_auto_tasks_next_run_enabled 失败：{}", e))?;
 
         // ===========================
-        // __automation_task_runs 表索引
+        // __automation_runs 表索引
         // ===========================
         // 按任务查询运行日志（外键查询最常见）
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_task_runs_task_id \
-             ON __automation_task_runs(task_id)",
+             ON __automation_runs(task_id)",
             &[],
         )
         .map_err(|e| format!("创建 idx_task_runs_task_id 失败：{}", e))?;
@@ -161,7 +156,7 @@ impl MigrationService {
         // 按时间范围查询运行日志（最近 N 次执行）
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_task_runs_created \
-             ON __automation_task_runs(created_at)",
+             ON __automation_runs(created_at)",
             &[],
         )
         .map_err(|e| format!("创建 idx_task_runs_created 失败：{}", e))?;
@@ -171,7 +166,7 @@ impl MigrationService {
         // ===========================
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_audit_logs_created \
-             ON __audit_logs(created_at)",
+             ON __audit_logs(timestamp)",
             &[],
         )
         .map_err(|e| format!("创建 idx_audit_logs_created 失败：{}", e))?;
@@ -200,7 +195,7 @@ impl MigrationService {
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_updated \
-             ON __saved_dashboards(updated_at DESC)",
+             ON __dashboards(updated_at DESC)",
             &[],
         )
         .map_err(|e| format!("创建 idx_saved_dashboards_updated 失败：{}", e))?;
@@ -271,14 +266,14 @@ impl MigrationService {
         // ===========================
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dashboards_is_default \
-             ON __saved_dashboards(is_default)",
+             ON __dashboards(is_default)",
             &[],
         )
         .map_err(|e| format!("创建 idx_dashboards_is_default 失败：{}", e))?;
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_name \
-             ON __saved_dashboards(name)",
+             ON __dashboards(name)",
             &[],
         )
         .map_err(|e| format!("创建 idx_saved_dashboards_name 失败：{}", e))?;

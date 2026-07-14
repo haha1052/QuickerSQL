@@ -1,1 +1,2 @@
-export { tauriService } from './tauri';
+export { tauriService, restartApp } from './tauri';
+export { windowService } from './tauri';

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { tauriService } from '../../services/tauri';
+import { useLocale } from '../../context/LocaleContext';
 import type { ProfileResult, ProfileColumnSummary } from '../../types/profile';
 
 /**
@@ -36,6 +37,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
   targetResult,
   onClose,
 }) => {
+  const { t } = useLocale();
   const [result, setResult] = useState<ProfileResult>(empty());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +101,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
             <span style={styles.metaValue}>{result.target}</span>
           </div>
           <div>
-            <span style={styles.metaLabel}>行数：</span>
+            <span style={styles.metaLabel}>{t('profile.rowCount')}</span>
             <span style={styles.metaValue}>{result.rowCount.toLocaleString()}</span>
           </div>
           <div>

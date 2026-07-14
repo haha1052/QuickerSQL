@@ -1,4 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
 import type {
   ApiResponse,
@@ -17,11 +19,15 @@ import type {
   UpdateSettingRequest,
   ExportSettingsResponse,
   ImportSettingsRequest,
+  SettingsMetaResponse,
   QueryCacheStats,
   QueryAuditLogsRequest,
   AuditLogsListResponse,
   TableInfo,
   ColumnInfo,
+  SqlSnippet,
+  ProjectInfo,
+  DuckDbInitStatus,
 } from '../types';
 import type {
   Dashboard,
@@ -35,6 +41,8 @@ import type {
   TaskListResponse,
   CreateTaskPayload,
   UpdateTaskPayload,
+  TaskDependency,
+  DependencyType,
 } from '../types/automation';
 import type {
   ProfileResult,
@@ -102,8 +110,42 @@ class TauriService {
   /**
    * Load CSV file
    */
-  async loadCsv(filePath: string): Promise<ApiResponse<CsvPreview>> {
-    return this.invokeCommand<CsvPreview>('load_csv', { filePath });
+  async loadCsv(
+    filePath: string,
+    options?: { autoDetectEncoding?: boolean; defaultEncoding?: string; batchSize?: number }
+  ): Promise<ApiResponse<CsvPreview>> {
+    const args: Record<string, unknown> = { filePath };
+    if (options?.autoDetectEncoding !== undefined) {
+      args.autoDetectEncoding = options.autoDetectEncoding;
+    }
+    if (options?.defaultEncoding !== undefined) {
+      args.defaultEncoding = options.defaultEncoding;
+    }
+    if (options?.batchSize !== undefined) {
+      args.batchSize = options.batchSize;
+    }
+    return this.invokeCommand<CsvPreview>('load_csv', args);
+  }
+
+  /**
+   * Get file metadata (size, exists, etc.)
+   */
+  async getFileMetadata(filePath: string): Promise<ApiResponse<{ size: number; exists: boolean }>> {
+    return this.invokeCommand('get_file_metadata', { filePath });
+  }
+
+  /**
+   * Listen to native Tauri drag-drop events and return the dropped file paths.
+   * This is the reliable way to obtain absolute paths for files dragged from
+   * the external file system in Tauri v2.
+   */
+  async onDragDropEvent(handler: (paths: string[]) => void): Promise<() => void> {
+    const appWindow = getCurrentWebviewWindow();
+    return appWindow.onDragDropEvent((event) => {
+      if (event.payload.type === 'drop') {
+        handler(event.payload.paths);
+      }
+    });
   }
 
   /**
@@ -120,6 +162,34 @@ class TauriService {
     return this.invokeCommand<CsvPreview>('load_excel_sheet', { filePath, sheetName });
   }
 
+  /**
+   * Load JSON file
+   */
+  async loadJson(filePath: string): Promise<ApiResponse<CsvPreview>> {
+    return this.invokeCommand<CsvPreview>('load_json', { filePath });
+  }
+
+  /**
+   * Load Parquet file
+   */
+  async loadParquet(filePath: string): Promise<ApiResponse<CsvPreview>> {
+    return this.invokeCommand<CsvPreview>('load_parquet', { filePath });
+  }
+
+  /**
+   * Load TXT file
+   */
+  async loadTxt(
+    filePath: string,
+    options?: { delimiter?: string }
+  ): Promise<ApiResponse<CsvPreview>> {
+    const args: Record<string, unknown> = { filePath };
+    if (options?.delimiter !== undefined) {
+      args.delimiter = options.delimiter;
+    }
+    return this.invokeCommand<CsvPreview>('load_txt', args);
+  }
+
   // ============ Import Operations ============
 
   /**
@@ -131,7 +201,6 @@ class TauriService {
 
   /**
    * Import data (V2 - preferred, reads complete file)
-   * 添加 30 秒全局超时保护，防止长时间阻塞
    */
   async importDataV2(request: {
     file_path: string;
@@ -139,33 +208,10 @@ class TauriService {
     table_name: string;
     has_header: boolean;
     fields: Array<{ name: string; dataType: string }>;
+    batch_size?: number;
+    delimiter?: string;
   }): Promise<ApiResponse<string>> {
-    const TIMEOUT_MS = 30000; // 30 秒超时
-    
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    
-    // 创建超时 Promise
-    const timeoutPromise = new Promise<ApiResponse<string>>((resolve) => {
-      timeoutId = setTimeout(() => {
-        resolve({
-          success: false,
-          error: '导入超时，请检查文件/数据库',
-        });
-      }, TIMEOUT_MS);
-    });
-
-    // 创建导入任务 Promise
-    const importTask = this.invokeCommand<string>('import_data_v2', { request });
-
-    // 使用 Promise.race 竞争
-    const result = await Promise.race([importTask, timeoutPromise]);
-    
-    // 清理 setTimeout（无论哪个先完成，避免内存泄漏）
-    if (timeoutId !== null) {
-      clearTimeout(timeoutId);
-    }
-    
-    return result;
+    return this.invokeCommand<string>('import_data_v2', { request });
   }
 
   // ============ Query Operations ============
@@ -175,6 +221,14 @@ class TauriService {
    */
   async executeSql(sql: string): Promise<ApiResponse<BatchExecuteResult>> {
     return this.invokeCommand<BatchExecuteResult>('execute_sql', { sql });
+  }
+
+  /**
+   * Preload DuckDB for analytical queries
+   * Called 5 seconds after app startup to avoid blocking user interaction
+   */
+  async preloadDuckdb(): Promise<ApiResponse<string>> {
+    return this.invokeCommand<string>('preload_duckdb');
   }
 
   /**
@@ -223,45 +277,85 @@ class TauriService {
   // ============ Project Operations ============
 
   /**
-   * Create project
+   * 创建新项目
+   * @param projectName 项目名称
+   * @param description 可选描述
    */
-  async createProject(projectName: string): Promise<ApiResponse<string>> {
-    return this.invokeCommand<string>('create_project', { projectName });
+  async createProject(projectName: string, description?: string): Promise<ApiResponse<ProjectInfo>> {
+    return this.invokeCommand<ProjectInfo>('create_project', { projectName, description });
   }
 
   /**
-   * Open project
+   * 打开项目（按数据库路径，旧接口保留）
    */
   async openProject(dbPath: string): Promise<ApiResponse<boolean>> {
     return this.invokeCommand<boolean>('open_project', { dbPath });
   }
 
   /**
-   * List projects
+   * 列出所有项目
    */
-  async listProjects(): Promise<ApiResponse<string[]>> {
-    return this.invokeCommand<string[]>('list_projects');
+  async listProjects(): Promise<ApiResponse<ProjectInfo[]>> {
+    return this.invokeCommand<ProjectInfo[]>('list_projects');
   }
 
   /**
-   * Delete project
+   * 删除项目
+   * @param projectId 项目 ID
    */
-  async deleteProject(projectName: string): Promise<ApiResponse<string>> {
-    return this.invokeCommand<string>('delete_project', { projectName });
+  async deleteProject(projectId: string): Promise<ApiResponse<string>> {
+    return this.invokeCommand<string>('delete_project', { projectId });
   }
 
   /**
-   * Rename project
+   * 重命名项目
+   * @param projectId 项目 ID
+   * @param newName 新名称
    */
-  async renameProject(oldName: string, newName: string): Promise<ApiResponse<string>> {
-    return this.invokeCommand<string>('rename_project', { oldName, newName });
+  async renameProject(projectId: string, newName: string): Promise<ApiResponse<ProjectInfo>> {
+    return this.invokeCommand<ProjectInfo>('rename_project', { projectId, newName });
   }
 
   /**
-   * Switch project
+   * 切换项目
+   * @param projectId 项目 ID
    */
-  async switchProject(projectName: string): Promise<ApiResponse<string>> {
-    return this.invokeCommand<string>('switch_project', { projectName });
+  async switchProject(projectId: string): Promise<ApiResponse<ProjectInfo>> {
+    return this.invokeCommand<ProjectInfo>('switch_project', { projectId });
+  }
+
+  /**
+   * 复制项目（另存为）
+   * @param sourceId 源项目 ID
+   * @param newName 新项目名
+   */
+  async duplicateProject(sourceId: string, newName: string): Promise<ApiResponse<ProjectInfo>> {
+    return this.invokeCommand<ProjectInfo>('duplicate_project', { sourceId, newName });
+  }
+
+  /**
+   * 导入项目
+   * @param sourceFilePath 源数据库文件路径
+   * @param newName 新项目名
+   */
+  async importProject(sourceFilePath: string, newName: string): Promise<ApiResponse<ProjectInfo>> {
+    return this.invokeCommand<ProjectInfo>('import_project', { sourceFilePath, newName });
+  }
+
+  /**
+   * 导出项目
+   * @param projectId 项目 ID
+   * @param destPath 目标文件路径
+   */
+  async exportProject(projectId: string, destPath: string): Promise<ApiResponse<string>> {
+    return this.invokeCommand<string>('export_project', { projectId, destPath });
+  }
+
+  /**
+   * 获取当前项目 ID
+   */
+  async getCurrentProjectId(): Promise<ApiResponse<string>> {
+    return this.invokeCommand<string>('get_current_project_id');
   }
 
   /**
@@ -272,7 +366,7 @@ class TauriService {
   }
 
   /**
-   * Export database
+   * Export database（当前数据库导出，旧接口保留）
    */
   async exportDatabase(destPath: string): Promise<ApiResponse<string>> {
     return this.invokeCommand<string>('export_database', { destPath });
@@ -286,13 +380,22 @@ class TauriService {
   }
 
   /**
-   * Export selected projects
+   * 批量导出选中的项目
+   * @param selectedProjectIds 项目 ID 列表
+   * @param destDir 目标目录
    */
-  async exportSelectedProjects(selectedProjects: string[], destDir: string): Promise<ApiResponse<string[]>> {
-    return this.invokeCommand<string[]>('export_selected_projects', { selectedProjects, destDir });
+  async exportSelectedProjects(selectedProjectIds: string[], destDir: string): Promise<ApiResponse<string[]>> {
+    return this.invokeCommand<string[]>('export_selected_projects', { selectedProjectIds, destDir });
   }
 
   // ============ Utility Operations ============
+
+  /**
+   * Read text file
+   */
+  async readTextFile(path: string): Promise<ApiResponse<string>> {
+    return this.invokeCommand<string>('read_text_file', { path });
+  }
 
   /**
    * Write text file
@@ -445,6 +548,78 @@ class TauriService {
     return this.invokeCommand('cleanup_old_history', { keepDays });
   }
 
+  // ============ SQL Snippet Operations ============
+
+  /**
+   * List SQL snippets, optionally filtered by category
+   */
+  async listSqlSnippets(category?: string): Promise<ApiResponse<SqlSnippet[]>> {
+    return this.invokeCommand<SqlSnippet[]>('list_sql_snippets', { category });
+  }
+
+  /**
+   * Get a single SQL snippet by ID
+   */
+  async getSqlSnippet(id: string): Promise<ApiResponse<SqlSnippet | null>> {
+    return this.invokeCommand<SqlSnippet | null>('get_sql_snippet', { id });
+  }
+
+  /**
+   * Create a new SQL snippet
+   */
+  async createSqlSnippet(params: {
+    name: string;
+    sql: string;
+    description?: string;
+    category?: string;
+    tags?: string;
+  }): Promise<ApiResponse<SqlSnippet>> {
+    return this.invokeCommand<SqlSnippet>('create_sql_snippet', {
+      name: params.name,
+      sql: params.sql,
+      description: params.description,
+      category: params.category,
+      tags: params.tags,
+    });
+  }
+
+  /**
+   * Update an existing SQL snippet
+   */
+  async updateSqlSnippet(params: {
+    id: string;
+    name: string;
+    sql: string;
+    description?: string;
+    category?: string;
+    tags?: string;
+    isFavorite?: boolean;
+  }): Promise<ApiResponse<SqlSnippet>> {
+    return this.invokeCommand<SqlSnippet>('update_sql_snippet', {
+      id: params.id,
+      name: params.name,
+      sql: params.sql,
+      description: params.description,
+      category: params.category,
+      tags: params.tags,
+      isFavorite: params.isFavorite,
+    });
+  }
+
+  /**
+   * Delete a SQL snippet
+   */
+  async deleteSqlSnippet(id: string): Promise<ApiResponse<void>> {
+    return this.invokeCommand<void>('delete_sql_snippet', { id });
+  }
+
+  /**
+   * Toggle favorite status of a SQL snippet
+   */
+  async toggleSnippetFavorite(id: string): Promise<ApiResponse<boolean>> {
+    return this.invokeCommand<boolean>('toggle_snippet_favorite', { id });
+  }
+
   // ============ Chart Operations ============
 
   /**
@@ -492,6 +667,13 @@ class TauriService {
   }
 
   // ============ Settings Operations ============
+
+  /**
+   * Get settings metadata (definitions without user values)
+   */
+  async getSettingsMeta(): Promise<ApiResponse<SettingsMetaResponse>> {
+    return this.invokeCommand('get_settings_meta_cmd');
+  }
 
   /**
    * Get all settings
@@ -552,7 +734,7 @@ class TauriService {
   }
 
   /**
-   * Configure query cache (capacity, ttl, enabled)
+   * Configure query cache (capacity, ttl, enabled, strategy)
    * Note: Tauri v2 converts camelCase to snake_case for Rust parameters,
    * but we explicitly pass snake_case keys here for clarity.
    */
@@ -560,12 +742,17 @@ class TauriService {
     capacity: number;
     ttlSeconds: number;
     enabled: boolean;
+    strategy?: string;
   }): Promise<ApiResponse<boolean>> {
-    return this.invokeCommand<boolean>('configure_query_cache', {
+    const args: Record<string, unknown> = {
       capacity: params.capacity,
       ttl_seconds: params.ttlSeconds,
       enabled: params.enabled,
-    });
+    };
+    if (params.strategy !== undefined) {
+      args.strategy = params.strategy;
+    }
+    return this.invokeCommand<boolean>('configure_query_cache', args);
   }
 
   /**
@@ -810,6 +997,14 @@ class TauriService {
       layout: updates.layout ? JSON.stringify(updates.layout) : null,
       filters: updates.filters ? JSON.stringify(updates.filters) : null,
       refreshIntervalSecs: updates.refreshIntervalSecs,
+      backgroundColor: updates.backgroundColor,
+      backgroundImage: updates.backgroundImage,
+      canvasWidth: updates.canvasWidth,
+      canvasHeight: updates.canvasHeight,
+      padding: updates.padding,
+      gridGap: updates.gridGap ?? undefined,
+      rowHeight: updates.rowHeight ?? undefined,
+      snapToGrid: updates.snapToGrid === undefined ? undefined : updates.snapToGrid,
     });
   }
 
@@ -859,6 +1054,19 @@ class TauriService {
     return this.invokeCommand<void>('remove_chart_from_dashboard', { itemId: itemId });
   }
 
+  /**
+   * 批量保存仪表盘布局（事务性更新）
+   */
+  async saveDashboardLayout(
+    dashboardId: string,
+    layoutUpdates: Array<{ id: string; x?: number; y?: number; width?: number; height?: number }>
+  ): Promise<ApiResponse<Dashboard>> {
+    return this.invokeCommand<Dashboard>('save_dashboard_layout', {
+      dashboardId: dashboardId,
+      layoutUpdates: JSON.stringify(layoutUpdates),
+    });
+  }
+
   // ========= 数据探查（Profile） Operations =========
 
   /**
@@ -888,40 +1096,156 @@ class TauriService {
 
   // ============ Automation Tasks Commands ============
 
+  /**
+   * 获取自动化任务列表（支持筛选）
+   *
+   * @param filterState 按任务状态筛选（可选）
+   * @param filterType 按任务类型筛选（可选）
+   * @param keyword 搜索关键词（可选）
+   * @returns 任务列表及统计数据
+   */
   async listAutomationTasks(filterState?: string, filterType?: string, keyword?: string): Promise<ApiResponse<TaskListResponse>> {
     return this.invokeCommand<TaskListResponse>('list_automation_tasks', { filterState, filterType, keyword });
   }
 
+  /**
+   * 获取单个自动化任务详情
+   *
+   * @param id 任务 ID
+   * @returns 任务详情
+   */
   async getAutomationTask(id: string): Promise<ApiResponse<Task>> {
     return this.invokeCommand<Task>('get_automation_task', { id });
   }
 
+  /**
+   * 创建自动化任务
+   *
+   * @param req 任务创建参数
+   * @returns 创建成功的任务对象
+   */
   async createAutomationTask(req: CreateTaskPayload): Promise<ApiResponse<Task>> {
     return this.invokeCommand<Task>('create_automation_task', { req });
   }
 
+  /**
+   * 更新自动化任务
+   *
+   * @param id 任务 ID
+   * @param patch 要更新的字段
+   * @returns 更新后的任务对象
+   */
   async updateAutomationTask(id: string, patch: UpdateTaskPayload): Promise<ApiResponse<Task>> {
     return this.invokeCommand<Task>('update_automation_task', { id, patch });
   }
 
+  /**
+   * 删除自动化任务
+   *
+   * @param id 任务 ID
+   */
   async deleteAutomationTask(id: string): Promise<ApiResponse<void>> {
     return this.invokeCommand<void>('delete_automation_task', { id });
   }
 
+  /**
+   * 启用自动化任务
+   *
+   * @param id 任务 ID
+   * @returns 启用后的任务对象
+   */
   async enableAutomationTask(id: string): Promise<ApiResponse<Task>> {
     return this.invokeCommand<Task>('enable_automation_task', { id });
   }
 
+  /**
+   * 禁用自动化任务
+   *
+   * @param id 任务 ID
+   * @returns 禁用后的任务对象
+   */
   async disableAutomationTask(id: string): Promise<ApiResponse<Task>> {
     return this.invokeCommand<Task>('disable_automation_task', { id });
   }
 
+  /**
+   * 立即执行自动化任务
+   *
+   * @param id 任务 ID
+   * @returns 任务运行记录
+   */
   async runAutomationTaskNow(id: string): Promise<ApiResponse<TaskRun>> {
     return this.invokeCommand<TaskRun>('run_automation_task_now', { id });
   }
 
+  /**
+   * 获取自动化任务的运行历史
+   *
+   * @param taskId 任务 ID
+   * @param limit 返回记录数限制（可选）
+   * @returns 任务运行记录列表
+   */
   async getAutomationTaskRuns(taskId: string, limit?: number): Promise<ApiResponse<TaskRun[]>> {
     return this.invokeCommand<TaskRun[]>('get_automation_task_runs', { taskId, limit });
+  }
+
+  // ============ Task Dependency Operations ============
+
+  /**
+   * 获取任务的依赖列表
+   *
+   * @param taskId 任务 ID
+   * @returns 任务依赖列表
+   */
+  async listTaskDependencies(taskId: string): Promise<ApiResponse<TaskDependency[]>> {
+    return this.invokeCommand<TaskDependency[]>('list_task_dependencies', { taskId });
+  }
+
+  /**
+   * 添加任务依赖
+   *
+   * @param taskId 任务 ID
+   * @param depType 依赖类型
+   * @param depConfig 依赖配置（JSON 字符串）
+   * @returns 创建的依赖对象
+   */
+  async addTaskDependency(taskId: string, depType: DependencyType, depConfig: string): Promise<ApiResponse<TaskDependency>> {
+    return this.invokeCommand<TaskDependency>('add_task_dependency', { taskId, depType, depConfig });
+  }
+
+  /**
+   * 更新任务依赖配置
+   *
+   * @param depId 依赖 ID
+   * @param depConfig 新的依赖配置（JSON 字符串）
+   * @returns 更新后的依赖对象
+   */
+  async updateTaskDependency(depId: string, depConfig: string): Promise<ApiResponse<TaskDependency>> {
+    return this.invokeCommand<TaskDependency>('update_task_dependency', { depId, depConfig });
+  }
+
+  /**
+   * 删除任务依赖
+   *
+   * @param depId 依赖 ID
+   * @returns 是否删除成功
+   */
+  async deleteTaskDependency(depId: string): Promise<ApiResponse<boolean>> {
+    return this.invokeCommand<boolean>('delete_task_dependency', { depId });
+  }
+
+  /**
+   * 替换任务的所有依赖
+   *
+   * @param taskId 任务 ID
+   * @param deps 新的依赖列表
+   * @returns 更新后的依赖列表
+   */
+  async replaceTaskDependencies(
+    taskId: string,
+    deps: Array<{ dependencyType: DependencyType; dependencyConfig: string }>
+  ): Promise<ApiResponse<TaskDependency[]>> {
+    return this.invokeCommand<TaskDependency[]>('replace_task_dependencies', { taskId, deps });
   }
 
   /**
@@ -934,7 +1258,7 @@ class TauriService {
   async getStartupStatus(): Promise<ApiResponse<{
     hasLaunched: boolean;
     currentDbPath: string;
-    projectList: string[];
+    projectList: ProjectInfo[];
     databaseStatus: { isConnected: boolean; path: string; tableCount: number };
     workspaceLayout: Array<{
       id: string;
@@ -1048,13 +1372,42 @@ class TauriService {
   }>> {
     return this.invokeCommand('get_startup_diagnostics');
   }
+
+  /**
+   * Listen to DuckDB initialization completed event
+   * @param handler Callback function that receives DuckDbInitStatus
+   * @returns Function to unsubscribe from the event
+   */
+  async onDuckDbInitCompleted(handler: (status: DuckDbInitStatus) => void): Promise<() => void> {
+    return listen('duckdb_init_completed', (event) => {
+      handler(event.payload as DuckDbInitStatus);
+    });
+  }
 }
 
 export const tauriService = TauriService.getInstance();
 export default tauriService;
 
-// ============ Window Control Service ============
+/**
+ * Restart application
+ */
+export const restartApp = async (): Promise<ApiResponse<void>> => {
+  try {
+    await invoke('restart_app');
+    return {
+      success: true,
+      data: undefined,
+    };
+  } catch (e) {
+    console.error('重启失败:', e);
+    return {
+      success: false,
+      error: String(e),
+    };
+  }
+};
 
+// ============ Window Control Service ============
 /**
  * Window control service
  * 统一封装窗口控制操作

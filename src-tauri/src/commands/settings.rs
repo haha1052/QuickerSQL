@@ -4,6 +4,12 @@ use crate::models::settings::*;
 use crate::services::SettingsService;
 use tauri::State;
 
+/// 获取所有设置元数据
+#[tauri::command]
+pub fn get_settings_meta_cmd() -> Result<SettingsMetaResponse, String> {
+    Ok(SettingsService::get_settings_meta())
+}
+
 /// 获取所有设置
 #[tauri::command]
 pub fn get_all_settings_cmd(state: State<'_, TauriAppState>) -> Result<SettingsListResponse, String> {

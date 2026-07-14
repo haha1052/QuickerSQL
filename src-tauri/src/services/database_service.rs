@@ -6,8 +6,8 @@
 //! 所有 SQL 操作均通过 [`crate::database::SqlIdentifier`] 做安全校验，
 //! 避免拼接标识符导致的 SQL 注入。
 
-use crate::database::{SqlIdentifier, MutexGuardConnection};
-use crate::models::database::{ColumnInfo, TableInfo, TableMetaInfo};
+use crate::database::{SqlIdentifier, MutexGuardConnection, DatabaseConnection};
+use crate::models::database::{ColumnInfo, CsvPreview, TableInfo, TableMetaInfo};
 
 /// 数据库表元信息服务
 pub struct DatabaseService;
@@ -165,19 +165,12 @@ impl DatabaseService {
     /// 查询所有用户表名（排除系统表）
     ///
     /// - 在 SQL 内通过 `NOT LIKE` 过滤 `__%` / `sqlite_%`
+    /// - 使用 `ESCAPE '\'` 确保 `_` 被当作字面量而非 LIKE 通配符
     /// - 按 name 排序
     pub fn list_user_tables(
         conn: &MutexGuardConnection,
     ) -> Result<Vec<String>, String> {
-        let result = conn
-            .query(
-                "SELECT name FROM sqlite_master WHERE type = 'table' \
-                 AND name NOT LIKE ? AND name NOT LIKE ? ORDER BY name",
-                &[&"__%", &"sqlite_%"],
-            )
-            .map_err(|e| format!("查询用户表名失败: {}", e))?;
-
-        Ok(result.rows.iter().map(|row| row.first().cloned().unwrap_or_default()).collect())
+        crate::database::meta::list_user_table_names(conn)
     }
 
     // ============================================================
@@ -333,9 +326,7 @@ impl DatabaseService {
         let new_ident = SqlIdentifier::new(new_name)?;
 
         // 旧表必须存在
-        let exists_sql = format!(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?"
-        );
+        let exists_sql = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?".to_string();
         let old_name_str = old_ident.as_str().to_string();
         let params_old: [&dyn crate::database::ToSql; 1] = [&old_name_str];
         let exists_result = conn
@@ -449,6 +440,7 @@ impl DatabaseService {
         table_name: &str,
         columns: &[String],
         rows: &[Vec<String>],
+        batch_size: Option<usize>,
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
 
@@ -476,7 +468,7 @@ impl DatabaseService {
         }
 
         // 使用批量插入：一次插入多行，显著提升性能
-        let batch_size = 100;
+        let batch_size = batch_size.unwrap_or(100);
         let mut total = 0usize;
 
         for batch in rows.chunks(batch_size) {
@@ -517,34 +509,114 @@ impl DatabaseService {
         table_name: &str,
         file_path: &str,
         has_header: bool,
+        delimiter: Option<&str>,
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
-        
-        // 处理 Windows 路径（需要转义反斜杠）
-        let escaped_path = file_path.replace('\\', "\\\\");
-        
-        // DuckDB COPY 命令格式
-        // COPY table_name FROM 'file_path' WITH (FORMAT CSV, HEADER, DELIMITER ',')
-        let sql = if has_header {
+
+        // 处理 Windows 路径（转义反斜杠与单引号）
+        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
+
+        // 使用指定的分隔符，默认逗号
+        let delimiter = delimiter.unwrap_or(",");
+
+        // COPY DELIMITER 必须是单个字符
+        if delimiter.chars().count() != 1 {
+            return Err(format!("COPY 命令分隔符必须是单个字符，当前为 '{}'", delimiter));
+        }
+
+        // 将实际制表符转换为 SQL 转义序列 \t；对其他字符仅转义单引号
+        let sql_delimiter = if delimiter == "\t" {
+            "\\t".to_string()
+        } else {
+            delimiter.replace('\'', "''")
+        };
+
+        // DuckDB COPY 命令格式：
+        // 默认逗号分隔符省略 DELIMITER 子句，其他分隔符显式声明
+        let sql = if sql_delimiter == "," {
+            if has_header {
+                format!(
+                    "COPY {} FROM '{}' (FORMAT CSV, HEADER true)",
+                    table_ident.quoted(), escaped_path
+                )
+            } else {
+                format!(
+                    "COPY {} FROM '{}' (FORMAT CSV)",
+                    table_ident.quoted(), escaped_path
+                )
+            }
+        } else if has_header {
             format!(
-                "COPY {} FROM '{}' WITH (FORMAT CSV, HEADER, DELIMITER ',', QUOTE '\"', ESCAPE '\"')",
-                table_ident.quoted(),
-                escaped_path
+                "COPY {} FROM '{}' (FORMAT CSV, DELIMITER '{}', HEADER true)",
+                table_ident.quoted(), escaped_path, sql_delimiter
             )
         } else {
             format!(
-                "COPY {} FROM '{}' WITH (FORMAT CSV, DELIMITER ',', QUOTE '\"', ESCAPE '\"')",
-                table_ident.quoted(),
-                escaped_path
+                "COPY {} FROM '{}' (FORMAT CSV, DELIMITER '{}')",
+                table_ident.quoted(), escaped_path, sql_delimiter
             )
         };
-        
+
         log::info!("执行 COPY 命令: {}", sql);
-        
+
         conn.execute(&sql, &[])
             .map_err(|e| format!("COPY 命令执行失败: {}", e))?;
-        
+
         // 获取插入的行数
+        Self::get_row_count(conn, table_name)
+            .map(|count| count as usize)
+            .map_err(|e| format!("获取行数失败: {}", e))
+    }
+
+    /// 预览 Parquet 文件内容
+    ///
+    /// 使用 DuckDB 的 parquet_scan 函数读取 Parquet 文件并返回预览数据。
+    /// 文件路径会进行转义处理以防止 SQL 注入。
+    pub fn preview_parquet_file(
+        conn: &dyn DatabaseConnection,
+        file_path: &str,
+        max_rows: usize,
+    ) -> Result<CsvPreview, String> {
+        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
+
+        let sql = format!(
+            "SELECT * FROM parquet_scan('{}') LIMIT {}",
+            escaped_path, max_rows
+        );
+
+        let result = conn
+            .query(&sql, &[])
+            .map_err(|e| format!("执行 Parquet 查询失败: {}", e))?;
+
+        Ok(CsvPreview {
+            headers: result.columns,
+            rows: result.rows,
+        })
+    }
+
+    /// 使用 DuckDB COPY 命令快速导入 Parquet 文件
+    ///
+    /// COPY 命令是 DuckDB 原生支持的最快导入方式，直接从文件读取数据，无需先加载到内存
+    pub fn fast_import_parquet(
+        conn: &MutexGuardConnection,
+        table_name: &str,
+        file_path: &str,
+    ) -> Result<usize, String> {
+        let table_ident = SqlIdentifier::new(table_name)?;
+
+        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
+
+        let sql = format!(
+            "COPY {} FROM '{}' (FORMAT PARQUET);",
+            table_ident.quoted(),
+            escaped_path
+        );
+
+        log::info!("执行 COPY PARQUET 命令: {}", sql);
+
+        conn.execute(&sql, &[])
+            .map_err(|e| format!("COPY PARQUET 命令执行失败: {}", e))?;
+
         Self::get_row_count(conn, table_name)
             .map(|count| count as usize)
             .map_err(|e| format!("获取行数失败: {}", e))

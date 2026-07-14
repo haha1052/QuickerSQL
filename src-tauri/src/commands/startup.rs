@@ -20,6 +20,7 @@ use crate::services::{AppStateService, ProjectService, DashboardService, TaskSer
 use crate::models::app_state::{WorkspaceTab, WorkspacePanel};
 use crate::models::dashboard::{DashboardLite, SavedChartLite};
 use crate::models::automation::TaskLite;
+use crate::models::ProjectInfo;
 
 /// ====== Windows 透明窗口边框消除 ======
 ///
@@ -102,6 +103,8 @@ mod win_borderless {
         pub ex_style_cleared: bool,
         pub style_cleared: bool,
         pub retry_count: u32,
+        /// Win10 环境标记：border_color/thickness/transitions 不可用，不计入成功率
+        pub is_win10: bool,
     }
 
     impl TransparentDiagnostics {
@@ -116,20 +119,34 @@ mod win_borderless {
                 ex_style_cleared: false,
                 style_cleared: false,
                 retry_count: 0,
+                is_win10: false,
             }
         }
 
         fn success_rate(&self) -> f64 {
             let mut ok = 0.0;
+            let mut total = 0.0;
+            // 核心指标（Win10/Win11 通用）
             if self.hwnd_valid { ok += 1.0; }
+            total += 1.0;
             if self.dwm_extend_frame_ok { ok += 1.0; }
-            if self.dwm_border_color_ok { ok += 0.5; }
-            if self.dwm_border_thickness_ok { ok += 0.5; }
-            if self.dwm_transitions_disabled { ok += 0.5; }
+            total += 1.0;
             if self.set_window_theme_ok { ok += 0.5; }
+            total += 0.5;
             if self.ex_style_cleared { ok += 1.0; }
+            total += 1.0;
             if self.style_cleared { ok += 1.0; }
-            ok / 6.0
+            total += 1.0;
+            // Win11 专属指标
+            if !self.is_win10 {
+                if self.dwm_border_color_ok { ok += 0.5; }
+                total += 0.5;
+                if self.dwm_border_thickness_ok { ok += 0.5; }
+                total += 0.5;
+                if self.dwm_transitions_disabled { ok += 0.5; }
+                total += 0.5;
+            }
+            if total == 0.0 { 0.0 } else { ok / total }
         }
 
         fn log(&self, label: &str) {
@@ -138,9 +155,9 @@ mod win_borderless {
                 label,
                 if self.hwnd_valid { "✓" } else { "✗" },
                 if self.dwm_extend_frame_ok { "✓" } else { "✗" },
-                if self.dwm_border_color_ok { "✓" } else { "N/A(Win10)" },
-                if self.dwm_border_thickness_ok { "✓" } else { "N/A(Win10)" },
-                if self.dwm_transitions_disabled { "✓" } else { "✗" },
+                if self.is_win10 { "N/A(Win10)" } else if self.dwm_border_color_ok { "✓" } else { "✗" },
+                if self.is_win10 { "N/A(Win10)" } else if self.dwm_border_thickness_ok { "✓" } else { "✗" },
+                if self.is_win10 { "N/A(Win10)" } else if self.dwm_transitions_disabled { "✓" } else { "✗" },
                 if self.set_window_theme_ok { "✓" } else { "✗" },
                 if self.ex_style_cleared { "✓" } else { "✗" },
                 if self.style_cleared { "✓" } else { "✗" },
@@ -264,8 +281,8 @@ mod win_borderless {
                 diag.dwm_transitions_disabled = true;
                 log::debug!("[透明窗口] DWMWA_TRANSITIONS_FORCEDISABLED 已禁用");
             } else {
-                log::warn!(
-                    "[透明窗口] DWMWA_TRANSITIONS_FORCEDISABLED 返回 hr=0x{:08X}",
+                log::debug!(
+                    "[透明窗口] DWMWA_TRANSITIONS_FORCEDISABLED 返回 hr=0x{:08X}（Win10 环境下正常）",
                     hr
                 );
             }
@@ -306,6 +323,7 @@ mod win_borderless {
                 );
             }
         } else {
+            diag.is_win10 = true;
             log::info!("[透明窗口] Win10 环境，跳过 DWMWA_BORDER_COLOR / DWMWA_VISIBLE_FRAME_BORDER_THICKNESS");
         }
 
@@ -537,8 +555,8 @@ pub struct StartupStatus {
     pub has_launched: bool,
     /// 当前数据库文件路径
     pub current_db_path: String,
-    /// 项目名称列表
-    pub project_list: Vec<String>,
+    /// 项目列表（含 id/name/db_path 等元数据）
+    pub project_list: Vec<ProjectInfo>,
     /// 数据库状态（连接成功 / 表数量等）
     pub database_status: DatabaseStatusLite,
     /// 工作区布局（tabs + panels）
@@ -605,7 +623,7 @@ pub struct StartupTiming {
 }
 
 /// 轻量数据库状态（避免额外依赖大 struct）
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseStatusLite {
     /// 数据库是否连接正常
@@ -626,16 +644,6 @@ pub struct SettingLite {
     pub category: String,
     pub key: String,
     pub value: String,
-}
-
-impl Default for DatabaseStatusLite {
-    fn default() -> Self {
-        Self {
-            is_connected: false,
-            path: String::new(),
-            table_count: 0,
-        }
-    }
 }
 
 /// 合并后的启动状态命令（P0-2 核心优化点）
@@ -731,10 +739,7 @@ pub fn get_startup_status(state: State<'_, TauriAppState>) -> Result<StartupStat
 
     // —— 4. project_list（ProjectService，文件系统操作）——
     let t = Instant::now();
-    let project_list = match ProjectService::list_projects() {
-        Ok(list) => list,
-        Err(_) => Vec::new(),
-    };
+    let project_list = ProjectService::list_projects().unwrap_or_default();
     let project_list_ms = t.elapsed().as_millis() as i64;
 
     // —— 5. 数据库健康状态（下沉到 DatabaseService）——

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
 import { useTaskStore, useToastStore } from '../../store';
 import { useStartupContext } from '../../AppWrapper';
+import { useLocale } from '../../context/LocaleContext';
 import { TaskEditorModal } from './TaskEditorModal';
 import { TaskRunLogsPanel } from './TaskRunLogsPanel';
 import type { Task, TaskType, TaskState, TaskRunStatus } from '../../types/automation';
@@ -13,7 +14,7 @@ const formatDateTime = (ts: number | null): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-const getTaskTypeBadge = (t: TaskType): React.ReactNode => {
+const getTaskTypeBadge = (t: (key: string) => string, taskType: TaskType): React.ReactNode => {
   const map: Record<TaskType, React.CSSProperties> = {
     sql: { background: 'rgba(0,123,255,0.12)', color: Colors.primary },
     refresh_chart: { background: 'rgba(23,162,184,0.12)', color: Colors.info },
@@ -21,10 +22,10 @@ const getTaskTypeBadge = (t: TaskType): React.ReactNode => {
     export_csv: { background: 'rgba(40,167,69,0.12)', color: Colors.success },
   };
   const label: Record<TaskType, string> = {
-    sql: 'SQL 执行',
-    refresh_chart: '刷新图表',
-    refresh_dashboard: '刷新仪表盘',
-    export_csv: '导出 CSV',
+    sql: t('task.typeSQL'),
+    refresh_chart: t('task.actionRefreshChart'),
+    refresh_dashboard: t('task.actionRefreshDashboard'),
+    export_csv: t('task.typeExportCSV'),
   };
   return (
     <span style={{
@@ -33,21 +34,21 @@ const getTaskTypeBadge = (t: TaskType): React.ReactNode => {
       borderRadius: BorderRadius.sm,
       fontSize: FontSizes.caption,
       fontWeight: 500,
-      ...map[t],
-    }}>{label[t] || t}</span>
+      ...map[taskType],
+    }}>{label[taskType] || taskType}</span>
   );
 };
 
-const getStateBadge = (state: TaskState): React.ReactNode => {
+const getStateBadge = (t: (key: string) => string, state: TaskState): React.ReactNode => {
   const map: Record<TaskState, React.CSSProperties> = {
     enabled: { background: 'rgba(40,167,69,0.15)', color: Colors.success },
     disabled: { background: 'rgba(102,102,102,0.15)', color: Colors.textSecondary },
     paused: { background: 'rgba(253,126,20,0.15)', color: Colors.warning },
   };
   const label: Record<TaskState, string> = {
-    enabled: '运行中',
-    disabled: '已禁用',
-    paused: '已暂停',
+    enabled: t('task.statusEnabled'),
+    disabled: t('task.statusDisabled'),
+    paused: t('task.statusPaused'),
   };
   return (
     <span style={{
@@ -61,7 +62,7 @@ const getStateBadge = (state: TaskState): React.ReactNode => {
   );
 };
 
-const getRunStatusBadge = (status: TaskRunStatus | undefined | null): React.ReactNode => {
+const getRunStatusBadge = (t: (key: string) => string, status: TaskRunStatus | undefined | null): React.ReactNode => {
   if (!status) return <span style={{ color: Colors.textSecondary, fontSize: FontSizes.caption }}>-</span>;
   const map: Record<TaskRunStatus, React.CSSProperties> = {
     success: { background: 'rgba(40,167,69,0.15)', color: Colors.success },
@@ -70,10 +71,10 @@ const getRunStatusBadge = (status: TaskRunStatus | undefined | null): React.Reac
     skipped: { background: 'rgba(102,102,102,0.15)', color: Colors.textSecondary },
   };
   const label: Record<TaskRunStatus, string> = {
-    success: '成功',
-    failed: '失败',
-    running: '运行中',
-    skipped: '跳过',
+    success: t('task.runSuccess'),
+    failed: t('task.runFailed'),
+    running: t('task.runRunning'),
+    skipped: t('task.runSkipped'),
   };
   return (
     <span style={{
@@ -87,16 +88,16 @@ const getRunStatusBadge = (status: TaskRunStatus | undefined | null): React.Reac
   );
 };
 
-const getScheduleSummary = (task: Task): string => {
+const getScheduleSummary = (t: (key: string, vars?: Record<string, string | number>) => string, task: Task): string => {
   if (task.scheduleMode === 'interval') {
     const v = parseInt(task.scheduleValue, 10);
-    if (v >= 86400) return `间隔 ${(v / 86400).toFixed(1)} 天`;
-    if (v >= 3600) return `间隔 ${(v / 3600).toFixed(1)} 小时`;
-    if (v >= 60) return `间隔 ${(v / 60).toFixed(1)} 分钟`;
-    return `间隔 ${v} 秒`;
+    if (v >= 86400) return t('task.scheduleIntervalDays', { value: (v / 86400).toFixed(1) });
+    if (v >= 3600) return t('task.scheduleIntervalHours', { value: (v / 3600).toFixed(1) });
+    if (v >= 60) return t('task.scheduleIntervalMinutes', { value: (v / 60).toFixed(1) });
+    return t('task.scheduleIntervalSeconds', { value: v });
   }
-  if (task.scheduleMode === 'cron') return `Cron: ${task.scheduleValue}`;
-  return '仅手动触发';
+  if (task.scheduleMode === 'cron') return t('task.scheduleCron', { value: task.scheduleValue });
+  return t('task.scheduleManualOnly');
 };
 
 export const TaskCenterPage: React.FC = () => {
@@ -115,9 +116,11 @@ export const TaskCenterPage: React.FC = () => {
     setFilterState,
     setFilterType,
     setKeyword,
+    loadTasks,
   } = useTaskStore();
 
   const { addToast } = useToastStore();
+  const { t } = useLocale();
 
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -125,6 +128,33 @@ export const TaskCenterPage: React.FC = () => {
   const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
   const [pageSize, setPageSize] = useState<number>(20);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [leftPanelWidth, setLeftPanelWidth] = useState<number>(55); // 百分比
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const container = document.querySelector('[data-task-center-container]');
+      if (!container) return;
+      const containerRect = container.getBoundingClientRect();
+      const newWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+      setLeftPanelWidth(Math.min(Math.max(newWidth, 30), 70)); // 限制在 30%-70%
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
 
   // v3 启动优化：优先消费 StartupContext 中的缓存数据，避免独立 IPC
   // 仅在首屏渲染后按需刷新时才执行 IPC
@@ -159,11 +189,6 @@ export const TaskCenterPage: React.FC = () => {
     setCurrentPage(1);
   }, [tasks.length, pageSize]);
 
-  const openCreate = () => {
-    setEditingTask(null);
-    setEditorOpen(true);
-  };
-
   const openEdit = (task: Task) => {
     setEditingTask(task);
     setEditorOpen(true);
@@ -173,29 +198,29 @@ export const TaskCenterPage: React.FC = () => {
     try {
       if (task.state === 'enabled') {
         await disableTask(task.id);
-        addToast(`任务已禁用：${task.name}`, 'success');
+        addToast(t('task.toastDisabled', { name: task.name }), 'success');
       } else {
         await enableTask(task.id);
-        addToast(`任务已启用：${task.name}`, 'success');
+        addToast(t('task.toastEnabled', { name: task.name }), 'success');
       }
     } catch (e) {
-      addToast(`操作失败：${String(e)}`, 'error');
+      addToast(t('task.toastOperationFailed', { error: String(e) }), 'error');
     }
   };
 
   const handleRunNow = async (task: Task) => {
     try {
       await runTaskNow(task.id);
-      addToast(`任务已运行：${task.name}`, 'success');
+      addToast(t('task.toastRunStarted', { name: task.name }), 'success');
     } catch (e) {
-      addToast(`任务执行失败：${String(e)}`, 'error');
+      addToast(t('task.toastRunFailed', { error: String(e) }), 'error');
     }
   };
 
   const handleDelete = (task: Task) => {
-    if (!confirm(`确认删除任务 "${task.name}" 吗？此操作不可恢复。`)) return;
+    if (!confirm(t('task.confirmDelete', { name: task.name }))) return;
     deleteTask(task.id).then((ok) => {
-      if (ok) addToast('任务已删除', 'success');
+      if (ok) addToast(t('task.toastDeleted'), 'success');
     });
   };
 
@@ -203,22 +228,45 @@ export const TaskCenterPage: React.FC = () => {
     setKeyword(searchInput.trim());
   };
 
+  const handleCreateTask = () => {
+    setEditingTask(null);
+    setEditorOpen(true);
+  };
+
   const styles: Record<string, React.CSSProperties> = {
     container: {
+      flex: 1,
       display: 'flex',
       flexDirection: 'row',
-      height: '100%',
       background: Colors.background,
       overflow: 'hidden',
+      minHeight: 0,
     },
     leftPanel: {
-      flex: 1,
-      minWidth: 0,
+      width: `${leftPanelWidth}%`,
+      minWidth: '30%',
+      maxWidth: '70%',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
       padding: Spacing.lg,
       gap: Spacing.md,
+      boxSizing: 'border-box',
+    },
+    resizeHandle: {
+      width: '6px',
+      cursor: 'col-resize',
+      background: Colors.border,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      transition: 'background 0.2s',
+      '&:hover': {
+        background: Colors.borderLight,
+      },
+    } as React.CSSProperties,
+    resizeHandleActive: {
+      background: Colors.primary,
     },
     topBar: {
       display: 'flex',
@@ -379,21 +427,21 @@ export const TaskCenterPage: React.FC = () => {
   };
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} data-task-center-container>
       <div style={styles.leftPanel}>
         <div style={styles.topBar}>
-          <h1 style={styles.pageTitle}>自动化任务</h1>
+          <h1 style={styles.pageTitle}>{t('task.pageTitle')}</h1>
           <div style={styles.statsRow}>
             <div style={{ ...styles.statCard, borderLeft: `3px solid ${Colors.primary}` }}>
-              <div style={styles.statLabel}>任务总数</div>
+              <div style={styles.statLabel}>{t('task.statTotal')}</div>
               <div style={styles.statValue}>{stats.total}</div>
             </div>
             <div style={{ ...styles.statCard, borderLeft: `3px solid ${Colors.success}` }}>
-              <div style={styles.statLabel}>已启用</div>
+              <div style={styles.statLabel}>{t('task.statEnabled')}</div>
               <div style={styles.statValue}>{stats.enabledCount}</div>
             </div>
             <div style={{ ...styles.statCard, borderLeft: `3px solid ${Colors.danger}` }}>
-              <div style={styles.statLabel}>异常任务</div>
+              <div style={styles.statLabel}>{t('task.statFailed')}</div>
               <div style={styles.statValue}>{stats.failedTasksCount}</div>
             </div>
           </div>
@@ -401,7 +449,7 @@ export const TaskCenterPage: React.FC = () => {
             <div style={styles.searchBox}>
               <input
                 style={styles.searchInput}
-                placeholder="搜索任务名称..."
+                placeholder={t('task.searchPlaceholder')}
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -413,55 +461,69 @@ export const TaskCenterPage: React.FC = () => {
                 value={filterState}
                 onChange={(e) => setFilterState(e.target.value as TaskState | 'all')}
               >
-                <option value="all">所有状态</option>
-                <option value="enabled">运行中</option>
-                <option value="disabled">已禁用</option>
-                <option value="paused">已暂停</option>
+                <option value="all">{t('task.filterAllStates')}</option>
+                <option value="enabled">{t('task.filterStateRunning')}</option>
+                <option value="disabled">{t('task.filterStateDisabled')}</option>
+                <option value="paused">{t('task.filterStatePaused')}</option>
               </select>
               <select
                 style={styles.select}
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value)}
               >
-                <option value="all">所有类型</option>
-                <option value="sql">SQL 执行</option>
-                <option value="refresh_chart">刷新图表</option>
-                <option value="refresh_dashboard">刷新仪表盘</option>
-                <option value="export_csv">导出 CSV</option>
+                <option value="all">{t('task.filterAllTypes')}</option>
+                <option value="sql">{t('task.typeSQL')}</option>
+                <option value="refresh_chart">{t('task.actionRefreshChart')}</option>
+                <option value="refresh_dashboard">{t('task.actionRefreshDashboard')}</option>
+                <option value="export_csv">{t('task.typeExportCSV')}</option>
               </select>
               <select
                 style={styles.select}
                 value="all"
                 onChange={() => {}}
-                title="调度模式筛选"
+                title={t('task.scheduleModeFilter')}
               >
-                <option value="all">所有调度</option>
-                <option value="manual">手动触发</option>
-                <option value="interval">间隔调度</option>
-                <option value="cron">Cron 调度</option>
+                <option value="all">{t('task.filterAllSchedules')}</option>
+                <option value="manual">{t('task.filterScheduleManual')}</option>
+                <option value="interval">{t('task.filterScheduleInterval')}</option>
+                <option value="cron">{t('task.filterScheduleCron')}</option>
               </select>
+              <button
+                style={styles.secondaryBtn}
+                onClick={() => loadTasks()}
+                title="刷新任务列表"
+                disabled={loading}
+              >
+                🔄 刷新
+              </button>
+              <button
+                style={styles.primaryBtn}
+                onClick={handleCreateTask}
+                title="新建任务"
+              >
+                + 新建任务
+              </button>
             </div>
-            <button style={styles.primaryBtn} onClick={openCreate}>+ 新建任务</button>
           </div>
         </div>
 
         <div style={styles.tableContainer}>
           {loading && tasks.length === 0 ? (
-            <div style={styles.empty}>加载中...</div>
+            <div style={styles.empty}>{t('common.loading')}</div>
           ) : tasks.length === 0 ? (
-            <div style={styles.empty}>暂无任务。点击"新建任务"开始。</div>
+            <div style={styles.empty}>{t('task.emptyHint')}</div>
           ) : (
             <>
             <table style={styles.table}>
               <thead>
                 <tr style={styles.tableHeader}>
-                  <th style={styles.th}>名称</th>
-                  <th style={styles.th}>类型</th>
-                  <th style={styles.th}>状态</th>
-                  <th style={styles.th}>调度</th>
-                  <th style={styles.th}>上次运行</th>
-                  <th style={styles.th}>下次运行</th>
-                  <th style={{ ...styles.th, textAlign: 'center' }}>操作</th>
+                  <th style={styles.th}>{t('task.thName')}</th>
+                  <th style={styles.th}>{t('task.thType')}</th>
+                  <th style={styles.th}>{t('task.thState')}</th>
+                  <th style={styles.th}>{t('task.thSchedule')}</th>
+                  <th style={styles.th}>{t('task.thLastRun')}</th>
+                  <th style={styles.th}>{t('task.thNextRun')}</th>
+                  <th style={{ ...styles.th, textAlign: 'center' }}>{t('task.thActions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -485,14 +547,14 @@ export const TaskCenterPage: React.FC = () => {
                         <div style={styles.taskDesc}>{task.description}</div>
                       )}
                     </td>
-                    <td style={styles.td}>{getTaskTypeBadge(task.taskType)}</td>
-                    <td style={styles.td}>{getStateBadge(task.state)}</td>
+                    <td style={styles.td}>{getTaskTypeBadge(t, task.taskType)}</td>
+                    <td style={styles.td}>{getStateBadge(t, task.state)}</td>
                     <td style={{ ...styles.td, fontSize: FontSizes.small, color: Colors.textSecondary }}>
-                      {getScheduleSummary(task)}
+                      {getScheduleSummary(t, task)}
                     </td>
                     <td style={{ ...styles.td, fontSize: FontSizes.small }}>
                       <div>{formatDateTime(task.lastRunAt)}</div>
-                      <div style={{ marginTop: '2px' }}>{getRunStatusBadge(task.lastRunStatus)}</div>
+                      <div style={{ marginTop: '2px' }}>{getRunStatusBadge(t, task.lastRunStatus)}</div>
                     </td>
                     <td style={{ ...styles.td, fontSize: FontSizes.small, color: Colors.textSecondary }}>
                       {formatDateTime(task.nextRunAt)}
@@ -501,28 +563,28 @@ export const TaskCenterPage: React.FC = () => {
                       <div style={styles.actionBtns}>
                         <button
                           style={styles.iconBtn}
-                          title={task.state === 'enabled' ? '禁用' : '启用'}
+                          title={task.state === 'enabled' ? t('task.btnDisable') : t('task.btnEnable')}
                           onClick={() => handleToggleState(task)}
                         >
                           {task.state === 'enabled' ? '⏸' : '▶'}
                         </button>
                         <button
                           style={styles.iconBtn}
-                          title="立即运行"
+                          title={t('common.runNow')}
                           onClick={() => handleRunNow(task)}
                         >
                           ⚡
                         </button>
                         <button
                           style={styles.iconBtn}
-                          title="编辑"
+                          title={t('common.edit')}
                           onClick={() => openEdit(task)}
                         >
                           ✏️
                         </button>
                         <button
                           style={{ ...styles.iconBtn, color: Colors.danger }}
-                          title="删除"
+                          title={t('common.delete')}
                           onClick={() => handleDelete(task)}
                         >
                           🗑
@@ -545,8 +607,12 @@ export const TaskCenterPage: React.FC = () => {
                 color: Colors.textSecondary,
               }}>
                 <div>
-                  共 <b style={{ color: Colors.textPrimary }}>{tasks.length}</b> 个任务
-                  ，第 <b style={{ color: Colors.textPrimary }}>{safeCurrentPage}</b>/{totalPages} 页
+                  {t('task.paginationInfoPrefix')}
+                  <b style={{ color: Colors.textPrimary }}>{tasks.length}</b>
+                  {t('task.paginationInfoMiddle')}
+                  <b style={{ color: Colors.textPrimary }}>{safeCurrentPage}</b>
+                  /<b style={{ color: Colors.textPrimary }}>{totalPages}</b>
+                  {t('task.paginationInfoSuffix')}
                 </div>
                 <div style={{ display: 'flex', gap: Spacing.sm, alignItems: 'center' }}>
                   <button
@@ -561,7 +627,7 @@ export const TaskCenterPage: React.FC = () => {
                     }}
                     onClick={() => setCurrentPage(Math.max(1, safeCurrentPage - 1))}
                     disabled={safeCurrentPage <= 1}
-                  >上一页</button>
+                  >{t('task.prevPage')}</button>
                   <select
                     style={{
                       padding: `${Spacing.xs} ${Spacing.sm}`,
@@ -573,7 +639,7 @@ export const TaskCenterPage: React.FC = () => {
                     value={pageSize}
                     onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
                   >
-                    {PAGE_SIZE_OPTIONS.map((n) => (<option key={n} value={n}>{n} 条/页</option>))}
+                    {PAGE_SIZE_OPTIONS.map((n) => (<option key={n} value={n}>{t('task.pageSizeOption', { size: n })}</option>))}
                   </select>
                   <button
                     style={{
@@ -587,7 +653,7 @@ export const TaskCenterPage: React.FC = () => {
                     }}
                     onClick={() => setCurrentPage(Math.min(totalPages, safeCurrentPage + 1))}
                     disabled={safeCurrentPage >= totalPages}
-                  >下一页</button>
+                  >{t('task.nextPage')}</button>
                 </div>
               </div>
             )}
@@ -596,7 +662,24 @@ export const TaskCenterPage: React.FC = () => {
         </div>
       </div>
 
-      <TaskRunLogsPanel task={selectedTask} />
+      <div
+        style={{
+          width: '6px',
+          cursor: 'col-resize',
+          background: Colors.border,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'background 0.2s',
+        }}
+        onMouseDown={() => setIsDragging(true)}
+      >
+        <div style={{ width: '4px', height: '20px', background: Colors.textSecondary, borderRadius: '2px', opacity: isDragging ? 1 : 0.5 }} />
+      </div>
+
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: '300px', minHeight: 0, overflow: 'hidden' }}>
+        <TaskRunLogsPanel task={selectedTask} />
+      </div>
 
       <TaskEditorModal
         open={editorOpen}

@@ -5,6 +5,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 
 /**
  * 侧栏可拖拽宽度调整手柄。
@@ -20,6 +21,7 @@ import {
  */
 export const SidebarResizeHandle: React.FC = () => {
   const [isHovered, setIsHovered] = useState(false);
+  const { t } = useLocale();
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -78,7 +80,7 @@ export const SidebarResizeHandle: React.FC = () => {
       onDoubleClick={onDoubleClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
-      title="拖拽调整宽度，双击恢复默认 (250px)"
+      title={t('sidebar.resizeHint')}
       style={{
         position: 'absolute',
         top: 0,

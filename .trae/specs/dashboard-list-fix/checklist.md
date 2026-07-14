@@ -1,0 +1,6 @@
+- [x] Checkpoint 1: DashboardPage 挂载时检测 dashboards 为空，调用 loadDashboards()
+- [x] Checkpoint 2: 项目切换后进入仪表盘页面，显示当前项目的仪表盘列表
+- [x] Checkpoint 3: 仪表盘列表页面显示已保存的仪表盘名称，点击可进入查看
+- [x] Checkpoint 4: 保留"创建仪表盘"按钮
+- [x] Checkpoint 5: 前端编译通过（npx tsc --noEmit --pretty）
+- [x] Checkpoint 6: 后端编译通过（cargo check --quiet）

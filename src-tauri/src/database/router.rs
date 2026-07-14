@@ -13,6 +13,15 @@ impl QueryRouter {
             return false;
         }
         
+        // Strip EXPLAIN / EXPLAIN QUERY PLAN prefix before analyzing the underlying query
+        let core_sql = if let Some(stripped) = upper.strip_prefix("EXPLAIN QUERY PLAN ") {
+            stripped
+        } else if let Some(stripped) = upper.strip_prefix("EXPLAIN ") {
+            stripped
+        } else {
+            &upper
+        };
+        
         let write_keywords = [
             "INSERT", "UPDATE", "DELETE",
             "CREATE", "DROP", "ALTER",
@@ -21,7 +30,7 @@ impl QueryRouter {
         ];
         
         for kw in write_keywords.iter() {
-            if upper.starts_with(kw) {
+            if core_sql.starts_with(kw) {
                 log::debug!("SQL contains write keyword '{}', routing to SQLite", kw);
                 return false;
             }
@@ -39,7 +48,7 @@ impl QueryRouter {
         ];
         
         for kw in analytical_keywords.iter() {
-            if upper.contains(kw) {
+            if core_sql.contains(kw) {
                 log::debug!("SQL contains analytical keyword '{}', routing to DuckDB", kw);
                 return true;
             }
@@ -59,14 +68,8 @@ impl QueryRouter {
 
     /// 从 SQLite 获取当前数据库的所有表名
     pub fn get_table_names(conn: &MutexGuardConnection) -> Vec<String> {
-        match conn.query(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            &[]
-        ) {
-            Ok(result) => result.rows.into_iter()
-                .filter(|row| !row.is_empty())
-                .map(|row| row[0].clone())
-                .collect(),
+        match crate::database::meta::list_user_table_names(conn) {
+            Ok(names) => names,
             Err(e) => {
                 log::warn!("Failed to get table names: {}", e);
                 Vec::new()
@@ -102,6 +105,21 @@ mod tests {
     fn test_should_use_duckdb_simple_queries() {
         assert!(!QueryRouter::should_use_duckdb("SELECT * FROM users WHERE id = 1"));
         assert!(!QueryRouter::should_use_duckdb("SELECT name FROM users"));
+    }
+
+    #[test]
+    fn test_should_use_duckdb_explain_prefix_stripping() {
+        // EXPLAIN on analytical query should route to DuckDB (prefix stripped, then analyzed)
+        assert!(QueryRouter::should_use_duckdb("EXPLAIN SELECT COUNT(*) FROM users GROUP BY category"));
+        assert!(QueryRouter::should_use_duckdb("EXPLAIN SELECT AVG(price) FROM orders"));
+        assert!(QueryRouter::should_use_duckdb("EXPLAIN SELECT * FROM orders JOIN users ON orders.user_id = users.id"));
+        assert!(QueryRouter::should_use_duckdb("EXPLAIN SELECT DISTINCT category FROM products"));
+        assert!(QueryRouter::should_use_duckdb("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM users GROUP BY category"));
+
+        // EXPLAIN on simple query should still route to SQLite (no analytical keywords after prefix)
+        assert!(!QueryRouter::should_use_duckdb("EXPLAIN SELECT * FROM users WHERE id = 1"));
+        assert!(!QueryRouter::should_use_duckdb("EXPLAIN SELECT name FROM users LIMIT 10"));
+        assert!(!QueryRouter::should_use_duckdb("EXPLAIN QUERY PLAN SELECT * FROM users WHERE id = 1"));
     }
 
     #[test]

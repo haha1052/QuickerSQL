@@ -154,6 +154,12 @@ pub struct DatabaseManager {
     active_db_path: Mutex<Option<PathBuf>>,
 }
 
+impl Default for DatabaseManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DatabaseManager {
     pub fn new() -> Self {
         DatabaseManager {
@@ -229,7 +235,7 @@ impl DatabaseManager {
     /// 获取主连接（Mutex guard）——所有短命令（get_app_state, settings, 工作区）都走这里
     pub fn get_connection(&self) -> Result<MutexGuardConnection<'_>> {
         let guard = self.lock_active_connection()?;
-        let _ = guard.as_ref().ok_or_else(|| DatabaseError::DatabaseClosed)?;
+        let _ = guard.as_ref().ok_or(DatabaseError::DatabaseClosed)?;
         Ok(MutexGuardConnection { guard })
     }
 
@@ -241,7 +247,7 @@ impl DatabaseManager {
         loop {
             match self.active_connection.try_lock() {
                 Ok(guard) => {
-                    let _ = guard.as_ref().ok_or_else(|| DatabaseError::DatabaseClosed)?;
+                    let _ = guard.as_ref().ok_or(DatabaseError::DatabaseClosed)?;
                     return Ok(MutexGuardConnection { guard });
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {
@@ -254,7 +260,7 @@ impl DatabaseManager {
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => {
                     log::warn!("DB Mutex 被 poison（上一命令可能 panic），自动恢复到 poison 前状态");
                     let guard = poisoned.into_inner();
-                    let _ = guard.as_ref().ok_or_else(|| DatabaseError::DatabaseClosed)?;
+                    let _ = guard.as_ref().ok_or(DatabaseError::DatabaseClosed)?;
                     return Ok(MutexGuardConnection { guard });
                 }
             }
@@ -290,7 +296,7 @@ impl DatabaseManager {
 
     pub fn is_connected(&self) -> bool {
         self.active_connection.lock()
-            .map(|conn| conn.as_ref().map_or(false, |c| c.is_open()))
+            .map(|conn| conn.as_ref().is_some_and(|c| c.is_open()))
             .unwrap_or(false)
     }
 }

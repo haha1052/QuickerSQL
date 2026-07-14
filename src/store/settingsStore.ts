@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type {
   SettingItem,
   SettingCategory,
+  SettingMetaCategory,
   QueryCacheStats,
 } from '../types';
 import { tauriService } from '../services';
@@ -9,6 +10,8 @@ import { tauriService } from '../services';
 interface SettingsState {
   // 数据
   categories: SettingCategory[];
+  settingsMeta: SettingMetaCategory[];
+  settingsMetaLoaded: boolean;
   activeCategory: string;
   loading: boolean;
   error: string | null;
@@ -17,13 +20,19 @@ interface SettingsState {
   cacheStats: QueryCacheStats | null;
   cacheStatsLoading: boolean;
   cacheStatsError: string | null;
+
+  // 模态框控制（与设置业务强相关的 UI 状态）
+  showSettingsModal: boolean;
   
   // Actions
   loadSettings: () => Promise<void>;
+  loadSettingsMeta: () => Promise<void>;
   updateSetting: (category: string, key: string, value: string) => Promise<void>;
   resetSettings: (category?: string) => Promise<void>;
   setActiveCategory: (category: string) => void;
   clearError: () => void;
+  openSettingsModal: () => void;
+  closeSettingsModal: () => void;
 
   // 查询缓存相关 actions
   loadCacheStats: () => Promise<void>;
@@ -44,6 +53,8 @@ interface SettingsState {
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   categories: [],
+  settingsMeta: [],
+  settingsMetaLoaded: false,
   activeCategory: 'appearance',
   loading: false,
   error: null,
@@ -51,6 +62,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   cacheStats: null,
   cacheStatsLoading: false,
   cacheStatsError: null,
+
+  showSettingsModal: false,
 
   loadSettings: async () => {
     set({ loading: true, error: null });
@@ -72,28 +85,49 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       set({ error: String(error), loading: false });
     }
   },
+
+  loadSettingsMeta: async () => {
+    try {
+      const response = await tauriService.getSettingsMeta();
+      if (response.success && response.data) {
+        set({ settingsMeta: response.data.categories, settingsMetaLoaded: true });
+      }
+    } catch (error) {
+      console.error('Failed to load settings meta:', error);
+    }
+  },
   
   updateSetting: async (category: string, key: string, value: string) => {
     try {
       const response = await tauriService.updateSetting(category, key, value);
       if (response.success && response.data) {
-        // 更新本地状态
-        set((state) => ({
-          categories: state.categories.map(cat => {
+        set((state) => {
+          const newCategories = state.categories.map(cat => {
             if (cat.id === category) {
-              return {
-                ...cat,
-                items: cat.items.map(item => {
-                  if (item.key === key) {
-                    return response.data!;
-                  }
-                  return item;
-                }),
-              };
+              const existingIndex = cat.items.findIndex(item => item.key === key);
+              if (existingIndex >= 0) {
+                const newItems = [...cat.items];
+                newItems[existingIndex] = response.data!;
+                return { ...cat, items: newItems };
+              } else {
+                return { ...cat, items: [...cat.items, response.data!] };
+              }
             }
             return cat;
-          }),
-        }));
+          });
+          
+          const categoryExists = newCategories.some(cat => cat.id === category);
+          if (!categoryExists) {
+            newCategories.push({
+              id: category,
+              name: category,
+              icon: null,
+              items: [response.data!],
+            });
+          }
+          
+          return { categories: newCategories };
+        });
       } else {
         throw new Error(response.error || 'Failed to update setting');
       }
@@ -116,6 +150,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setActiveCategory: (category: string) => set({ activeCategory: category }),
   
   clearError: () => set({ error: null }),
+
+  openSettingsModal: () => set({ showSettingsModal: true }),
+
+  closeSettingsModal: () => set({ showSettingsModal: false }),
 
   // v2 优化：将 startup 返回的精简 settings 转换为 categories
   // 保留 id/description/value_type 等字段时使用合理默认值

@@ -130,6 +130,14 @@ impl DashboardService {
                 refresh_interval_secs INTEGER NOT NULL DEFAULT 0,
                 is_default BOOLEAN NOT NULL DEFAULT FALSE,
                 created_by TEXT NOT NULL DEFAULT '',
+                background_color TEXT,
+                background_image TEXT,
+                canvas_width INTEGER NOT NULL DEFAULT 0,
+                canvas_height INTEGER NOT NULL DEFAULT 0,
+                padding INTEGER NOT NULL DEFAULT 0,
+                grid_gap INTEGER NOT NULL DEFAULT 16,
+                row_height INTEGER NOT NULL DEFAULT 80,
+                snap_to_grid BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             )"#,
@@ -143,6 +151,40 @@ impl DashboardService {
             "CREATE INDEX IF NOT EXISTS idx_dashboards_is_default ON __dashboards(is_default)",
             &[],
         ).map_err(|e| format!("创建 idx_dashboards_is_default 索引失败：{}", e))?;
+
+        // 向后兼容：背景设置列（老数据库可能没有这些字段）
+        let add_bg_color_sql = "ALTER TABLE __dashboards ADD COLUMN background_color TEXT;";
+        if let Err(e) = conn.execute(add_bg_color_sql, &[]) {
+            log::debug!("__dashboards.background_color 列可能已存在: {}", e);
+        }
+        let add_bg_image_sql = "ALTER TABLE __dashboards ADD COLUMN background_image TEXT;";
+        if let Err(e) = conn.execute(add_bg_image_sql, &[]) {
+            log::debug!("__dashboards.background_image 列可能已存在: {}", e);
+        }
+        let add_canvas_width_sql = "ALTER TABLE __dashboards ADD COLUMN canvas_width INTEGER NOT NULL DEFAULT 0;";
+        if let Err(e) = conn.execute(add_canvas_width_sql, &[]) {
+            log::debug!("__dashboards.canvas_width 列可能已存在: {}", e);
+        }
+        let add_canvas_height_sql = "ALTER TABLE __dashboards ADD COLUMN canvas_height INTEGER NOT NULL DEFAULT 0;";
+        if let Err(e) = conn.execute(add_canvas_height_sql, &[]) {
+            log::debug!("__dashboards.canvas_height 列可能已存在: {}", e);
+        }
+        let add_padding_sql = "ALTER TABLE __dashboards ADD COLUMN padding INTEGER NOT NULL DEFAULT 0;";
+        if let Err(e) = conn.execute(add_padding_sql, &[]) {
+            log::debug!("__dashboards.padding 列可能已存在: {}", e);
+        }
+        let add_grid_gap_sql = "ALTER TABLE __dashboards ADD COLUMN grid_gap INTEGER NOT NULL DEFAULT 16;";
+        if let Err(e) = conn.execute(add_grid_gap_sql, &[]) {
+            log::debug!("__dashboards.grid_gap 列可能已存在: {}", e);
+        }
+        let add_row_height_sql = "ALTER TABLE __dashboards ADD COLUMN row_height INTEGER NOT NULL DEFAULT 80;";
+        if let Err(e) = conn.execute(add_row_height_sql, &[]) {
+            log::debug!("__dashboards.row_height 列可能已存在: {}", e);
+        }
+        let add_snap_to_grid_sql = "ALTER TABLE __dashboards ADD COLUMN snap_to_grid BOOLEAN NOT NULL DEFAULT TRUE;";
+        if let Err(e) = conn.execute(add_snap_to_grid_sql, &[]) {
+            log::debug!("__dashboards.snap_to_grid 列可能已存在: {}", e);
+        }
 
         // 创建 __dashboard_items 表
         conn.execute(
@@ -358,54 +400,69 @@ impl DashboardService {
         // 同时允许更新 SQL（若前端重新生成了结果，需要同步保存）
         sql: Option<String>,
     ) -> Result<SavedChart, String> {
+        use crate::database::traits::ToSql;
+
         let now = Utc::now().timestamp();
-        let mut updates = vec![format!("updated_at = {}", now)];
+        let mut updates: Vec<String> = vec!["updated_at = ?".into()];
+        let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(now)];
 
         if let Some(n) = name {
-            updates.push(format!("name = '{}'", n.replace("'", "''")));
+            updates.push("name = ?".into());
+            params.push(Box::new(n));
         }
         if let Some(ct) = chart_type {
-            updates.push(format!("chart_type = '{}'", ct.replace("'", "''")));
+            updates.push("chart_type = ?".into());
+            params.push(Box::new(ct));
         }
         if let Some(xa) = x_axis {
-            updates.push(format!("x_axis = '{}'", xa.replace("'", "''")));
+            updates.push("x_axis = ?".into());
+            params.push(Box::new(xa));
         }
         if let Some(ya) = y_axis {
             let ya_json = serde_json::to_string(&ya).unwrap_or_else(|_| "[]".to_string());
-            updates.push(format!("y_axis = '{}'", ya_json.replace("'", "''")));
+            updates.push("y_axis = ?".into());
+            params.push(Box::new(ya_json));
         }
         if let Some(t) = title {
-            updates.push(format!("title = '{}'", t.replace("'", "''")));
+            updates.push("title = ?".into());
+            params.push(Box::new(t));
         }
         if let Some(tg) = tags {
             let tg_json = serde_json::to_string(&tg).unwrap_or_else(|_| "[]".to_string());
-            updates.push(format!("tags = '{}'", tg_json.replace("'", "''")));
+            updates.push("tags = ?".into());
+            params.push(Box::new(tg_json));
         }
         if let Some(desc) = description {
-            updates.push(format!("description = '{}'", desc.replace("'", "''")));
+            updates.push("description = ?".into());
+            params.push(Box::new(desc));
         }
         if let Some(cfg) = config {
             let cfg_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-            updates.push(format!("config = '{}'", cfg_json.replace("'", "''")));
+            updates.push("config = ?".into());
+            params.push(Box::new(cfg_json));
         }
         if let Some(vis) = visibility {
-            updates.push(format!("visibility = '{}'", vis.replace("'", "''")));
+            updates.push("visibility = ?".into());
+            params.push(Box::new(vis));
         }
         if let Some(auth_ids) = authorized_dashboard_ids {
             let auth_ids_json = serde_json::to_string(&auth_ids).unwrap_or_else(|_| "[]".to_string());
-            updates.push(format!("authorized_dashboard_ids = '{}'", auth_ids_json.replace("'", "''")));
+            updates.push("authorized_dashboard_ids = ?".into());
+            params.push(Box::new(auth_ids_json));
         }
         if let Some(sql_str) = sql {
-            updates.push(format!("sql = '{}'", sql_str.replace("'", "''")));
+            updates.push("sql = ?".into());
+            params.push(Box::new(sql_str));
         }
 
         let update_sql = format!(
-            "UPDATE __saved_charts SET {} WHERE id = '{}';",
-            updates.join(", "),
-            id.replace("'", "''")
+            "UPDATE __saved_charts SET {} WHERE id = ?;",
+            updates.join(", ")
         );
+        params.push(Box::new(id.to_string()));
 
-        conn.execute(&update_sql, &[])
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&update_sql, params_refs.as_slice())
             .map_err(|e| format!("更新保存的图表失败：{}", e))?;
 
         Self::get_saved_chart(conn, id)
@@ -654,14 +711,15 @@ impl DashboardService {
 
     /// 获取仪表盘列表
     pub fn get_dashboards(conn: &MutexGuardConnection<'_>) -> Result<Vec<Dashboard>, String> {
-        let select_sql = "SELECT id, name, description, layout, filters, refresh_interval_secs, is_default, created_by, created_at, updated_at FROM __dashboards ORDER BY updated_at DESC;";
+        let select_sql = "SELECT id, name, description, layout, filters, refresh_interval_secs, is_default, created_by, background_color, background_image, canvas_width, canvas_height, padding, grid_gap, row_height, snap_to_grid, created_at, updated_at FROM __dashboards ORDER BY updated_at DESC;";
 
         let result = conn.query(select_sql, &[])
             .map_err(|e| format!("获取仪表盘列表失败：{}", e))?;
 
+        let columns = result.columns;
         let mut dashboards = Vec::new();
         for row in result.rows {
-            dashboards.push(Self::row_to_dashboard(conn, &row)?);
+            dashboards.push(Self::row_to_dashboard_by_name(conn, &columns, &row)?);
         }
 
         Ok(dashboards)
@@ -669,19 +727,21 @@ impl DashboardService {
 
     /// 获取单个仪表盘
     pub fn get_dashboard(conn: &MutexGuardConnection<'_>, id: &str) -> Result<Dashboard, String> {
-        let select_sql = format!(
-            "SELECT id, name, description, layout, filters, refresh_interval_secs, is_default, created_by, created_at, updated_at FROM __dashboards WHERE id = '{}';",
-            id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        let result = conn.query(&select_sql, &[])
+        let select_sql = "SELECT id, name, description, layout, filters, refresh_interval_secs, is_default, created_by, background_color, background_image, canvas_width, canvas_height, padding, grid_gap, row_height, snap_to_grid, created_at, updated_at FROM __dashboards WHERE id = ?;";
+
+        let params: Vec<Box<dyn ToSql>> = vec![Box::new(id.to_string())];
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let result = conn.query(select_sql, params_refs.as_slice())
             .map_err(|e| format!("获取仪表盘失败：{}", e))?;
 
         if result.rows.is_empty() {
             return Err("仪表盘不存在".to_string());
         }
 
-        Self::row_to_dashboard(conn, &result.rows[0])
+        Self::row_to_dashboard_by_name(conn, &result.columns, &result.rows[0])
     }
 
     /// 更新仪表盘
@@ -693,35 +753,84 @@ impl DashboardService {
         layout: Option<Vec<DashboardItem>>,
         filters: Option<Vec<DashboardFilter>>,
         refresh_interval_secs: Option<i64>,
+        background_color: Option<String>,
+        background_image: Option<String>,
+        canvas_width: Option<i64>,
+        canvas_height: Option<i64>,
+        padding: Option<i64>,
+        grid_gap: Option<i64>,
+        row_height: Option<i64>,
+        snap_to_grid: Option<bool>,
     ) -> Result<Dashboard, String> {
+        use crate::database::traits::ToSql;
+
         let now = Utc::now().timestamp();
-        let mut updates = vec![format!("updated_at = {}", now)];
+        let mut updates: Vec<String> = vec!["updated_at = ?".into()];
+        let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(now)];
 
         if let Some(n) = name {
-            updates.push(format!("name = '{}'", n.replace("'", "''")));
+            updates.push("name = ?".into());
+            params.push(Box::new(n));
         }
         if let Some(d) = description {
-            updates.push(format!("description = '{}'", d.replace("'", "''")));
+            updates.push("description = ?".into());
+            params.push(Box::new(d));
         }
         if let Some(l) = layout {
             let l_json = serde_json::to_string(&l).unwrap_or_else(|_| "[]".to_string());
-            updates.push(format!("layout = '{}'", l_json.replace("'", "''")));
+            updates.push("layout = ?".into());
+            params.push(Box::new(l_json));
         }
         if let Some(f) = filters {
             let f_json = serde_json::to_string(&f).unwrap_or_else(|_| "[]".to_string());
-            updates.push(format!("filters = '{}'", f_json.replace("'", "''")));
+            updates.push("filters = ?".into());
+            params.push(Box::new(f_json));
         }
         if let Some(r) = refresh_interval_secs {
-            updates.push(format!("refresh_interval_secs = {}", r));
+            updates.push("refresh_interval_secs = ?".into());
+            params.push(Box::new(r));
+        }
+        if let Some(bc) = background_color {
+            updates.push("background_color = ?".into());
+            params.push(Box::new(bc));
+        }
+        if let Some(bi) = background_image {
+            updates.push("background_image = ?".into());
+            params.push(Box::new(bi));
+        }
+        if let Some(cw) = canvas_width {
+            updates.push("canvas_width = ?".into());
+            params.push(Box::new(cw));
+        }
+        if let Some(ch) = canvas_height {
+            updates.push("canvas_height = ?".into());
+            params.push(Box::new(ch));
+        }
+        if let Some(p) = padding {
+            updates.push("padding = ?".into());
+            params.push(Box::new(p));
+        }
+        if let Some(gg) = grid_gap {
+            updates.push("grid_gap = ?".into());
+            params.push(Box::new(gg));
+        }
+        if let Some(rh) = row_height {
+            updates.push("row_height = ?".into());
+            params.push(Box::new(rh));
+        }
+        if let Some(stg) = snap_to_grid {
+            updates.push("snap_to_grid = ?".into());
+            params.push(Box::new(stg));
         }
 
         let update_sql = format!(
-            "UPDATE __dashboards SET {} WHERE id = '{}';",
-            updates.join(", "),
-            id.replace("'", "''")
+            "UPDATE __dashboards SET {} WHERE id = ?;",
+            updates.join(", ")
         );
+        params.push(Box::new(id.to_string()));
 
-        conn.execute(&update_sql, &[])
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&update_sql, params_refs.as_slice())
             .map_err(|e| format!("更新仪表盘失败：{}", e))?;
 
         Self::get_dashboard(conn, id)
@@ -729,50 +838,116 @@ impl DashboardService {
 
     /// 删除仪表盘
     pub fn delete_dashboard(conn: &MutexGuardConnection<'_>, id: &str) -> Result<(), String> {
+        use crate::database::traits::ToSql;
+
+        let params: Vec<Box<dyn ToSql>> = vec![Box::new(id.to_string())];
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
         // 先删除关联的 dashboard_items
-        let delete_items_sql = format!(
-            "DELETE FROM __dashboard_items WHERE dashboard_id = '{}';",
-            id.replace("'", "''")
-        );
-        conn.execute(&delete_items_sql, &[])
+        conn.execute(
+            "DELETE FROM __dashboard_items WHERE dashboard_id = ?;",
+            params_refs.as_slice()
+        )
             .map_err(|e| format!("删除仪表盘项目失败：{}", e))?;
 
-        let delete_sql = format!(
-            "DELETE FROM __dashboards WHERE id = '{}';",
-            id.replace("'", "''")
-        );
-
-        conn.execute(&delete_sql, &[])
+        conn.execute(
+            "DELETE FROM __dashboards WHERE id = ?;",
+            params_refs.as_slice()
+        )
             .map_err(|e| format!("删除仪表盘失败：{}", e))?;
 
         Ok(())
     }
 
-    /// 从查询结果行解析仪表盘
-    fn row_to_dashboard(conn: &MutexGuardConnection<'_>, row: &[String]) -> Result<Dashboard, String> {
-        if row.len() < 10 {
-            return Err("查询结果列数不足".to_string());
-        }
+    /// 按列名从查询结果行解析仪表盘（彻底避免索引错位问题）
+    /// 无论 SELECT 语句的列顺序如何变化、无论老数据库的 ALTER TABLE
+    /// 把新列追加到末尾，此方法都能正确解析。
+    fn row_to_dashboard_by_name(
+        conn: &MutexGuardConnection<'_>,
+        columns: &[String],
+        row: &[String],
+    ) -> Result<Dashboard, String> {
+        // 构建列名 -> 索引的映射
+        let col_index: std::collections::HashMap<&str, usize> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), i))
+            .collect();
 
-        let dashboard_id = row[0].clone();
-        let filters: Vec<DashboardFilter> = serde_json::from_str(&row[4]).unwrap_or_else(|_| Vec::new());
-        let refresh_interval_secs: i64 = row[5].parse().unwrap_or(0);
-        let is_default: bool = row[6].to_lowercase() == "true" || row[6] == "1";
+        // 安全获取指定列的值，缺失时返回空字符串
+        let get = |name: &str| -> String {
+            col_index
+                .get(name)
+                .and_then(|&idx| row.get(idx))
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        // 可选列（可能为 NULL）
+        let get_opt = |name: &str| -> Option<String> {
+            let val = get(name);
+            if val.is_empty() || val == "NULL" {
+                None
+            } else {
+                Some(val)
+            }
+        };
+
+        // 整数列（解析失败时返回 0）
+        let get_i64 = |name: &str| -> i64 {
+            get(name).parse::<i64>().unwrap_or(0)
+        };
+
+        // 可选整数列
+        let get_opt_i64 = |name: &str| -> Option<i64> {
+            let val = get(name);
+            if val.is_empty() || val == "NULL" {
+                None
+            } else {
+                val.parse::<i64>().ok()
+            }
+        };
+
+        let dashboard_id = get("id");
+        let filters: Vec<DashboardFilter> = serde_json::from_str(&get("filters")).unwrap_or_else(|_| Vec::new());
+        let refresh_interval_secs = get_i64("refresh_interval_secs");
+        let is_default = get("is_default").to_lowercase() == "true" || get("is_default") == "1";
 
         // 直接从 __dashboard_items 表读取该仪表盘的所有项目
-        let full_layout = Self::get_dashboard_items(conn, &dashboard_id).unwrap_or_default();
+        let full_layout = match Self::get_dashboard_items(conn, &dashboard_id) {
+            Ok(items) => items,
+            Err(e) => {
+                log::warn!("获取仪表盘 {} 的项目失败: {}", dashboard_id, e);
+                Vec::new()
+            }
+        };
 
         Ok(Dashboard {
             id: dashboard_id,
-            name: row[1].clone(),
-            description: row[2].clone(),
+            name: get("name"),
+            description: get("description"),
             layout: full_layout,
             filters,
             refresh_interval_secs,
             is_default,
-            created_by: row[7].clone(),
-            created_at: row[8].parse::<i64>().unwrap_or(0),
-            updated_at: row[9].parse::<i64>().unwrap_or(0),
+            created_by: get("created_by"),
+            created_at: get_i64("created_at"),
+            updated_at: get_i64("updated_at"),
+            // 背景设置（向后兼容，没有则使用默认值）
+            background_color: get_opt("background_color"),
+            background_image: get_opt("background_image"),
+            canvas_width: get_opt_i64("canvas_width"),
+            canvas_height: get_opt_i64("canvas_height"),
+            padding: get_opt_i64("padding"),
+            grid_gap: {
+                let val = get_opt_i64("grid_gap");
+                val.unwrap_or(16)
+            },
+            row_height: {
+                let val = get_opt_i64("row_height");
+                val.unwrap_or(80)
+            },
+            snap_to_grid: get("snap_to_grid").to_lowercase() == "true" || get("snap_to_grid") == "1",
         })
     }
 
@@ -788,15 +963,17 @@ impl DashboardService {
         width: f64,
         height: f64,
     ) -> Result<DashboardItem, String> {
+        use crate::database::traits::ToSql;
+
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().timestamp();
 
-        // 获取当前最大的 position
-        let position_sql = format!(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM __dashboard_items WHERE dashboard_id = '{}';",
-            dashboard_id.replace("'", "''")
-        );
-        let position_result = conn.query(&position_sql, &[])
+        let position_params: Vec<Box<dyn ToSql>> = vec![Box::new(dashboard_id.clone())];
+        let position_params_refs: Vec<&dyn ToSql> = position_params.iter().map(|p| p.as_ref()).collect();
+        let position_result = conn.query(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM __dashboard_items WHERE dashboard_id = ?;",
+            position_params_refs.as_slice()
+        )
             .map_err(|e| format!("获取位置失败：{}", e))?;
         let position: i32 = if position_result.rows.is_empty() || position_result.rows[0].is_empty() {
             0
@@ -804,22 +981,25 @@ impl DashboardService {
             position_result.rows[0][0].parse::<i32>().unwrap_or(0)
         };
 
-        let insert_sql = format!(
-            "INSERT INTO __dashboard_items (id, dashboard_id, chart_id, x, y, width, height, position, created_at, updated_at)
-             VALUES ('{}', '{}', '{}', {}, {}, {}, {}, {}, {}, {});",
-            id.replace("'", "''"),
-            dashboard_id.replace("'", "''"),
-            chart_id.replace("'", "''"),
-            x,
-            y,
-            width,
-            height,
-            position,
-            now,
-            now
-        );
+        let insert_params: Vec<Box<dyn ToSql>> = vec![
+            Box::new(id.clone()),
+            Box::new(dashboard_id.clone()),
+            Box::new(chart_id.clone()),
+            Box::new(x),
+            Box::new(y),
+            Box::new(width),
+            Box::new(height),
+            Box::new(position),
+            Box::new(now),
+            Box::new(now),
+        ];
+        let insert_params_refs: Vec<&dyn ToSql> = insert_params.iter().map(|p| p.as_ref()).collect();
 
-        conn.execute(&insert_sql, &[])
+        conn.execute(
+            "INSERT INTO __dashboard_items (id, dashboard_id, chart_id, x, y, width, height, position, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            insert_params_refs.as_slice()
+        )
             .map_err(|e| format!("添加图表到仪表盘失败：{}", e))?;
 
         Self::get_dashboard_item(conn, &id)
@@ -827,12 +1007,15 @@ impl DashboardService {
 
     /// 获取仪表盘项目
     pub fn get_dashboard_item(conn: &MutexGuardConnection<'_>, id: &str) -> Result<DashboardItem, String> {
-        let select_sql = format!(
-            "SELECT id, dashboard_id, chart_id, x, y, width, height, config_overrides, position, created_at, updated_at FROM __dashboard_items WHERE id = '{}';",
-            id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        let result = conn.query(&select_sql, &[])
+        let params: Vec<Box<dyn ToSql>> = vec![Box::new(id.to_string())];
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let result = conn.query(
+            "SELECT id, dashboard_id, chart_id, x, y, width, height, config_overrides, position, created_at, updated_at FROM __dashboard_items WHERE id = ?;",
+            params_refs.as_slice()
+        )
             .map_err(|e| format!("获取仪表盘项目失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -844,12 +1027,15 @@ impl DashboardService {
 
     /// 获取仪表盘的所有项目
     pub fn get_dashboard_items(conn: &MutexGuardConnection<'_>, dashboard_id: &str) -> Result<Vec<DashboardItem>, String> {
-        let select_sql = format!(
-            "SELECT id, dashboard_id, chart_id, x, y, width, height, config_overrides, position, created_at, updated_at FROM __dashboard_items WHERE dashboard_id = '{}' ORDER BY position;",
-            dashboard_id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        let result = conn.query(&select_sql, &[])
+        let params: Vec<Box<dyn ToSql>> = vec![Box::new(dashboard_id.to_string())];
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        let result = conn.query(
+            "SELECT id, dashboard_id, chart_id, x, y, width, height, config_overrides, position, created_at, updated_at FROM __dashboard_items WHERE dashboard_id = ? ORDER BY position;",
+            params_refs.as_slice()
+        )
             .map_err(|e| format!("获取仪表盘项目列表失败：{}", e))?;
 
         let mut items = Vec::new();
@@ -870,46 +1056,130 @@ impl DashboardService {
         height: Option<f64>,
         config_overrides: Option<serde_json::Value>,
     ) -> Result<DashboardItem, String> {
+        use crate::database::traits::ToSql;
+
         let now = Utc::now().timestamp();
-        let mut updates = vec![format!("updated_at = {}", now)];
+        let mut updates: Vec<String> = vec!["updated_at = ?".into()];
+        let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(now)];
 
         if let Some(x_val) = x {
-            updates.push(format!("x = {}", x_val));
+            updates.push("x = ?".into());
+            params.push(Box::new(x_val));
         }
         if let Some(y_val) = y {
-            updates.push(format!("y = {}", y_val));
+            updates.push("y = ?".into());
+            params.push(Box::new(y_val));
         }
         if let Some(w) = width {
-            updates.push(format!("width = {}", w));
+            updates.push("width = ?".into());
+            params.push(Box::new(w));
         }
         if let Some(h) = height {
-            updates.push(format!("height = {}", h));
+            updates.push("height = ?".into());
+            params.push(Box::new(h));
         }
         if let Some(co) = config_overrides {
             let co_json = serde_json::to_string(&co).unwrap_or_else(|_| "{}".to_string());
-            updates.push(format!("config_overrides = '{}'", co_json.replace("'", "''")));
+            updates.push("config_overrides = ?".into());
+            params.push(Box::new(co_json));
         }
 
         let update_sql = format!(
-            "UPDATE __dashboard_items SET {} WHERE id = '{}';",
-            updates.join(", "),
-            id.replace("'", "''")
+            "UPDATE __dashboard_items SET {} WHERE id = ?;",
+            updates.join(", ")
         );
+        params.push(Box::new(id.to_string()));
 
-        conn.execute(&update_sql, &[])
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&update_sql, params_refs.as_slice())
             .map_err(|e| format!("更新仪表盘项目失败：{}", e))?;
 
         Self::get_dashboard_item(conn, id)
     }
 
+    /// 批量保存仪表盘布局（事务性更新）
+    /// 一次性更新多个仪表盘项的位置/尺寸，确保原子性
+    pub fn save_dashboard_layout(
+        conn: &MutexGuardConnection<'_>,
+        dashboard_id: &str,
+        layout_updates: Vec<DashboardItemLayoutUpdate>,
+    ) -> Result<Dashboard, String> {
+        use crate::database::traits::ToSql;
+
+        // 开始事务
+        conn.begin_transaction()
+            .map_err(|e| format!("开启事务失败：{}", e))?;
+
+        let now = Utc::now().timestamp();
+
+        let result = (|| -> Result<Dashboard, String> {
+            for item in &layout_updates {
+                let mut updates: Vec<String> = vec!["updated_at = ?".into()];
+                let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(now)];
+
+                if let Some(x_val) = item.x {
+                    updates.push("x = ?".into());
+                    params.push(Box::new(x_val));
+                }
+                if let Some(y_val) = item.y {
+                    updates.push("y = ?".into());
+                    params.push(Box::new(y_val));
+                }
+                if let Some(w) = item.width {
+                    updates.push("width = ?".into());
+                    params.push(Box::new(w));
+                }
+                if let Some(h) = item.height {
+                    updates.push("height = ?".into());
+                    params.push(Box::new(h));
+                }
+
+                let update_sql = format!(
+                    "UPDATE __dashboard_items SET {} WHERE id = ? AND dashboard_id = ?;",
+                    updates.join(", ")
+                );
+                params.push(Box::new(item.id.clone()));
+                params.push(Box::new(dashboard_id.to_string()));
+
+                let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                conn.execute(&update_sql, params_refs.as_slice())
+                    .map_err(|e| format!("更新仪表盘项 {} 失败：{}", item.id, e))?;
+            }
+
+            // 更新仪表盘的 updated_at
+            conn.execute(
+                "UPDATE __dashboards SET updated_at = ? WHERE id = ?;",
+                &[&now as &dyn ToSql, &dashboard_id as &dyn ToSql],
+            ).map_err(|e| format!("更新仪表盘时间戳失败：{}", e))?;
+
+            // 返回更新后的仪表盘
+            Self::get_dashboard(conn, dashboard_id)
+        })();
+
+        match result {
+            Ok(dashboard) => {
+                conn.commit_transaction()
+                    .map_err(|e| format!("提交事务失败：{}", e))?;
+                Ok(dashboard)
+            }
+            Err(e) => {
+                let _ = conn.rollback_transaction();
+                Err(e)
+            }
+        }
+    }
+
     /// 从仪表盘移除图表
     pub fn remove_chart_from_dashboard(conn: &MutexGuardConnection<'_>, item_id: &str) -> Result<(), String> {
-        let delete_sql = format!(
-            "DELETE FROM __dashboard_items WHERE id = '{}';",
-            item_id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        conn.execute(&delete_sql, &[])
+        let params: Vec<Box<dyn ToSql>> = vec![Box::new(item_id.to_string())];
+        let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        conn.execute(
+            "DELETE FROM __dashboard_items WHERE id = ?;",
+            params_refs.as_slice()
+        )
             .map_err(|e| format!("从仪表盘移除图表失败：{}", e))?;
 
         Ok(())
@@ -1006,6 +1276,8 @@ impl DashboardService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::traits::DatabaseManager;
+    use crate::database::sqlite::SqliteDriver;
 
     // ============================================================
     // escape_sql_string 单引号转义
@@ -1145,6 +1417,14 @@ mod tests {
             created_by: String::new(),
             created_at: 1_700_000_000,
             updated_at: 1_700_000_000,
+            background_color: None,
+            background_image: None,
+            canvas_width: None,
+            canvas_height: None,
+            padding: None,
+            grid_gap: 16,
+            row_height: 80,
+            snap_to_grid: true,
         };
         assert!(dashboard.is_default);
         assert_eq!(dashboard.refresh_interval_secs, 60);
@@ -1300,5 +1580,409 @@ mod tests {
         assert_eq!(df.default_value, serde_json::json!("active"));
         assert!(df.options.is_some());
         assert_eq!(df.options.unwrap().len(), 2);
+    }
+
+    // ============================================================
+    // DashboardService CRUD 集成测试
+    // 使用临时 SQLite 数据库验证真实数据库操作
+    // ============================================================
+
+    /// 创建测试数据库连接，返回 (连接, 数据库管理器引用, 临时目录)
+    fn create_test_db_connection() -> (MutexGuardConnection<'static>, &'static DatabaseManager, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("创建临时目录失败");
+        let db_path = temp_dir.path().join("test_dashboard.db");
+
+        let mut db_manager = DatabaseManager::new();
+        db_manager.register_driver(Box::new(SqliteDriver::new()));
+        db_manager.create_and_connect("sqlite", &db_path).expect("连接测试数据库失败");
+
+        // 使用 Box::leak 将 db_manager 泄漏到堆上，使其永远存在
+        let db_manager: &'static DatabaseManager = Box::leak(Box::new(db_manager));
+
+        // 获取连接并初始化表
+        let conn = db_manager.get_connection().expect("获取连接失败");
+        DashboardService::ensure_tables_exist(&conn).expect("初始化表失败");
+
+        (conn, db_manager, temp_dir)
+    }
+
+    #[test]
+    fn test_create_dashboard_normal() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let result = DashboardService::create_dashboard(
+            &conn,
+            "测试仪表盘".to_string(),
+            Some("这是一个测试描述".to_string()),
+        );
+
+        assert!(result.is_ok(), "创建仪表盘应该成功: {:?}", result.err());
+        let dashboard = result.unwrap();
+        assert_eq!(dashboard.name, "测试仪表盘");
+        assert_eq!(dashboard.description, "这是一个测试描述");
+        assert!(!dashboard.id.is_empty());
+        assert!(dashboard.layout.is_empty());
+        assert!(dashboard.filters.is_empty());
+    }
+
+    #[test]
+    fn test_create_dashboard_with_empty_description() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let result = DashboardService::create_dashboard(
+            &conn,
+            "无描述仪表盘".to_string(),
+            None,
+        );
+
+        assert!(result.is_ok());
+        let dashboard = result.unwrap();
+        assert_eq!(dashboard.name, "无描述仪表盘");
+        assert_eq!(dashboard.description, "");
+    }
+
+    #[test]
+    fn test_create_dashboard_duplicate_name_allowed() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let result1 = DashboardService::create_dashboard(&conn, "同名仪表盘".to_string(), None);
+        assert!(result1.is_ok());
+        let id1 = result1.unwrap().id;
+
+        let result2 = DashboardService::create_dashboard(&conn, "同名仪表盘".to_string(), None);
+        assert!(result2.is_ok());
+        let id2 = result2.unwrap().id;
+
+        // 两个仪表盘应该有不同的 ID
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_get_dashboard_exists() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 先创建一个仪表盘
+        let created = DashboardService::create_dashboard(
+            &conn,
+            "查找测试".to_string(),
+            Some("用于查找测试的描述".to_string()),
+        ).expect("创建仪表盘失败");
+        let id = created.id.clone();
+
+        // 通过 ID 获取
+        let result = DashboardService::get_dashboard(&conn, &id);
+
+        assert!(result.is_ok(), "查找存在的仪表盘应该成功: {:?}", result.err());
+        let dashboard = result.unwrap();
+        assert_eq!(dashboard.id, id);
+        assert_eq!(dashboard.name, "查找测试");
+        assert_eq!(dashboard.description, "用于查找测试的描述");
+    }
+
+    #[test]
+    fn test_get_dashboard_not_exists() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let result = DashboardService::get_dashboard(&conn, "不存在的ID12345");
+
+        assert!(result.is_err(), "查找不存在的仪表盘应该返回错误");
+        assert!(result.as_ref().unwrap_err().contains("不存在"));
+    }
+
+    #[test]
+    fn test_update_dashboard_normal() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 先创建一个仪表盘
+        let created = DashboardService::create_dashboard(&conn, "原名称".to_string(), None)
+            .expect("创建仪表盘失败");
+        let id = created.id.clone();
+
+        // 更新仪表盘（15个参数）
+        let result = DashboardService::update_dashboard(
+            &conn,
+            &id,
+            Some("新名称".to_string()),
+            Some("新描述".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok(), "更新仪表盘应该成功: {:?}", result.err());
+        let updated = result.unwrap();
+        assert_eq!(updated.name, "新名称");
+        assert_eq!(updated.description, "新描述");
+    }
+
+    #[test]
+    fn test_update_dashboard_partial() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 先创建一个仪表盘
+        let created = DashboardService::create_dashboard(
+            &conn,
+            "原名称".to_string(),
+            Some("原描述".to_string()),
+        ).expect("创建仪表盘失败");
+        let id = created.id.clone();
+
+        // 只更新名称，不更新描述
+        let result = DashboardService::update_dashboard(
+            &conn,
+            &id,
+            Some("仅更新名称".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
+        let updated = result.unwrap();
+        assert_eq!(updated.name, "仅更新名称");
+        assert_eq!(updated.description, "原描述"); // 描述应该保持不变
+    }
+
+    #[test]
+    fn test_update_dashboard_not_exists() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let result = DashboardService::update_dashboard(
+            &conn,
+            "不存在的ID",
+            Some("新名称".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.as_ref().unwrap_err();
+        assert!(err_msg.contains("不存在") || err_msg.contains("失败"));
+    }
+
+    #[test]
+    fn test_delete_dashboard_normal() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 先创建一个仪表盘
+        let created = DashboardService::create_dashboard(&conn, "待删除".to_string(), None)
+            .expect("创建仪表盘失败");
+        let id = created.id.clone();
+
+        // 验证创建成功
+        assert!(DashboardService::get_dashboard(&conn, &id).is_ok());
+
+        // 删除仪表盘
+        let result = DashboardService::delete_dashboard(&conn, &id);
+
+        assert!(result.is_ok(), "删除仪表盘应该成功: {:?}", result.err());
+
+        // 验证删除后查找失败
+        let get_result = DashboardService::get_dashboard(&conn, &id);
+        assert!(get_result.is_err(), "删除后查找应该失败");
+    }
+
+    #[test]
+    fn test_delete_dashboard_not_exists() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 删除不存在的记录仍然返回成功（这是 delete 语句的实际行为）
+        let result = DashboardService::delete_dashboard(&conn, "不存在的ID");
+        assert!(result.is_ok(), "删除不存在的记录也应返回 Ok");
+
+        // 验证数据库中确实没有这个记录
+        let get_result = DashboardService::get_dashboard(&conn, "不存在的ID");
+        assert!(get_result.is_err(), "查询不存在的记录应该返回错误");
+    }
+
+    #[test]
+    fn test_get_saved_charts_empty_query_id() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 不指定 query_id，应该返回所有图表（当前为空）
+        let result = DashboardService::get_saved_charts(&conn, None, None);
+
+        assert!(result.is_ok());
+        let charts = result.unwrap();
+        assert!(charts.is_empty(), "初始应该没有图表");
+    }
+
+    #[test]
+    fn test_get_saved_charts_with_query_id_filter() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 创建一个图表
+        let chart_result = DashboardService::create_saved_chart(
+            &conn,
+            "测试图表".to_string(),
+            "query-123".to_string(),
+            "SELECT 1".to_string(),
+            "bar".to_string(),
+            "x".to_string(),
+            vec!["y".to_string()],
+            Some("标题".to_string()),
+            Some(vec!["tag1".to_string()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert!(chart_result.is_ok(), "创建图表应该成功: {:?}", chart_result.err());
+
+        // 按 query_id 过滤查找
+        let result = DashboardService::get_saved_charts(&conn, Some("query-123".to_string()), None);
+
+        assert!(result.is_ok());
+        let charts = result.unwrap();
+        assert_eq!(charts.len(), 1);
+        assert_eq!(charts[0].name, "测试图表");
+        assert_eq!(charts[0].query_id, "query-123");
+    }
+
+    #[test]
+    fn test_get_saved_charts_multiple_charts() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        // 创建多个图表
+        DashboardService::create_saved_chart(
+            &conn, "图表1".to_string(), "q1".to_string(), "SELECT 1".to_string(),
+            "bar".to_string(), "x".to_string(), vec!["y".to_string()],
+            None, None, None, None, None, None,
+        ).expect("创建图表1失败");
+
+        DashboardService::create_saved_chart(
+            &conn, "图表2".to_string(), "q2".to_string(), "SELECT 2".to_string(),
+            "line".to_string(), "x".to_string(), vec!["y".to_string()],
+            None, None, None, None, None, None,
+        ).expect("创建图表2失败");
+
+        // 获取所有图表
+        let result = DashboardService::get_saved_charts(&conn, None, None);
+
+        assert!(result.is_ok());
+        let charts = result.unwrap();
+        assert_eq!(charts.len(), 2);
+    }
+
+    #[test]
+    fn test_create_and_get_saved_chart_roundtrip() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let chart = DashboardService::create_saved_chart(
+            &conn,
+            "圆形图表".to_string(),
+            "pie-query".to_string(),
+            "SELECT status, COUNT(*) FROM orders GROUP BY status".to_string(),
+            "pie".to_string(),
+            "status".to_string(),
+            vec!["count".to_string()],
+            Some("订单状态分布".to_string()),
+            Some(vec!["orders".to_string(), "pie".to_string()]),
+            Some("订单状态分布图".to_string()),
+            None,
+            None,
+            None,
+        ).expect("创建图表失败");
+
+        assert_eq!(chart.name, "圆形图表");
+        assert_eq!(chart.chart_type, "pie");
+        assert_eq!(chart.title, "订单状态分布");
+
+        // 通过 ID 获取
+        let retrieved = DashboardService::get_saved_chart(&conn, &chart.id)
+            .expect("获取图表失败");
+        assert_eq!(retrieved.id, chart.id);
+        assert_eq!(retrieved.name, "圆形图表");
+    }
+
+    #[test]
+    fn test_update_saved_chart() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let created = DashboardService::create_saved_chart(
+            &conn,
+            "原名称".to_string(),
+            "update-test-query".to_string(),
+            "SELECT 1".to_string(),
+            "bar".to_string(),
+            "x".to_string(),
+            vec!["y".to_string()],
+            None, None, None, None, None, None,
+        ).expect("创建图表失败");
+
+        let updated = DashboardService::update_saved_chart(
+            &conn,
+            &created.id,
+            Some("更新后的名称".to_string()),
+            Some("line".to_string()),
+            None,
+            None,
+            Some("新标题".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ).expect("更新图表失败");
+
+        assert_eq!(updated.name, "更新后的名称");
+        assert_eq!(updated.chart_type, "line");
+        assert_eq!(updated.title, "新标题");
+    }
+
+    #[test]
+    fn test_delete_saved_chart() {
+        let (conn, _db_manager, _temp_dir) = create_test_db_connection();
+
+        let created = DashboardService::create_saved_chart(
+            &conn,
+            "待删除图表".to_string(),
+            "delete-test-query".to_string(),
+            "SELECT 1".to_string(),
+            "bar".to_string(),
+            "x".to_string(),
+            vec!["y".to_string()],
+            None, None, None, None, None, None,
+        ).expect("创建图表失败");
+
+        let id = created.id.clone();
+
+        // 验证存在
+        assert!(DashboardService::get_saved_chart(&conn, &id).is_ok());
+
+        // 删除
+        DashboardService::delete_saved_chart(&conn, &id).expect("删除图表失败");
+
+        // 验证删除
+        assert!(DashboardService::get_saved_chart(&conn, &id).is_err());
     }
 }

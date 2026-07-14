@@ -6,6 +6,7 @@
 //! - update_app_state(category, key, value, description) -> 更新（或创建）应用状态
 //! - save_workspace(tabs)               -> 保存当前工作区布局（整体替换）
 //! - load_workspace()                   -> 加载上次保存的工作区布局
+//! - restart_app()                      -> 重启应用
 
 use crate::TauriAppState;
 use crate::models::app_state::*;
@@ -105,4 +106,23 @@ pub fn load_workspace_cmd(
     }
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
     AppStateService::load_workspace(&conn)
+}
+
+/// 重启应用
+#[tauri::command]
+pub fn restart_app() -> Result<(), String> {
+    // 获取当前可执行文件的路径
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("获取可执行文件路径失败: {}", e))?;
+
+    // 启动新的实例
+    std::process::Command::new(current_exe)
+        .spawn()
+        .map_err(|e| format!("启动新实例失败: {}", e))?;
+
+    // 退出当前实例
+    // 使用 std::process::exit 会立即终止，spawn 可能在后台还未完成
+    // 使用 Arc<AtomicBool> 等优雅退出机制需要更大的架构改动
+    // 这里直接退出是安全的，因为新实例已经启动
+    std::process::exit(0);
 }

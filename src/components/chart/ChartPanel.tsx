@@ -34,7 +34,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const chartInstanceRef = useRef<ECharts | null>(null);
 
   const { t } = useLocale();
-  const { activeQueryId, sqlQueries } = useQueryStore();
+  const activeQueryId = useQueryStore(s => s.activeQueryId);
+  const sqlQueries = useQueryStore(s => s.sqlQueries);
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
 
   // 获取可视化设置
@@ -42,6 +43,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const [showGrid] = useSetting('visualization', 'showGrid');
   const [showLegend] = useSetting('visualization', 'showLegend');
   const [defaultColorScheme] = useSetting('visualization', 'defaultColorScheme');
+  const [maxDataPointsStr] = useSetting('visualization', 'maxDataPoints');
+  const maxDataPoints = parseInt(maxDataPointsStr || '5000', 10);
 
   const handleChartReady = (chart: ECharts) => {
     chartInstanceRef.current = chart;
@@ -216,9 +219,18 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
 
     try {
       const { tauriService } = await import('../../services');
+
+      // 截断数据以符合 maxDataPoints 限制
+      const rows = queryResult.rows.length > maxDataPoints
+        ? queryResult.rows.slice(0, maxDataPoints)
+        : queryResult.rows;
+      const truncatedWarning = queryResult.rows.length > maxDataPoints
+        ? `（已截断至 ${maxDataPoints} 条数据）`
+        : '';
+
       const response = await tauriService.generateChartConfig({
         columns: queryResult.columns,
-        rows: queryResult.rows,
+        rows: rows,
         chart_type: chartType,
         x_axis_column: xAxisColumn,
         y_axis_columns: yAxisColumns,
@@ -227,6 +239,9 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       if (response.success && response.data) {
         setChartConfig(response.data as ChartConfig);
         setStage('preview');
+        if (truncatedWarning) {
+          setError(`数据已截断${truncatedWarning}`);
+        }
       } else {
         setError(response.error || t('chart.generateFail'));
       }
@@ -236,7 +251,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
     } finally {
       setLoading(false);
     }
-  }, [queryResult, xAxisColumn, yAxisColumns, chartType]);
+  }, [queryResult, xAxisColumn, yAxisColumns, chartType, maxDataPoints, t]);
 
   // 当图表配置变化时应用设置
   useEffect(() => {

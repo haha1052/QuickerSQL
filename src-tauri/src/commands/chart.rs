@@ -35,6 +35,12 @@ pub fn get_recommended_chart_types(
         ChartType::StackedBar => "stackedBar",
         ChartType::Area => "area",
         ChartType::Scatter => "scatter",
+        ChartType::HorizontalBar => "horizontalBar",
+        ChartType::Doughnut => "doughnut",
+        ChartType::DualAxis => "dualAxis",
+        ChartType::Radar => "radar",
+        ChartType::Funnel => "funnel",
+        ChartType::Gauge => "gauge",
     }.to_string()).collect()
 }
 
@@ -64,6 +70,12 @@ pub fn generate_chart_config(
         Some("stackedBar") => ChartType::StackedBar,
         Some("area") => ChartType::Area,
         Some("scatter") => ChartType::Scatter,
+        Some("horizontalBar") => ChartType::HorizontalBar,
+        Some("doughnut") => ChartType::Doughnut,
+        Some("dualAxis") => ChartType::DualAxis,
+        Some("radar") => ChartType::Radar,
+        Some("funnel") => ChartType::Funnel,
+        Some("gauge") => ChartType::Gauge,
         _ => ChartType::Bar,
     };
 

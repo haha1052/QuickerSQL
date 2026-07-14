@@ -76,6 +76,8 @@ export const Button: React.FC<ButtonProps> = ({
       className={className}
       style={{ ...baseStyles, ...variantStyles[variant], ...style }}
       disabled={disabled}
+      aria-disabled={disabled}
+      aria-busy={props['aria-busy']}
       {...props}
     >
       {startIcon}

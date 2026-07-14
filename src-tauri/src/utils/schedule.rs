@@ -22,7 +22,7 @@ pub fn compute_next_run(now_unix: i64, mode: &str, value: &str) -> Option<i64> {
 
 /// 将 unix 时间格式化为用户可读字符串（本地时区）
 pub fn format_local(unix_sec: i64) -> String {
-    let dt: DateTime<Local> = Local.timestamp_opt(unix_sec, 0).single().unwrap_or_else(|| Local::now());
+    let dt: DateTime<Local> = Local.timestamp_opt(unix_sec, 0).single().unwrap_or_else(Local::now);
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -39,7 +39,7 @@ pub fn format_local(unix_sec: i64) -> String {
 // ============================================================================
 
 fn cron_next_after(now_unix: i64, expr: &str) -> Option<i64> {
-    let parts: Vec<&str> = expr.trim().split_whitespace().collect();
+    let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
         return None;
     }
@@ -51,7 +51,7 @@ fn cron_next_after(now_unix: i64, expr: &str) -> Option<i64> {
     let dows = parse_field(parts[4], 0, 6)?;
 
     // 从当前分钟 + 1 开始，最多搜索 366 天 × 1440 分钟
-    let now: DateTime<Local> = Local.timestamp_opt(now_unix, 0).single().unwrap_or_else(|| Local::now());
+    let now: DateTime<Local> = Local.timestamp_opt(now_unix, 0).single().unwrap_or_else(Local::now);
     // 将 now 对齐到下一个整分钟（秒/纳秒置 0，若当前秒>0 则+1分钟）
     let base = match now.with_second(0).and_then(|d| d.with_nanosecond(0)) {
         Some(d) => d,
@@ -82,7 +82,7 @@ fn cron_next_after(now_unix: i64, expr: &str) -> Option<i64> {
             return Some(dt.timestamp());
         }
 
-        dt = dt + chrono::Duration::minutes(1);
+        dt += chrono::Duration::minutes(1);
     }
     None
 }
@@ -106,8 +106,8 @@ fn parse_field(field: &str, lo: i32, hi: i32) -> Option<Vec<i32>> {
 
 fn parse_part(part: &str, lo: i32, hi: i32) -> Option<Vec<i32>> {
     // 形式 1: "*/N"
-    if part.starts_with("*/") {
-        let step: i32 = part[2..].parse().ok()?;
+    if let Some(stripped) = part.strip_prefix("*/") {
+        let step: i32 = stripped.parse().ok()?;
         if step <= 0 { return None; }
         let mut out = Vec::new();
         let mut v = lo;
@@ -191,5 +191,268 @@ mod tests {
     fn parse_list() {
         let vals = parse_field("2,4,6", 0, 59).unwrap();
         assert_eq!(vals, vec![2, 4, 6]);
+    }
+
+    // ========================================================================
+    // compute_next_run 测试
+    // ========================================================================
+
+    #[test]
+    fn interval_with_invalid_value_uses_default() {
+        // 解析失败时应该使用默认值 3600
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "interval", "invalid"), Some(now + 3600));
+    }
+
+    #[test]
+    fn interval_with_empty_value_uses_default() {
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "interval", ""), Some(now + 3600));
+    }
+
+    #[test]
+    fn interval_minimum_value_is_10_seconds() {
+        // interval 最小值为 10 秒
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "interval", "5"), Some(now + 10));
+    }
+
+    #[test]
+    fn interval_exact_10_seconds() {
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "interval", "10"), Some(now + 10));
+    }
+
+    #[test]
+    fn interval_large_value() {
+        let now = 1_700_000_000i64;
+        assert_eq!(compute_next_run(now, "interval", "86400"), Some(now + 86400));
+    }
+
+    #[test]
+    fn unknown_mode_returns_none() {
+        assert_eq!(compute_next_run(0, "unknown", ""), None);
+    }
+
+    #[test]
+    fn cron_mode_basic() {
+        // 每天 10:00:00 运行
+        let now = 1_700_000_000i64; // 2023-11-15 15:33:20 CST
+        let result = compute_next_run(now, "cron", "0 10 * * *");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        // 下一次应该是今天或明天的 10:00
+        assert!(next > now);
+    }
+
+    #[test]
+    fn cron_invalid_expression_returns_none() {
+        assert_eq!(compute_next_run(0, "cron", "*"), None);
+        assert_eq!(compute_next_run(0, "cron", "* *"), None);
+        assert_eq!(compute_next_run(0, "cron", ""), None);
+    }
+
+    #[test]
+    fn cron_too_many_fields_returns_none() {
+        assert_eq!(compute_next_run(0, "cron", "0 10 * * * *"), None);
+    }
+
+    // ========================================================================
+    // format_local 测试
+    // ========================================================================
+
+    #[test]
+    fn format_local_basic() {
+        let formatted = format_local(1_700_000_000i64);
+        assert!(formatted.contains("2023"));
+        assert!(formatted.contains(":"));
+    }
+
+    #[test]
+    fn format_local_known_timestamp() {
+        // 2023-11-15 00:00:00 CST
+        let formatted = format_local(1_700_000_000i64);
+        assert!(formatted.starts_with("2023-"));
+    }
+
+    #[test]
+    fn format_local_zero() {
+        let formatted = format_local(0);
+        // 应该能正常格式化，不会 panic
+        assert!(!formatted.is_empty());
+    }
+
+    // ========================================================================
+    // parse_field 异常情况测试
+    // ========================================================================
+
+    #[test]
+    fn parse_field_single_value() {
+        let vals = parse_field("30", 0, 59).unwrap();
+        assert_eq!(vals, vec![30]);
+    }
+
+    #[test]
+    fn parse_field_range() {
+        let vals = parse_field("10-15", 0, 59).unwrap();
+        assert_eq!(vals, vec![10, 11, 12, 13, 14, 15]);
+    }
+
+    #[test]
+    fn parse_field_value_out_of_range_low() {
+        assert!(parse_field("-1", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_value_out_of_range_high() {
+        assert!(parse_field("60", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_range_start_greater_than_end() {
+        assert!(parse_field("30-10", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_step_zero() {
+        // */0 是无效的
+        assert!(parse_part("*/0", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_step_negative() {
+        assert!(parse_part("*/-1", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_range_end_greater_than_hi() {
+        assert!(parse_field("0-60", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_range_start_less_than_lo() {
+        assert!(parse_field("-1-10", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_not_a_number() {
+        assert!(parse_field("abc", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_range_with_invalid_step() {
+        // 10-30/0 应该返回 None
+        assert!(parse_field("10-30/0", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_range_with_invalid_step_format() {
+        // 10-30/s 应该是 None
+        assert!(parse_field("10-30/s", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_start_not_number() {
+        // a-10 应该返回 None
+        assert!(parse_field("a-10", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_invalid_end_not_number() {
+        // 10-a 应该返回 None
+        assert!(parse_field("10-a", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_field_step_in_star() {
+        // */5 应该解析为 0,5,10,...,55
+        let vals = parse_field("*/5", 0, 59).unwrap();
+        let expected: Vec<i32> = (0..=55).step_by(5).collect();
+        assert_eq!(vals, expected);
+    }
+
+    #[test]
+    fn parse_field_step_larger_than_range() {
+        // */60 在 0-59 范围内应该只返回 0
+        let vals = parse_field("*/60", 0, 59).unwrap();
+        assert_eq!(vals, vec![0]);
+    }
+
+    // ========================================================================
+    // parse_part 边界测试
+    // ========================================================================
+
+    #[test]
+    fn parse_part_wildcard() {
+        let vals = parse_part("*", 0, 59).unwrap();
+        assert_eq!(vals.len(), 60);
+    }
+
+    #[test]
+    fn parse_part_single_value() {
+        let vals = parse_part("42", 0, 59).unwrap();
+        assert_eq!(vals, vec![42]);
+    }
+
+    #[test]
+    fn parse_part_range_only() {
+        let vals = parse_part("5-10", 0, 59).unwrap();
+        assert_eq!(vals, vec![5, 6, 7, 8, 9, 10]);
+    }
+
+    #[test]
+    fn parse_part_range_with_step() {
+        let vals = parse_part("0-10/2", 0, 59).unwrap();
+        assert_eq!(vals, vec![0, 2, 4, 6, 8, 10]);
+    }
+
+    #[test]
+    fn parse_part_step_zero() {
+        assert!(parse_part("*/0", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_part_step_negative() {
+        assert!(parse_part("*/-1", 0, 59).is_none());
+    }
+
+    #[test]
+    fn parse_part_invalid_format() {
+        assert!(parse_part("abc", 0, 59).is_none());
+        assert!(parse_part("", 0, 59).is_none());
+    }
+
+    // ========================================================================
+    // cron_next_after 集成测试
+    // ========================================================================
+
+    #[test]
+    fn cron_next_after_basic() {
+        // 每天 12:00 运行
+        let now = 1_700_000_000i64;
+        let result = cron_next_after(now, "0 12 * * *");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        assert!(next > now);
+    }
+
+    #[test]
+    fn cron_next_after_weekdays_only() {
+        // 周一到周五 9:00 运行
+        let now = 1_700_000_000i64;
+        let result = cron_next_after(now, "0 9 * * 1-5");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        assert!(next > now);
+    }
+
+    #[test]
+    fn cron_next_after_monthly() {
+        // 每月 1 号 0:00 运行
+        let now = 1_700_000_000i64;
+        let result = cron_next_after(now, "0 0 1 * *");
+        assert!(result.is_some());
+        let next = result.unwrap();
+        assert!(next > now);
     }
 }

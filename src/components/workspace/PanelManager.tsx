@@ -1,9 +1,13 @@
 import React, { useState, useCallback } from 'react';
-import type { Panel } from '../../types';
-import { useWorkspaceStore, useQueryStore } from '../../store';
+import type { Panel, SqlStatementResult } from '../../types';
+import { useWorkspaceStore, useQueryStore, useAppStore } from '../../store';
 import { SQLEditor } from '../sql/SQLEditor';
 import { QueryResult } from '../sql/QueryResult';
 import { ChartPanel } from '../chart/ChartPanel';
+import { useQueryExecution } from '../sql/hooks';
+import { tauriService } from '../../services';
+import { useSetting } from '../../context/SettingsContext';
+import { applyDefaultSelectLimit } from '../../utils/sqlStatementParser';
 
 interface PanelManagerProps {
   tabId: string;
@@ -12,7 +16,17 @@ interface PanelManagerProps {
 
 export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => {
   const { updatePanel, tabs } = useWorkspaceStore();
-  const { sqlQueries, activeQueryId, updateSqlQuery, setActiveQueryId } = useQueryStore();
+  const sqlQueries = useQueryStore(s => s.sqlQueries);
+  const activeQueryId = useQueryStore(s => s.activeQueryId);
+  const updateSqlQuery = useQueryStore(s => s.updateSqlQuery);
+  const setActiveQueryId = useQueryStore(s => s.setActiveQueryId);
+  const setQueryLoading = useQueryStore(s => s.setQueryLoading);
+  const setBatchResults = useQueryStore(s => s.setBatchResults);
+  const addToHistory = useQueryStore(s => s.addToHistory);
+  const { setMessage } = useAppStore();
+  const { executeQuery } = useQueryExecution();
+  const [defaultSelectLimitStr] = useSetting('sql', 'defaultSelectLimit');
+  const defaultSelectLimit = parseInt(defaultSelectLimitStr || '0', 10) || 0;
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -32,12 +46,106 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
 
   const activeQuery = sqlQueries.find(q => q.id === tabQueryId);
 
-  const handleMouseDown = (index: number, e: React.MouseEvent) => {
+  const executeSingleStatement = useCallback(async (sql: string) => {
+    if (!tabQueryId) return;
+
+    setQueryLoading(tabQueryId);
+    const startTime = performance.now();
+    try {
+      const sqlToExecute = applyDefaultSelectLimit(sql, defaultSelectLimit);
+      const response = await tauriService.executeSql(sqlToExecute);
+      
+      if (response.success && response.data) {
+        const batchResults = response.data.results as SqlStatementResult[];
+        
+        if (!batchResults || !Array.isArray(batchResults)) {
+          console.error('[PanelManager] Invalid batchResults format:', response.data);
+          setMessage('查询结果解析失败，请稍后重试', 'error');
+          return;
+        }
+
+        const endTime = performance.now();
+        const totalExecutionMs = endTime - startTime;
+        
+        const resultsWithTime = batchResults.map((result) => ({
+          ...result,
+          executionTimeMs: result.executionTimeMs ?? totalExecutionMs,
+        }));
+        
+        setBatchResults(tabQueryId, resultsWithTime);
+        
+        const successResults = resultsWithTime.filter(r => r.success);
+        const totalRows = successResults.reduce((sum, item) => sum + (item.rows?.length || 0), 0);
+        const hasSuccess = successResults.length > 0;
+        addToHistory(sql, hasSuccess, totalRows, 100);
+        
+        if (hasSuccess) {
+          setMessage(`执行成功（${successResults.length} 条语句）`, 'success');
+        } else {
+          setMessage('执行失败', 'error');
+        }
+      } else {
+        console.error('[PanelManager] SQL execution error:', response.error);
+        setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+        addToHistory(sql, false, null, 100);
+      }
+    } catch (error) {
+      console.error('[PanelManager] SQL execution exception:', error);
+      setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+      addToHistory(sql, false, null, 100);
+    } finally {
+      setQueryLoading(null);
+    }
+  }, [tabQueryId, setQueryLoading, setBatchResults, addToHistory, setMessage, defaultSelectLimit]);
+
+  const isAnalyticalQuery = (sql: string): boolean => {
+    const upper = sql.toUpperCase();
+    const analyticalKeywords = [
+      'GROUP BY', 'HAVING', 'OVER', 'WINDOW',
+      'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LAG', 'LEAD',
+      'ARRAY_AGG', 'STRING_AGG',
+      'COUNT(DISTINCT', 'AVG(', 'SUM(', 'MIN(', 'MAX(',
+      'SELECT DISTINCT', ' JOIN ',
+    ];
+    return analyticalKeywords.some(kw => upper.includes(kw));
+  };
+
+  const addExplainPrefix = (sql: string): string => {
+    const trimmed = sql.trimStart();
+    if (/^explain\s+/i.test(trimmed)) {
+      return sql;
+    }
+    // For analytical queries, use DuckDB EXPLAIN (routes to DuckDB)
+    // For simple queries, use SQLite EXPLAIN QUERY PLAN (routes to SQLite)
+    if (isAnalyticalQuery(sql)) {
+      return 'EXPLAIN ' + sql;
+    }
+    return 'EXPLAIN QUERY PLAN ' + sql;
+  };
+
+  const executeExplainStatement = useCallback(async (sql: string) => {
+    const explainSql = addExplainPrefix(sql);
+    await executeSingleStatement(explainSql);
+  }, [executeSingleStatement]);
+
+  const executeExplain = useCallback(async () => {
+    if (!activeQuery) return;
+    const explainSql = addExplainPrefix(activeQuery.sql);
+    await executeSingleStatement(explainSql);
+  }, [activeQuery, executeSingleStatement]);
+
+  const handleEditorChange = useCallback((sql: string) => {
+    const displayedQuery = activeQuery || sqlQueries[0];
+    const displayedQueryId = displayedQuery?.id || tabQueryId;
+    updateSqlQuery(displayedQueryId, { sql });
+  }, [activeQuery, sqlQueries, tabQueryId, updateSqlQuery]);
+
+  const handleMouseDown = useCallback((index: number, e: React.MouseEvent) => {
     setIsDragging(true);
     setDragIndex(index);
     setDragStartY(e.clientY);
     setDragStartSizes(panels.map(p => p.size));
-  };
+  }, [panels]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging || dragIndex === null) return;
@@ -88,12 +196,15 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
       case 'sql_editor':
         // 使用当前 Tab 绑定的 queryId，确保每个 Tab 显示自己的查询
         const displayedQuery = activeQuery || sqlQueries[0];
-        const displayedQueryId = displayedQuery?.id || tabQueryId;
         
         return (
           <SQLEditor
             query={displayedQuery}
-            onChange={(sql) => updateSqlQuery(displayedQueryId, { sql })}
+            onChange={handleEditorChange}
+            onExecute={executeQuery}
+            onExecuteStatement={executeSingleStatement}
+            onExplain={executeExplain}
+            onExplainStatement={executeExplainStatement}
           />
         );
       case 'results_grid':
@@ -133,7 +244,6 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
             <div style={{
               ...styles.panel,
               height: `${panel.size}%`,
-              minHeight: panel.type === 'results_grid' ? 200 : undefined,
             }}>
               <div style={styles.panelContent}>
                 {renderPanelContent(panel)}
@@ -175,7 +285,7 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',
-    overflow: 'hidden',
+    overflow: 'auto',
   },
   resizer: {
     height: '4px',

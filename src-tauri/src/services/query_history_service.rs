@@ -65,7 +65,10 @@ impl QueryHistoryService {
         );
 
         conn.execute(&insert_sql, &[])
-            .map_err(|e| format!("记录查询历史失败：{}", e))?;
+            .map_err(|e| {
+                log::error!("记录查询历史失败: sql长度={}, success={}", request.sql.len(), request.success);
+                format!("记录查询历史失败：{}", e)
+            })?;
 
         Ok(QueryHistoryItem {
             id,
@@ -151,7 +154,10 @@ impl QueryHistoryService {
         );
 
         conn.execute(&update_sql, &[])
-            .map_err(|e| format!("更新收藏状态失败：{}", e))?;
+            .map_err(|e| {
+                log::warn!("更新收藏状态失败: id={}, is_favorite={}", request.id, request.is_favorite);
+                format!("更新收藏状态失败：{}", e)
+            })?;
 
         Ok(())
     }
@@ -167,7 +173,10 @@ impl QueryHistoryService {
         );
 
         conn.execute(&delete_sql, &[])
-            .map_err(|e| format!("删除历史记录失败：{}", e))?;
+            .map_err(|e| {
+                log::warn!("删除历史记录失败: id={}", id);
+                format!("删除历史记录失败：{}", e)
+            })?;
 
         Ok(())
     }
@@ -184,7 +193,10 @@ impl QueryHistoryService {
         );
 
         let result = conn.execute(&delete_sql, &[])
-            .map_err(|e| format!("清理历史记录失败：{}", e))?;
+            .map_err(|e| {
+                log::warn!("清理历史记录失败: days={}", days);
+                format!("清理历史记录失败：{}", e)
+            })?;
 
         Ok(result as i64)
     }
@@ -212,5 +224,417 @@ impl QueryHistoryService {
             is_favorite: row[8].to_lowercase() == "true" || row[8] == "1",
             tags: if row[9].is_empty() { None } else { Some(row[9].clone()) },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::traits::*;
+    use crate::database::sqlite::SqliteDriver;
+    use tempfile::tempdir;
+
+    fn create_test_db_connection() -> (MutexGuardConnection<'static>, tempfile::TempDir) {
+        let temp_dir = tempdir().expect("创建临时目录失败");
+        let db_path = temp_dir.path().join("test_query_history.db");
+        
+        let driver = SqliteDriver::new();
+        let mut db_manager = DatabaseManager::new();
+        db_manager.register_driver(Box::new(driver));
+        db_manager.create_and_connect("sqlite", &db_path).expect("创建测试数据库失败");
+        
+        let leaked_manager: &'static DatabaseManager = Box::leak(Box::new(db_manager));
+        let conn = leaked_manager.get_connection().expect("获取连接失败");
+        
+        (conn, temp_dir)
+    }
+
+    #[test]
+    fn test_record_query_sync_normal() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = RecordQueryHistoryRequest {
+            sql: "SELECT * FROM users".to_string(),
+            name: Some("测试查询".to_string()),
+            execution_time_ms: Some(100),
+            row_count: Some(5),
+            success: true,
+            error_message: None,
+        };
+        
+        let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        assert_eq!(item.sql, "SELECT * FROM users");
+        assert_eq!(item.name, Some("测试查询".to_string()));
+        assert_eq!(item.execution_time_ms, Some(100));
+        assert_eq!(item.row_count, Some(5));
+        assert!(item.success);
+        assert!(!item.is_favorite);
+    }
+
+    #[test]
+    fn test_record_query_sync_empty_sql() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = RecordQueryHistoryRequest {
+            sql: "".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: Some(0),
+            success: false,
+            error_message: Some("SQL 不能为空".to_string()),
+        };
+        
+        let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        assert_eq!(item.sql, "");
+        assert!(!item.success);
+        assert_eq!(item.error_message, Some("SQL 不能为空".to_string()));
+    }
+
+    #[test]
+    fn test_record_query_sync_long_sql() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let long_sql = "SELECT ".to_string() + &"a, ".repeat(5000);
+        let request = RecordQueryHistoryRequest {
+            sql: long_sql.clone(),
+            name: Some("超长 SQL".to_string()),
+            execution_time_ms: Some(5000),
+            row_count: Some(10000),
+            success: true,
+            error_message: None,
+        };
+        
+        let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        assert_eq!(item.sql, long_sql);
+    }
+
+    #[test]
+    fn test_get_history_sync_normal() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        for i in 0..3 {
+            let request = RecordQueryHistoryRequest {
+                sql: format!("SELECT {} FROM dual", i),
+                name: Some(format!("查询{}", i)),
+                execution_time_ms: Some(10 * i as i64),
+                row_count: Some(i),
+                success: true,
+                error_message: None,
+            };
+            QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        }
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(10),
+            offset: Some(0),
+        };
+        
+        let response = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert_eq!(response.items.len(), 3, "应返回 3 条记录");
+        assert_eq!(response.total, 3);
+    }
+
+    #[test]
+    fn test_get_history_sync_pagination() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        for i in 0..5 {
+            let request = RecordQueryHistoryRequest {
+                sql: format!("SELECT {} FROM dual", i),
+                name: None,
+                execution_time_ms: None,
+                row_count: None,
+                success: true,
+                error_message: None,
+            };
+            QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        }
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(2),
+            offset: Some(0),
+        };
+        let result = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert_eq!(result.items.len(), 2, "limit=2 应返回 2 条");
+        assert_eq!(result.total, 5, "总数仍为 5");
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(10),
+            offset: Some(3),
+        };
+        let result = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert_eq!(result.items.len(), 2, "offset=3 应返回剩余 2 条");
+    }
+
+    #[test]
+    fn test_get_history_sync_empty() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(10),
+            offset: Some(0),
+        };
+        
+        let response = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert!(response.items.is_empty(), "应返回空列表");
+        assert_eq!(response.total, 0);
+    }
+
+    #[test]
+    fn test_update_favorite_sync_set_true() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = RecordQueryHistoryRequest {
+            sql: "SELECT 1".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: None,
+            success: true,
+            error_message: None,
+        };
+        let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        
+        let update_request = UpdateFavoriteRequest {
+            id: item.id.clone(),
+            is_favorite: true,
+        };
+        QueryHistoryService::update_favorite_sync(&conn, update_request).unwrap();
+        
+        let list_request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let response = QueryHistoryService::get_history_sync(&conn, list_request).unwrap();
+        assert_eq!(response.items.len(), 1);
+        assert!(response.items[0].is_favorite);
+    }
+
+    #[test]
+    fn test_update_favorite_sync_set_false() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = RecordQueryHistoryRequest {
+            sql: "SELECT 1".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: None,
+            success: true,
+            error_message: None,
+        };
+        let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        
+        let update_request = UpdateFavoriteRequest {
+            id: item.id.clone(),
+            is_favorite: true,
+        };
+        QueryHistoryService::update_favorite_sync(&conn, update_request).unwrap();
+        
+        let update_request = UpdateFavoriteRequest {
+            id: item.id.clone(),
+            is_favorite: false,
+        };
+        QueryHistoryService::update_favorite_sync(&conn, update_request).unwrap();
+        
+        let list_request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let response = QueryHistoryService::get_history_sync(&conn, list_request).unwrap();
+        assert!(response.items.is_empty(), "取消后不应在收藏列表中");
+    }
+
+    #[test]
+    fn test_update_favorite_sync_nonexistent_id() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let update_request = UpdateFavoriteRequest {
+            id: "nonexistent_id_12345".to_string(),
+            is_favorite: true,
+        };
+        let result = QueryHistoryService::update_favorite_sync(&conn, update_request);
+        assert!(result.is_ok(), "更新不存在的 ID 应返回成功（0 行受影响）");
+    }
+
+    #[test]
+    fn test_cleanup_old_history_sync_normal() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        for i in 0..3 {
+            let request = RecordQueryHistoryRequest {
+                sql: format!("SELECT {}", i),
+                name: None,
+                execution_time_ms: None,
+                row_count: None,
+                success: true,
+                error_message: None,
+            };
+            QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        }
+        
+        let count = QueryHistoryService::cleanup_old_history_sync(&conn, Some(90)).unwrap();
+        assert_eq!(count, 0, "刚插入的记录不应被清理");
+        
+        let list_request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let response = QueryHistoryService::get_history_sync(&conn, list_request).unwrap();
+        assert_eq!(response.total, 3);
+    }
+
+    #[test]
+    fn test_cleanup_old_history_sync_no_history() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let count = QueryHistoryService::cleanup_old_history_sync(&conn, Some(90)).unwrap();
+        assert_eq!(count, 0, "无历史时应清理 0 条");
+    }
+
+    #[test]
+    fn test_cleanup_old_history_sync_empty_db() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        let result = QueryHistoryService::cleanup_old_history_sync(&conn, Some(90));
+        assert!(result.is_err(), "表不存在时清理应返回错误");
+    }
+
+    #[test]
+    fn test_cleanup_old_history_sync_with_favorites_preserved() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request1 = RecordQueryHistoryRequest {
+            sql: "SELECT favorite".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: None,
+            success: true,
+            error_message: None,
+        };
+        let item1 = QueryHistoryService::record_query_sync(&conn, request1).unwrap();
+        
+        let request2 = RecordQueryHistoryRequest {
+            sql: "SELECT not_favorite".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: None,
+            success: true,
+            error_message: None,
+        };
+        QueryHistoryService::record_query_sync(&conn, request2).unwrap();
+        
+        let update_request = UpdateFavoriteRequest {
+            id: item1.id.clone(),
+            is_favorite: true,
+        };
+        QueryHistoryService::update_favorite_sync(&conn, update_request).unwrap();
+        
+        let count = QueryHistoryService::cleanup_old_history_sync(&conn, Some(10000)).unwrap();
+        assert_eq!(count, 0, "刚插入的记录不应被清理");
+        
+        let list_request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: None,
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let response = QueryHistoryService::get_history_sync(&conn, list_request).unwrap();
+        assert_eq!(response.total, 2, "所有记录应仍在");
+        
+        let fav_request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let fav_response = QueryHistoryService::get_history_sync(&conn, fav_request).unwrap();
+        assert_eq!(fav_response.total, 1, "收藏记录应保留");
+        assert_eq!(fav_response.items[0].id, item1.id, "收藏记录 ID 应匹配");
+    }
+
+    #[test]
+    fn test_get_favorites_via_get_history() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        for i in 0..3 {
+            let request = RecordQueryHistoryRequest {
+                sql: format!("SELECT {}", i),
+                name: None,
+                execution_time_ms: None,
+                row_count: None,
+                success: true,
+                error_message: None,
+            };
+            let item = QueryHistoryService::record_query_sync(&conn, request).unwrap();
+            
+            if i == 1 {
+                let update_request = UpdateFavoriteRequest {
+                    id: item.id,
+                    is_favorite: true,
+                };
+                QueryHistoryService::update_favorite_sync(&conn, update_request).unwrap();
+            }
+        }
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let result = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert_eq!(result.items.len(), 1, "应只有 1 条收藏");
+        assert!(result.items[0].is_favorite);
+    }
+
+    #[test]
+    fn test_get_favorites_empty() {
+        let (conn, _temp_dir) = create_test_db_connection();
+        QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
+        
+        let request = RecordQueryHistoryRequest {
+            sql: "SELECT 1".to_string(),
+            name: None,
+            execution_time_ms: None,
+            row_count: None,
+            success: true,
+            error_message: None,
+        };
+        QueryHistoryService::record_query_sync(&conn, request).unwrap();
+        
+        let request = QueryHistoryListRequest {
+            search: None,
+            only_favorites: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        };
+        let result = QueryHistoryService::get_history_sync(&conn, request).unwrap();
+        assert!(result.items.is_empty(), "无收藏时应返回空列表");
+        assert_eq!(result.total, 0);
     }
 }

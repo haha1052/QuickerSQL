@@ -23,11 +23,26 @@ function toCamelCase(key: string): string {
   return key.replace(SNAKE_CASE_RE, (_, c: string) => c.toUpperCase());
 }
 
+/** 配色方案色板定义（与 ChartRenderer 保持一致）。 */
+export const COLOR_SCHEMES: Record<string, string[]> = {
+  default: ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'],
+  dark: ['#4992ff', '#7cffb2', '#fddd60', '#ff6e76', '#58d9f9', '#05c091', '#ff8a45', '#8d48e3', '#dd79ff'],
+  light: ['#9ecaff', '#b8f0c8', '#ffe89c', '#ffa5ad', '#b0ecf7', '#7edcc3', '#ffc39e', '#d0a8f0', '#f5b8e0'],
+  colorful: ['#ff4d4f', '#fa8c16', '#faad14', '#a0d911', '#52c41a', '#13c2c2', '#1890ff', '#722ed1', '#eb2f96'],
+  pastel: ['#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', '#e0baff', '#ffb3e6', '#c9c9ff', '#ffd6a5'],
+  vivid: ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0', '#f032e6', '#bcf60c'],
+};
+
 /** ECharts 默认色板（与 ChartRenderer 保持一致）。 */
-const DEFAULT_COLORS = [
-  '#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de',
-  '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc',
-];
+const DEFAULT_COLORS = COLOR_SCHEMES.default;
+
+/** 可视化设置选项（用于归一化时应用默认值）。 */
+export interface VisualizationOptions {
+  showGrid?: boolean;
+  showLegend?: boolean;
+  animation?: boolean;
+  defaultColorScheme?: string;
+}
 
 /**
  * 递归归一化 ECharts 配置对象：
@@ -53,22 +68,31 @@ function normalizeKeys(value: unknown): unknown {
 }
 
 /**
- * 归一化 ECharts 配置：转换键名 + 补充默认 grid/color。
+ * 归一化 ECharts 配置：转换键名 + 补充默认 grid/color + 应用可视化设置。
  *
  * 用于在 echarts.setOption() 之前对配置做兼容处理，确保：
  *   1. 旧数据（snake_case 键名）能正确渲染
  *   2. 新数据（camelCase 键名）不受影响（幂等）
  *   3. 缺少 grid/color 时使用合理默认值，避免坐标轴标签被裁剪
+ *   4. 可传入可视化设置作为默认值（用户配置优先级高于设置）
  *
  * @param config 原始 ECharts 配置（可能为旧 snake_case 格式）
+ * @param options 可选的可视化设置，作为默认值应用
  * @returns 可直接传给 echarts.setOption() 的配置；输入为 null 时返回 null
  */
 export function normalizeEChartsConfig(
   config: Record<string, unknown> | null,
+  options?: VisualizationOptions,
 ): Record<string, unknown> | null {
   if (!config || typeof config !== 'object') return config;
 
   const normalized = normalizeKeys(config) as Record<string, unknown>;
+
+  const showGrid = options?.showGrid !== false;
+  const showLegend = options?.showLegend !== false;
+  const animation = options?.animation !== false;
+  const colorScheme = options?.defaultColorScheme || 'default';
+  const colorPalette = COLOR_SCHEMES[colorScheme] || DEFAULT_COLORS;
 
   // 补充默认 grid（避免坐标轴标签被容器边缘裁剪）
   if (!normalized.grid) {
@@ -80,12 +104,35 @@ export function normalizeEChartsConfig(
       bottom: hasDataZoom ? '15%' : '8%',
       top: hasTitle ? '60px' : '40px',
       containLabel: true,
+      show: showGrid,
     };
+  } else {
+    const gridObj = normalized.grid as Record<string, unknown>;
+    if (gridObj.show === undefined) {
+      gridObj.show = showGrid;
+    }
+  }
+
+  // 补充默认 legend
+  if (!normalized.legend) {
+    normalized.legend = {
+      show: showLegend,
+    };
+  } else {
+    const legendObj = normalized.legend as Record<string, unknown>;
+    if (legendObj.show === undefined) {
+      legendObj.show = showLegend;
+    }
+  }
+
+  // 补充默认 animation
+  if (normalized.animation === undefined) {
+    normalized.animation = animation;
   }
 
   // 补充默认色板
   if (!normalized.color) {
-    normalized.color = DEFAULT_COLORS;
+    normalized.color = colorPalette;
   }
 
   return normalized;

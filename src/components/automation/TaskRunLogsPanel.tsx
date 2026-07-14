@@ -1,11 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
 import { useTaskStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 import { computeVisibleRange } from '../../utils/virtual';
 import type { Task, TaskRunStatus } from '../../types/automation';
 
 const ITEM_HEIGHT = 44;
-const VIEWPORT_HEIGHT = 400;
 const OVERSCAN = 5;
 
 interface TaskRunLogsPanelProps {
@@ -43,11 +43,11 @@ const getStatusStyles = (status: TaskRunStatus): React.CSSProperties => {
   }
 };
 
-const getStatusText = (status: TaskRunStatus): string => {
+const getStatusText = (t: (key: string) => string, status: TaskRunStatus): string => {
   switch (status) {
     case 'success': return '成功';
     case 'failed': return '失败';
-    case 'running': return '执行中';
+    case 'running': return t('task.running');
     case 'skipped': return '跳过';
     default: return status;
   }
@@ -82,13 +82,22 @@ const getTaskStateText = (state: string): string => {
 };
 
 export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
+  const { t } = useLocale();
   const { taskRuns, selectedTaskId, loadTaskRuns } = useTaskStore();
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const logContainerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
 
-  const range = computeVisibleRange(scrollTop, VIEWPORT_HEIGHT, ITEM_HEIGHT, taskRuns.length, OVERSCAN);
+  React.useEffect(() => {
+    if (logContainerRef.current) {
+      setViewportHeight(logContainerRef.current.clientHeight || 400);
+    }
+  }, [task?.id]);
+
+  const range = computeVisibleRange(scrollTop, viewportHeight, ITEM_HEIGHT, taskRuns.length, OVERSCAN);
   const visibleRuns = taskRuns.slice(range.start, range.end);
 
   const handleRefresh = () => {
@@ -103,7 +112,7 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
         <div style={styles.header}>
           <div style={styles.headerTitle}>运行日志</div>
         </div>
-        <div style={styles.empty}>请在左侧选择一个任务以查看详情和运行日志。</div>
+        <div style={styles.empty}>{t('taskLogs.selectTaskHint')}</div>
       </div>
     );
   }
@@ -140,15 +149,15 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
             <div style={styles.detailItemValue}>{task.scheduleValue || '-'}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>总运行</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.totalRuns')}</div>
             <div style={styles.detailItemValue}>{task.totalRuns}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>成功</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.success')}</div>
             <div style={{ ...styles.detailItemValue, color: Colors.success }}>{task.successRuns}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>失败</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.failed')}</div>
             <div style={{ ...styles.detailItemValue, color: Colors.danger }}>{task.failedRuns}</div>
           </div>
           <div style={styles.detailItem}>
@@ -159,7 +168,7 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
         <div style={styles.subTitle}>执行记录（{taskRuns.length}）</div>
 
         {taskRuns.length === 0 ? (
-          <div style={styles.empty}>暂无执行记录</div>
+          <div style={styles.empty}>{t('taskLogs.noLogs')}</div>
         ) : (
           <div style={styles.logTable}>
             <div style={styles.logHeaderRow}>
@@ -169,8 +178,11 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
               <div style={{ ...styles.logCell, flex: 1 }}>触发</div>
             </div>
             <div
-              ref={scrollContainerRef}
-              style={{ height: VIEWPORT_HEIGHT, overflowY: 'auto', position: 'relative' }}
+              ref={(el) => {
+                scrollContainerRef.current = el;
+                logContainerRef.current = el;
+              }}
+              style={{ flex: 1, minHeight: 0, overflowY: 'auto', position: 'relative' }}
               onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
             >
               <div style={{ height: range.totalHeight, position: 'relative' }}>
@@ -196,7 +208,7 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
                         <div style={{ ...styles.logCell, flex: 1.4 }}>{formatDateTime(run.startedAt)}</div>
                         <div style={{ ...styles.logCell, flex: 0.8 }}>
                           <span style={{ ...styles.badge, ...getStatusStyles(run.status) }}>
-                            {getStatusText(run.status)}
+                            {getStatusText(t, run.status)}
                           </span>
                         </div>
                         <div style={{ ...styles.logCell, flex: 0.8 }}>{formatDuration(run.durationMs)}</div>
@@ -226,15 +238,15 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
 
 const styles: Record<string, React.CSSProperties> = {
   panel: {
-    width: '420px',
-    minWidth: '340px',
-    maxWidth: '560px',
+    width: '100%',
+    height: '100%',
     borderLeft: `1px solid ${Colors.border}`,
     background: Colors.background,
     display: 'flex',
     flexDirection: 'column',
-    height: '100%',
     overflow: 'hidden',
+    minWidth: '300px',
+    boxSizing: 'border-box',
   },
   header: {
     display: 'flex',
@@ -264,6 +276,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: Spacing.md,
+    minHeight: 0,
   },
   detailName: {
     fontSize: FontSizes.h1,
@@ -307,6 +320,8 @@ const styles: Record<string, React.CSSProperties> = {
   logTable: {
     display: 'flex',
     flexDirection: 'column',
+    flex: 1,
+    minHeight: 0,
     border: `1px solid ${Colors.border}`,
     borderRadius: BorderRadius.md,
     overflow: 'hidden',

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { tauriService } from '../services/tauri';
 import { useToastStore } from './toastStore';
+import type { ProjectInfo } from '../types';
 
 interface DatabaseStatusItem {
   db_type: string;
@@ -20,8 +21,10 @@ interface ImportItemPayload {
 }
 
 interface ProjectState {
-  projects: string[];
+  projects: ProjectInfo[];
   currentProject: string;
+  /** 当前项目 ID（UUID），与后端注册表一致 */
+  currentProjectId: string;
   showProjectModal: boolean;
   newProjectName: string;
   currentDbPath: string;
@@ -36,8 +39,10 @@ interface ProjectState {
   error: string | null;
 
   // 原有 setter
-  setProjects: (projects: string[]) => void;
+  setProjects: (projects: ProjectInfo[]) => void;
   setCurrentProject: (project: string) => void;
+  /** 设置当前项目 ID */
+  setCurrentProjectId: (id: string) => void;
   setShowProjectModal: (show: boolean) => void;
   setNewProjectName: (name: string) => void;
   setCurrentDbPath: (path: string) => void;
@@ -52,11 +57,23 @@ interface ProjectState {
   loadCurrentDbPath: () => Promise<void>;
   importDataV2: (params: ImportItemPayload) => Promise<boolean>;
   setAllDatabaseStatus: (status: DatabaseStatusItem[]) => void;
+
+  /**
+   * 切换项目后的统一刷新协调方法（仅负责 projectStore 自身的状态更新）。
+   *
+   * 跨 Store 的刷新由 App.tsx 中的 handleProjectSwitchRefresh 统一编排，
+   * 避免 projectStore 反向依赖其他业务 Store。
+   *
+   * @param newProjectId 新项目 ID
+   * @param newProjectInfo 新项目信息（可选，包含名称等）
+   */
+  refreshAfterProjectSwitch: (newProjectId: string, newProjectInfo?: ProjectInfo) => Promise<void>;
 }
 
-export const useProjectStore = create<ProjectState>((set) => ({
+export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   currentProject: '',
+  currentProjectId: '',
   showProjectModal: false,
   newProjectName: '',
   currentDbPath: '',
@@ -73,6 +90,8 @@ export const useProjectStore = create<ProjectState>((set) => ({
   setProjects: (projects) => set({ projects }),
 
   setCurrentProject: (project) => set({ currentProject: project }),
+
+  setCurrentProjectId: (id) => set({ currentProjectId: id }),
 
   setShowProjectModal: (show) => set({ showProjectModal: show }),
 
@@ -133,9 +152,26 @@ export const useProjectStore = create<ProjectState>((set) => ({
   async loadCurrentDbPath() {
     try {
       set({ loading: true, error: null });
-      const response = await tauriService.getCurrentDbPath();
-      if (response.success && response.data) {
-        set({ currentDbPath: response.data });
+      // 1. 获取当前数据库路径
+      const pathResponse = await tauriService.getCurrentDbPath();
+      if (pathResponse.success && pathResponse.data) {
+        set({ currentDbPath: pathResponse.data });
+      }
+
+      // 2. 通过 getCurrentProjectId 获取当前项目 ID（新架构下目录名是 UUID，
+      //    无法再从路径反推项目名，必须通过后端查询）
+      const idResponse = await tauriService.getCurrentProjectId();
+      if (idResponse.success && idResponse.data) {
+        const projectId = idResponse.data;
+        set({ currentProjectId: projectId });
+
+        // 3. 从 projects 列表查找项目名（projects 可能已通过 startupData 或
+        //    loadProjects 加载，若未加载则 currentProject 保持调用前的值）
+        const { projects } = get();
+        const project = projects.find((p) => p.id === projectId);
+        if (project) {
+          set({ currentProject: project.name });
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -144,6 +180,34 @@ export const useProjectStore = create<ProjectState>((set) => ({
     } finally {
       set({ loading: false });
     }
+  },
+
+  /**
+   * 切换项目后的统一刷新协调方法（仅负责 projectStore 自身的状态更新）。
+   *
+   * 步骤：
+   *   1. 立即更新 currentProjectId / currentProject / 清空选中集合
+   *      —— 让 UI 第一时间反映切换结果，无需等待后端往返
+   *   2. 调用 loadCurrentDbPath 同步当前数据库路径与项目 ID
+   *      —— 后端已切换连接，此调用获取的是新项目的路径
+   *   3. 调用 loadProjects 刷新项目列表（更新 last_opened_at 排序）
+   *
+   * 跨 Store 的刷新（workspace/table/query/dashboard/task）由
+   * App.tsx 中的 handleProjectSwitchRefresh 统一编排。
+   */
+  async refreshAfterProjectSwitch(newProjectId: string, newProjectInfo?: ProjectInfo) {
+    // 1. 立即更新当前项目状态（乐观更新，让 UI 即时响应）
+    set({
+      currentProjectId: newProjectId,
+      currentProject: newProjectInfo?.name || get().currentProject,
+      selectedProjects: new Set(),
+    });
+
+    // 2. 加载当前数据库路径（后端已切换连接，此处获取新项目路径 + ID）
+    await get().loadCurrentDbPath();
+
+    // 3. 刷新项目列表（更新 last_opened_at 排序）
+    await get().loadProjects();
   },
 
   async importDataV2(params) {

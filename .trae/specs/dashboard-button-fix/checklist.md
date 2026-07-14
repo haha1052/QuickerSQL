@@ -1,0 +1,10 @@
+- [x] Checkpoint 1: 保存按钮在非编辑模式点击时显示 toast"请先进入编辑模式再保存"
+- [x] Checkpoint 2: 保存按钮在编辑模式无变更时显示 toast"没有未保存的变更"
+- [x] Checkpoint 3: 保存按钮在编辑模式有变更时成功保存，显示 toast"保存成功"
+- [x] Checkpoint 4: 保存失败时显示 toast 错误消息（不再用 alert）
+- [x] Checkpoint 5: 导出按钮在编辑模式下点击时显示 toast"请先退出编辑模式"（不再静默禁用）
+- [x] Checkpoint 6: 导出按钮在非编辑模式下正常执行导出逻辑
+- [x] Checkpoint 7: 导出失败时使用 toast 显示错误消息（不再用 alert）
+- [x] Checkpoint 8: 导出按钮禁用态有视觉变化（opacity 降低、cursor 变化）
+- [x] Checkpoint 9: `cargo check --quiet` 编译通过（无后端改动，N/A）
+- [x] Checkpoint 10: `npx tsc --noEmit --pretty` 类型检查通过（0 errors）

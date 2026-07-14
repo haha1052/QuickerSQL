@@ -57,6 +57,43 @@
   margin-bottom: 20px;
 }
 
+.import-step-icon {
+  margin-bottom: 30px;
+}
+
+.guide-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  text-align: left;
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 20px;
+  margin-top: 10px;
+}
+
+.guide-card .card-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.guide-card .card-content h3 {
+  font-size: 16px;
+  color: #333;
+  margin: 0 0 10px 0;
+}
+
+.guide-card .card-content ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  color: #666;
+}
+
+.guide-card .card-content li {
+  margin-bottom: 8px;
+}
+
 .guide-body h2 {
   font-size: 24px;
   color: #333;

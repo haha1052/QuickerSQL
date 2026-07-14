@@ -3,6 +3,7 @@ export type TaskType = 'sql' | 'refresh_chart' | 'refresh_dashboard' | 'export_c
 export type ScheduleMode = 'interval' | 'cron' | 'manual';
 export type TaskState = 'enabled' | 'disabled' | 'paused';
 export type TaskRunStatus = 'running' | 'success' | 'failed' | 'skipped';
+export type DependencyType = 'time_interval' | 'cron' | 'task_success' | 'task_completed';
 
 export interface Task {
   id: string;
@@ -31,6 +32,7 @@ export interface Task {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  dependencies?: TaskDependency[];
 }
 
 export interface TaskRun {
@@ -86,3 +88,46 @@ export type TaskPayloadInner =
   | RefreshChartPayload
   | RefreshDashboardPayload
   | ExportCsvPayload;
+
+export interface TaskDependency {
+  id: string;
+  taskId: string;
+  dependencyType: DependencyType;
+  dependencyConfig: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TimeIntervalConfig {
+  intervalSeconds: number;
+}
+
+export interface CronConfig {
+  expression: string;
+  timezone?: string;
+}
+
+export interface TaskSuccessConfig {
+  upstreamTaskId: string;
+  delaySeconds?: number;
+}
+
+export interface TaskCompletedConfig {
+  upstreamTaskId: string;
+  delaySeconds?: number;
+}
+
+export type DependencyConfig = TimeIntervalConfig | CronConfig | TaskSuccessConfig | TaskCompletedConfig;
+
+export function parseDependencyConfig(configStr: string): DependencyConfig | null {
+  try {
+    const parsed = JSON.parse(configStr);
+    return parsed as DependencyConfig;
+  } catch {
+    return null;
+  }
+}
+
+export function serializeDependencyConfig(config: DependencyConfig): string {
+  return JSON.stringify(config);
+}

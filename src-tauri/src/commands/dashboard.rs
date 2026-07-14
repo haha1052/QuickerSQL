@@ -205,6 +205,14 @@ pub async fn update_dashboard(
     layout: Option<String>,       // JSON
     filters: Option<String>,       // JSON
     refresh_interval_secs: Option<i64>,
+    background_color: Option<String>,
+    background_image: Option<String>,
+    canvas_width: Option<i64>,
+    canvas_height: Option<i64>,
+    padding: Option<i64>,
+    grid_gap: Option<i64>,
+    row_height: Option<i64>,
+    snap_to_grid: Option<bool>,
 ) -> Result<Dashboard, String> {
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
@@ -224,6 +232,14 @@ pub async fn update_dashboard(
         layout_vec,
         filters_vec,
         refresh_interval_secs,
+        background_color,
+        background_image,
+        canvas_width,
+        canvas_height,
+        padding,
+        grid_gap,
+        row_height,
+        snap_to_grid,
     )
 }
 
@@ -301,4 +317,23 @@ pub async fn remove_chart_from_dashboard(
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
 
     DashboardService::remove_chart_from_dashboard(&conn, &item_id)
+}
+
+/// 批量保存仪表盘布局（事务性更新）
+#[tauri::command]
+pub async fn save_dashboard_layout(
+    state: State<'_, TauriAppState>,
+    dashboard_id: String,
+    layout_updates: String,
+) -> Result<Dashboard, String> {
+    if !state.db_manager.is_connected() {
+        return Err("未连接到数据库".to_string());
+    }
+
+    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+
+    let layout_updates_vec: Vec<DashboardItemLayoutUpdate> = serde_json::from_str(&layout_updates)
+        .map_err(|e| format!("解析布局更新参数失败：{}", e))?;
+
+    DashboardService::save_dashboard_layout(&conn, &dashboard_id, layout_updates_vec)
 }

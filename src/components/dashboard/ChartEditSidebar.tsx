@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
+import { useLocale } from '../../context/LocaleContext';
 import type { SavedChart, ChartType } from '../../types/dashboard';
 
 interface ChartEditSidebarProps {
@@ -11,17 +12,24 @@ interface ChartEditSidebarProps {
 
 const CHART_TYPE_OPTIONS: { value: ChartType; label: string; icon: string }[] = [
   { value: 'bar', label: '柱状图', icon: '📊' },
+  { value: 'horizontalBar', label: '条形图', icon: '📊' },
   { value: 'line', label: '折线图', icon: '📈' },
-  { value: 'pie', label: '饼图', icon: '🥧' },
-  { value: 'scatter', label: '散点图', icon: '🔵' },
   { value: 'area', label: '面积图', icon: '📉' },
+  { value: 'pie', label: '饼图', icon: '🥧' },
+  { value: 'doughnut', label: '环形图', icon: '🍩' },
   { value: 'stackedBar', label: '堆叠柱', icon: '📊' },
+  { value: 'dualAxis', label: '双轴图', icon: '📏' },
+  { value: 'scatter', label: '散点图', icon: '🔵' },
+  { value: 'radar', label: '雷达图', icon: '🎯' },
+  { value: 'funnel', label: '漏斗图', icon: '🔻' },
+  { value: 'gauge', label: '仪表盘', icon: '⏱️' },
   { value: 'table', label: '表格', icon: '📋' },
 ];
 
 export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClose }) => {
   const { dashboards, updateSavedChart, addChartToDashboard, activeDashboardId } = useDashboardStore();
   const { addToast } = useToastStore();
+  const { t } = useLocale();
 
   // 本地编辑状态
   const [name, setName] = useState(chart.name);
@@ -149,44 +157,44 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
 
         <div style={styles.body}>
           {/* 基本信息 */}
-          <Section title="📋 基本信息">
-            <Field label="名称">
+          <Section title={`📋 ${t('chart.sectionBasic')}`}>
+            <Field label={t('chart.fieldName')}>
               <input
                 style={styles.input}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="图表名称"
+                placeholder={t('chart.chartNamePlaceholder')}
               />
             </Field>
-            <Field label="标题">
+            <Field label={t('chart.title')}>
               <input
                 style={styles.input}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="显示在图表顶部"
+                placeholder={t('chart.showOnTop')}
               />
             </Field>
-            <Field label="描述">
+            <Field label={t('chart.description')}>
               <textarea
                 style={styles.textarea}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="可选描述（不展示在图表上）"
+                placeholder={t('chart.descriptionPlaceholder')}
               />
             </Field>
-            <Field label="标签（用逗号分隔）">
+            <Field label={t('chart.tags')}>
               <input
                 style={styles.input}
                 value={tagsText}
                 onChange={(e) => setTagsText(e.target.value)}
-                placeholder="如：销售, 2024, 季度"
+                placeholder={t('chart.tagsPlaceholder')}
               />
             </Field>
           </Section>
 
           {/* 图表配置 */}
-          <Section title="📊 图表配置">
-            <Field label="图表类型">
+          <Section title={`📊 ${t('chart.sectionConfig')}`}>
+            <Field label={t('chart.chartType')}>
               <div style={styles.chartTypeGrid}>
                 {CHART_TYPE_OPTIONS.map((opt) => (
                   <div
@@ -204,21 +212,21 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
               </div>
             </Field>
 
-            <Field label="X 轴字段">
+            <Field label={t('chart.xAxisField')}>
               <input
                 style={styles.input}
                 value={xAxis}
                 onChange={(e) => setXAxis(e.target.value)}
-                placeholder="例如：月份、日期、地区"
+                placeholder={t('chart.xAxisPlaceholder')}
               />
             </Field>
 
-            <Field label="Y 轴字段（用逗号分隔多个）">
+            <Field label={t('chart.yAxisFields')}>
               <input
                 style={styles.input}
                 value={yAxisInput}
                 onChange={(e) => setYAxisInput(e.target.value)}
-                placeholder="例如：销售额, 利润, 成本"
+                placeholder={t('chart.yAxisPlaceholder')}
               />
               {yAxis.length > 0 && (
                 <div style={styles.chipRow}>
@@ -231,7 +239,7 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
           </Section>
 
           {/* SQL 查询 */}
-          <Section title="🗃️ 数据查询 (SQL)">
+          <Section title={`🗃️ ${t('chart.sectionQuery')}`}>
             <textarea
               style={{ ...styles.textarea, fontFamily: 'monospace', fontSize: 12 }}
               value={sql}
@@ -245,7 +253,7 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
           </Section>
 
           {/* 授权范围 */}
-          <Section title="🔐 授权范围">
+          <Section title={`🔐 ${t('chart.sectionAuthorization')}`}>
             <div style={styles.radioRow}>
               <label style={styles.radioLabel}>
                 <input
@@ -289,7 +297,7 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
               </div>
             )}
             <div style={styles.helper}>
-              选择"所有仪表盘"后，此图表可被任何仪表盘引用。选择"仅授权"后，只能在勾选的仪表盘中使用。
+              {t('chart.allDashboardsHint')}
             </div>
           </Section>
 
@@ -298,16 +306,16 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
             <button
               style={styles.secondaryBtn}
               onClick={handleAddToDashboard}
-              title="将此图表的一个副本添加到当前仪表盘"
+              title={t('chart.addToCurrentHint')}
             >
-              ➕ 添加到当前仪表盘
+              ➕ {t('chart.addToDashboard')}
             </button>
             <button
               style={styles.secondaryBtn}
               onClick={() => setShowScheduleModal(true)}
-              title="为当前图表创建一个定时刷新的自动化任务"
+              title={t('chart.createTaskHint')}
             >
-              ⚡ 配置定时刷新
+              ⚡ {t('chart.scheduleRefresh')}
             </button>
           </div>
         </div>
@@ -315,13 +323,13 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
         {/* 底部保存栏 */}
         <div style={styles.footer}>
           {hasChanges && <span style={styles.dirtyHint}>有未保存的修改</span>}
-          <button style={styles.secondaryBtn} onClick={onClose}>关闭</button>
+          <button style={styles.secondaryBtn} onClick={onClose}>{t('common.cancel')}</button>
           <button
             style={{ ...styles.primaryBtn, opacity: saving ? 0.7 : 1 }}
             onClick={handleSave}
             disabled={saving}
           >
-            {saving ? '保存中...' : '💾 保存修改'}
+            {saving ? '保存中...' : `💾 ${t('common.save')}`}
           </button>
         </div>
       </div>
@@ -370,19 +378,21 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'fixed',
     top: 0, left: 0, right: 0, bottom: 0,
     background: 'rgba(0, 0, 0, 0.3)',
-    zIndex: 800,
+    zIndex: 90,
   },
   panel: {
     position: 'fixed',
     right: 0,
-    top: 0, bottom: 0,
+    top: 56,
+    bottom: 0,
     width: 460,
     background: 'var(--bg-primary)',
     borderLeft: '1px solid var(--border-primary)',
     boxShadow: '-2px 0 12px rgba(0,0,0,0.1)',
-    zIndex: 900,
+    zIndex: 95,
     display: 'flex',
     flexDirection: 'column',
+    overflow: 'hidden',
   },
   header: {
     display: 'flex',
@@ -399,6 +409,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   body: {
     flex: 1,
+    minHeight: 0,
     overflowY: 'auto',
     padding: '16px 20px',
     display: 'flex',

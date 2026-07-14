@@ -34,41 +34,39 @@ export const WorkspaceTabs: React.FC = () => {
 
   return (
     <div className="workspace-tabs-container" style={styles.tabsContainer}>
-      <div style={styles.tabsList}>
-        {tabs.map((tab) => (
-          <div
-            key={tab.id}
-            style={{
-              ...styles.tab,
-              background: tab.id === activeTabId ? 'var(--bg-secondary)' : 'var(--bg-tertiary)',
-              borderBottom:
-                tab.id === activeTabId ? '2px solid var(--primary)' : '2px solid transparent',
-              color: tab.id === activeTabId ? 'var(--primary)' : 'var(--text-secondary)',
-            }}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            <span style={styles.tabTitle}>{tab.title}</span>
-            {tabs.length > 1 && (
-              <button
-                style={styles.tabClose}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeTab(tab.id);
-                }}
-              >
-                <XIcon size={14} />
-              </button>
-            )}
-          </div>
-        ))}
-        <button
-          style={styles.addTabButton}
-          onClick={handleNewTab}
-          title={t('workspace.newTab')}
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          style={{
+            ...styles.tab,
+            background: tab.id === activeTabId ? 'var(--bg-secondary)' : 'var(--bg-tertiary)',
+            borderBottom:
+              tab.id === activeTabId ? '2px solid var(--primary)' : '2px solid transparent',
+            color: tab.id === activeTabId ? 'var(--primary)' : 'var(--text-secondary)',
+          }}
+          onClick={() => setActiveTab(tab.id)}
         >
-          <PlusIcon size={14} />
-        </button>
-      </div>
+          <span style={styles.tabTitle}>{tab.title}</span>
+          {tabs.length > 1 && (
+            <button
+              style={styles.tabClose}
+              onClick={(e) => {
+                e.stopPropagation();
+                removeTab(tab.id);
+              }}
+            >
+              <XIcon size={14} />
+            </button>
+          )}
+        </div>
+      ))}
+      <button
+        style={styles.addTabButton}
+        onClick={handleNewTab}
+        title={t('workspace.newTab')}
+      >
+        <PlusIcon size={14} />
+      </button>
     </div>
   );
 };
@@ -76,35 +74,28 @@ export const WorkspaceTabs: React.FC = () => {
 const styles: Record<string, React.CSSProperties> = {
   tabsContainer: {
     background: 'var(--bg-tertiary)',
-    display: 'flex',
-    alignItems: 'center',
-    flex: 1,
+    width: '100%',
+    minWidth: 0,
     overflowX: 'auto',
     overflowY: 'hidden',
-    scrollbarWidth: 'none',
-    msOverflowStyle: 'none',
     WebkitOverflowScrolling: 'touch',
     height: '100%',
-  },
-  tabsList: {
-    display: 'flex',
-    alignItems: 'center',
-    flex: 1,
-    height: '100%',
+    whiteSpace: 'nowrap',
+    lineHeight: '40px',
   },
   tab: {
-    display: 'flex',
+    display: 'inline-flex',
     alignItems: 'center',
     gap: '6px',
-    height: '24px',
+    height: '28px',
     padding: '0 10px',
     cursor: 'pointer',
     fontSize: '12px',
     borderTopLeftRadius: '4px',
     borderTopRightRadius: '4px',
     marginLeft: '4px',
-    flexShrink: 0,
     whiteSpace: 'nowrap',
+    verticalAlign: 'middle',
   },
   tabTitle: {
     whiteSpace: 'nowrap',
@@ -124,17 +115,17 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
   addTabButton: {
-    display: 'flex',
+    display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    width: '24px',
-    height: '24px',
+    width: '28px',
+    height: '28px',
     marginLeft: '4px',
     background: 'transparent',
     border: 'none',
     borderRadius: '4px',
     cursor: 'pointer',
     color: 'var(--text-secondary)',
-    flexShrink: 0,
+    verticalAlign: 'middle',
   },
 };

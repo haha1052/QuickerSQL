@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useSettingsStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
+import { useSetting } from '../../context/SettingsContext';
 
 const MAX_HISTORY = 20;
 
@@ -16,12 +18,16 @@ const QueryCacheStatsPanel: React.FC = () => {
     cacheStatsLoading,
     cacheStatsError,
     loadCacheStats,
-    configureCache,
     clearCache,
+    updateSetting,
   } = useSettingsStore();
+  const { t } = useLocale();
+  const [cacheSize] = useSetting('cache', 'cacheSize');
+  const [cacheExpiry] = useSetting('cache', 'cacheExpiry');
+  const [enableCache] = useSetting('cache', 'enableCache');
 
   const [capacityInput, setCapacityInput] = useState<string>('100');
-  const [ttlInput, setTtlInput] = useState<string>('300');
+  const [ttlInput, setTtlInput] = useState<string>('1800');
   const [enabledInput, setEnabledInput] = useState<boolean>(true);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false);
   const [hitRateHistory, setHitRateHistory] = useState<HitRateSample[]>([]);
@@ -32,9 +38,22 @@ const QueryCacheStatsPanel: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (cacheSize !== undefined) {
+      setCapacityInput(cacheSize);
+    }
+    if (cacheExpiry !== undefined) {
+      const minutes = parseFloat(cacheExpiry);
+      if (Number.isFinite(minutes)) {
+        setTtlInput(String(Math.round(minutes * 60)));
+      }
+    }
+    if (enableCache !== undefined) {
+      setEnabledInput(enableCache === 'true');
+    }
+  }, [cacheSize, cacheExpiry, enableCache]);
+
+  useEffect(() => {
     if (cacheStats) {
-      setCapacityInput(String(cacheStats.capacity));
-      setEnabledInput(cacheStats.enabled);
       setHitRateHistory((prev) => {
         const sample: HitRateSample = {
           hitRate: cacheStats.hitRate,
@@ -71,21 +90,33 @@ const QueryCacheStatsPanel: React.FC = () => {
     void loadCacheStats();
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     setCapacityInput('100');
-    setTtlInput('300');
+    setTtlInput('1800');
     setEnabledInput(true);
-    void configureCache(100, 300, true);
+    try {
+      await updateSetting('cache', 'cacheSize', '100');
+      await updateSetting('cache', 'cacheExpiry', '30');
+      await updateSetting('cache', 'enableCache', 'true');
+    } catch (error) {
+      console.error('Failed to reset cache settings:', error);
+    }
   };
 
-  const handleApply = () => {
+  const handleApply = async () => {
     const capacity = Number(capacityInput);
     const ttl = Number(ttlInput);
     if (
       Number.isFinite(capacity) && capacity > 0 &&
       Number.isFinite(ttl) && ttl >= 0
     ) {
-      void configureCache(capacity, ttl, enabledInput);
+      try {
+        await updateSetting('cache', 'cacheSize', String(Math.round(capacity)));
+        await updateSetting('cache', 'cacheExpiry', String(Math.round(ttl / 60)));
+        await updateSetting('cache', 'enableCache', String(enabledInput));
+      } catch (error) {
+        console.error('Failed to apply cache settings:', error);
+      }
     }
   };
 
@@ -235,8 +266,12 @@ const QueryCacheStatsPanel: React.FC = () => {
               <span style={valueStyle}>{cacheStats.hits.toLocaleString()}</span>
             </div>
             <div style={rowStyle}>
-              <span style={labelStyle}>未命中次数 (misses)</span>
+              <span style={labelStyle}>{t('cache.missCount')}</span>
               <span style={valueStyle}>{cacheStats.misses.toLocaleString()}</span>
+            </div>
+            <div style={rowStyle}>
+              <span style={labelStyle}>过期次数 (expired)</span>
+              <span style={valueStyle}>{cacheStats.expiredCount.toLocaleString()}</span>
             </div>
             <div style={{ ...rowStyle, alignItems: 'center' }}>
               <span style={labelStyle}>命中率 (hitRate)</span>
@@ -270,7 +305,7 @@ const QueryCacheStatsPanel: React.FC = () => {
         </div>
         {hitRateHistory.length < 2 ? (
           <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-tertiary, #6a737d)', fontSize: 13 }}>
-            数据不足。请开启"自动刷新"或手动刷新几次以生成趋势图。
+            数据不足。请开启"{t('cache.autoRefresh')}"或手动刷新几次以生成趋势图。
           </div>
         ) : (() => {
           const chartWidth = 560;
@@ -278,7 +313,7 @@ const QueryCacheStatsPanel: React.FC = () => {
           const padding = { top: 20, right: 20, bottom: 28, left: 40 };
           const innerW = chartWidth - padding.left - padding.right;
           const innerH = chartHeight - padding.top - padding.bottom;
-          const maxVal = Math.max(...hitRateHistory.map((s) => s.hitRate), 0.01);
+          const maxVal = 1.0;
           const stepX = hitRateHistory.length > 1 ? innerW / (hitRateHistory.length - 1) : 0;
           const points = hitRateHistory.map((s, i) => {
             const x = padding.left + i * stepX;
@@ -290,7 +325,7 @@ const QueryCacheStatsPanel: React.FC = () => {
               <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + innerH} stroke="var(--border-primary, #d0d7de)" strokeWidth="1" />
               <line x1={padding.left} y1={padding.top + innerH} x2={padding.left + innerW} y2={padding.top + innerH} stroke="var(--border-primary, #d0d7de)" strokeWidth="1" />
               <text x={padding.left - 6} y={padding.top + 4} fontSize="10" fill="var(--text-tertiary, #6a737d)" textAnchor="end">
-                {Math.round(maxVal * 1000) / 10}%
+                100%
               </text>
               <text x={padding.left - 6} y={padding.top + innerH + 4} fontSize="10" fill="var(--text-tertiary, #6a737d)" textAnchor="end">
                 0%

@@ -1,0 +1,6 @@
+- [x] SQL LIKE 下划线转义：3 处硬编码 SQL 和 1 处参数化查询都正确转义 `_`
+- [ ] DuckDB 预加载日志显示正确用户表数（如 3 个，而非 0 或 21）
+- [ ] VIEW 刷新日志显示正确数量（如 3/3）
+- [x] 透明窗口 Win10 下成功率合理（排除不可用 DWM 属性）
+- [x] cargo check --quiet 通过
+- [x] npx tsc --noEmit --pretty 通过

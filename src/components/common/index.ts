@@ -8,4 +8,6 @@ export * from './Icons';
 export { Button } from './Button';
 export { ContextMenu } from './ContextMenu';
 export { DropdownMenu } from './DropdownMenu';
+export { SettingsModal } from './SettingsModal';
+export { ErrorBoundary } from './ErrorBoundary';
 

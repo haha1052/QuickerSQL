@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 ///   created_by               ↔  createdBy
 ///   created_at               ↔  createdAt
 ///   updated_at               ↔  updatedAt
-
+///
 /// 任务核心结构（对应 __automation_tasks 表）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,4 +138,53 @@ pub struct TaskLite {
     pub failed_runs: i64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// 任务依赖类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyType {
+    TimeInterval,
+    Cron,
+    TaskSuccess,
+    TaskCompleted,
+}
+
+impl From<&str> for DependencyType {
+    fn from(s: &str) -> Self {
+        match s {
+            "time_interval" => DependencyType::TimeInterval,
+            "cron" => DependencyType::Cron,
+            "task_success" => DependencyType::TaskSuccess,
+            "task_completed" => DependencyType::TaskCompleted,
+            _ => DependencyType::TimeInterval,
+        }
+    }
+}
+
+/// 任务依赖（对应 __task_dependencies 表）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDependency {
+    pub id: String,
+    pub task_id: String,
+    pub dependency_type: DependencyType,
+    pub dependency_config: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 创建任务依赖的请求结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTaskDependencyRequest {
+    pub dependency_type: String,
+    pub dependency_config: String,
+}
+
+/// 更新任务依赖的请求结构
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTaskDependencyRequest {
+    pub dependency_config: Option<String>,
 }

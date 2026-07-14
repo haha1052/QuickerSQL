@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Dashboard, SavedChart, DashboardItem, GridPosition, CreateSavedChartParams } from '../types/dashboard';
+import type { Dashboard, SavedChart, DashboardItem, GridPosition, CreateSavedChartParams, DashboardItemLayoutUpdate } from '../types/dashboard';
 import { tauriService } from '../services/tauri';
 
 interface DashboardStore {
@@ -29,6 +29,7 @@ interface DashboardStore {
   updateDashboard: (id: string, updates: Partial<Dashboard>) => Promise<void>;
   deleteDashboard: (id: string) => Promise<void>;
   setActiveDashboard: (id: string | null) => void;
+  resetForProjectSwitch: () => void;
 
   // v3 启动优化：直接消费 get_startup_status 缓存的数据，避免独立 IPC
   setDashboardsFromStartup: (dashboards: Array<{ id: string; name: string; description: string; isDefault: boolean; refreshIntervalSecs: number; createdAt: number; updatedAt: number; }>) => void;
@@ -42,11 +43,14 @@ interface DashboardStore {
   // T2: 保存仪表盘布局（编辑模式退出时调用）
   saveLayout: (dashboardId: string) => Promise<void>;
 
+  // 批量保存仪表盘布局（事务性更新，用于保存按钮）
+  saveDashboardLayout: (dashboardId: string, layoutUpdates: DashboardItemLayoutUpdate[]) => Promise<Dashboard | null>;
+
   // Phase 4: 筛选器 actions
   setFilterValue: (field: string, value: string | string[]) => void;
   resetFilters: () => void;
   refreshChartsVersion: number;
-  refreshCharts: () => void;
+  refreshCharts: () => Promise<void>;
 
   // Phase 6: 全屏模式
   toggleFullscreen: () => void;
@@ -234,6 +238,19 @@ export const useDashboardStore = create<DashboardStore>()(
       set({ activeDashboardId: id });
     },
 
+    resetForProjectSwitch: () => {
+      set({
+        dashboards: [],
+        savedCharts: [],
+        activeDashboardId: null,
+        selectedChartId: null,
+        filterValues: {},
+        isFullscreen: false,
+        loading: false,
+        error: null,
+      });
+    },
+
     // DashboardItem actions
     addChartToDashboard: async (
       dashboardId: string,
@@ -369,6 +386,29 @@ export const useDashboardStore = create<DashboardStore>()(
         set({ error: String(e), loading: false });
       }
     },
+
+    // 批量保存仪表盘布局（事务性更新）
+    saveDashboardLayout: async (dashboardId: string, layoutUpdates: DashboardItemLayoutUpdate[]) => {
+      set({ loading: true, error: null });
+      try {
+        const response = await tauriService.saveDashboardLayout(dashboardId, layoutUpdates);
+        if (response.success && response.data) {
+          set((state) => ({
+            dashboards: state.dashboards.map((d) =>
+              d.id === dashboardId ? response.data! : d
+            ),
+            loading: false,
+          }));
+          return response.data;
+        } else {
+          set({ error: response.error || '保存仪表盘布局失败', loading: false });
+          return null;
+        }
+      } catch (e) {
+        set({ error: String(e), loading: false });
+        return null;
+      }
+    },
     setFilterValue: (field: string, value: string | string[]) => {
       set((state) => ({
         filterValues: { ...state.filterValues, [field]: value },
@@ -387,9 +427,10 @@ export const useDashboardStore = create<DashboardStore>()(
         set({ filterValues: {} });
       }
     },
-    refreshCharts: () => {
-      // 通过版本号递增触发订阅组件刷新，而不是无意义的深拷贝整份 state
+    refreshCharts: async () => {
       set((state) => ({ refreshChartsVersion: (state.refreshChartsVersion || 0) + 1 }));
+      await get().loadSavedCharts();
+      await get().loadDashboards();
     },
 
     // Phase 6: 全屏模式

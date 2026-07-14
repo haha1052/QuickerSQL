@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useCallback } from 'react';
 import { useDashboardStore, useToastStore } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 import { ChartPreview } from '../chart/ChartPreview';
 import { calculateNextPosition } from '../../utils/gridLayout';
 import { computeVisibleRange, indexToOffset } from '../../utils/virtual';
@@ -39,6 +40,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     addChartToDashboard,
   } = useDashboardStore();
   const { addToast } = useToastStore();
+  const { t } = useLocale();
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'updatedAt' | 'name'>('updatedAt');
@@ -130,7 +132,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
       return;
     }
     if (!isChartAvailableTo(chart)) {
-        addToast(`图表"${chart.name}"未授权给当前仪表盘，请在"编辑图表"中修改授权范围`, 'warning');
+        addToast(t('dashboard.unauthorized'), 'warning');
       return;
     }
     const dashboard = dashboards.find((d) => d.id === activeDashboardId);
@@ -163,7 +165,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
         <div style={styles.searchRow}>
           <input
             style={styles.searchInput}
-            placeholder="🔍 搜索图表名称、标签..."
+            placeholder={`🔍 ${t('chart.searchPlaceholder')}`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -185,11 +187,11 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             style={styles.select}
             value={scopeFilter}
             onChange={(e) => setScopeFilter(e.target.value as 'all' | 'available' | 'unavailable')}
-            title="按图表对当前仪表盘的授权范围筛选"
+            title={t('chart.authFilterHint')}
           >
             <option value="all">全部授权</option>
             <option value="available">仅对当前仪表盘可用</option>
-            <option value="unavailable">未授权给当前仪表盘</option>
+            <option value="unavailable">{t('dashboard.unauthorized')}</option>
           </select>
           <select
             style={styles.select}
@@ -263,7 +265,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                         <div style={styles.chartMeta}>
                           {available
                             ? '🌐 可添加到当前仪表盘'
-                            : '🔒 未授权给当前仪表盘'}
+                            : `🔒 ${t('dashboard.unauthorized')}`}
                           {chart.visibility === 'restricted' && chart.authorizedDashboardIds?.length > 0 && (
                             <span style={{ marginLeft: '6px', color: 'var(--text-tertiary)' }}>
                               （授权给：{chart.authorizedDashboardIds.slice(0, 2).map(getDashboardName).join('、')}
@@ -293,12 +295,12 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                             setScheduleChart(chart);
                             setShowScheduleModal(true);
                           }}
-                          title="定时刷新此图表"
+                          title={t('chart.scheduleRefresh')}
                         >⚡ 定时刷新</button>
                         <button
                           style={styles.deleteBtn}
                           onClick={(e) => handleDeleteChart(chart, e)}
-                          title="删除此图表"
+                          title={t('chart.deleteChart')}
                         >🗑️</button>
                       </div>
                     </div>

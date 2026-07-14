@@ -59,7 +59,7 @@ export interface ChartFilter {
   value: string;
 }
 
-export type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'stackedBar' | 'table';
+export type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'area' | 'stackedBar' | 'horizontalBar' | 'doughnut' | 'dualAxis' | 'radar' | 'funnel' | 'gauge' | 'table';
 
 // 仪表盘
 export interface Dashboard {
@@ -73,6 +73,15 @@ export interface Dashboard {
   createdBy: string;
   createdAt: number;
   updatedAt: number;
+  // 背景设置
+  backgroundColor?: string;     // 背景颜色，如 '#f0f0f0'
+  backgroundImage?: string;     // 背景图片 URL
+  canvasWidth?: number;        // 画布宽度（px），默认 100%
+  canvasHeight?: number;       // 画布高度（px），默认自适应
+  padding?: number;            // 画布内边距
+  gridGap?: number;            // 图表间距（px），默认 16
+  rowHeight?: number;          // 行高（px），默认 80
+  snapToGrid?: boolean;        // 磁吸对齐，默认 true
 }
 
 export interface DashboardItem {
@@ -87,6 +96,14 @@ export interface DashboardItem {
   position: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface DashboardItemLayoutUpdate {
+  id: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface DashboardFilter {

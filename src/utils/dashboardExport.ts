@@ -16,7 +16,15 @@
 // 本文件只有在用户点击"导出仪表盘"时才会执行，避免启动时加载大库
 import type { Dashboard } from '../types/dashboard';
 
-/** 画布网格参数（与 DashboardCanvas 保持一致） */
+/**
+ * 画布网格参数（与 DashboardCanvas 保持一致）
+ *
+ * 定义仪表盘画布的网格系统：
+ *   - columns: 总列数
+ *   - rowHeight: 每行高度（像素）
+ *   - gap: 网格间距（像素）
+ *   - padding: 画布内边距（像素）
+ */
 const GRID = {
   columns: 12,
   rowHeight: 80,
@@ -30,16 +38,15 @@ const GRID = {
  * @param dashboard 当前仪表盘（含 layout 布局信息）
  * @param canvasEl 画布 DOM 元素（用于获取实际像素尺寸）
  * @param filename 导出文件名（不含扩展名）
- * @returns 导出是否成功
+ * @returns 导出结果对象，包含 success 标志和 message 提示信息
  */
 export async function exportDashboardToPng(
   dashboard: Dashboard,
   canvasEl: HTMLElement | null,
   filename: string = `仪表盘_${dashboard.name}`,
-): Promise<boolean> {
+): Promise<{ success: boolean; message: string }> {
   if (!canvasEl || dashboard.layout.length === 0) {
-    alert('仪表盘为空，无法导出');
-    return false;
+    return { success: false, message: '仪表盘为空，无法导出' };
   }
 
   try {
@@ -65,8 +72,7 @@ export async function exportDashboardToPng(
     outputCanvas.height = canvasHeight * scale;
     const ctx = outputCanvas.getContext('2d');
     if (!ctx) {
-      alert('无法创建画布上下文');
-      return false;
+      return { success: false, message: '无法创建画布上下文' };
     }
     ctx.scale(scale, scale);
 
@@ -113,8 +119,7 @@ export async function exportDashboardToPng(
     }
 
     if (chartDataList.length === 0) {
-      alert('未找到可导出的图表');
-      return false;
+      return { success: false, message: '未找到可导出的图表' };
     }
 
     // 按顺序将每个图表绘制到输出 Canvas
@@ -150,31 +155,43 @@ export async function exportDashboardToPng(
     await Promise.all(drawPromises);
 
     // 导出 PNG 文件
-    outputCanvas.toBlob((blob) => {
-      if (!blob) {
-        alert('生成图片失败');
-        return;
-      }
-      // 触发下载
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${filename}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 'image/png');
+    const blob = await new Promise<Blob | null>((resolve) => {
+      outputCanvas.toBlob(resolve, 'image/png');
+    });
 
-    return true;
+    if (!blob) {
+      return { success: false, message: '生成图片失败' };
+    }
+
+    // 触发下载
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    return { success: true, message: '导出成功' };
   } catch (e) {
     console.error('[exportDashboardToPng] 导出失败:', e);
-    alert(`导出失败: ${e}`);
-    return false;
+    return { success: false, message: `导出失败：${e}` };
   }
 }
 
-/** 绘制圆角矩形路径 */
+/**
+ * 在 Canvas 上绘制圆角矩形路径（仅描边路径，不填充不描边）
+ *
+ * 使用二次贝塞尔曲线绘制四个圆角，调用后可继续调用 ctx.fill() / ctx.stroke()。
+ *
+ * @param ctx Canvas 2D 渲染上下文
+ * @param x 矩形左上角 x 坐标
+ * @param y 矩形左上角 y 坐标
+ * @param width 矩形宽度
+ * @param height 矩形高度
+ * @param radius 圆角半径（像素）
+ */
 function roundRect(
   ctx: CanvasRenderingContext2D,
   x: number,

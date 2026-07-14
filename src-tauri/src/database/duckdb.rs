@@ -5,9 +5,25 @@ use super::traits::*;
 
 pub struct DuckDbDriver;
 
+impl Default for DuckDbDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DuckDbDriver {
     pub fn new() -> Self {
         DuckDbDriver
+    }
+
+    /// 创建内存模式的 DuckDB 连接（数据不持久化，适合加速场景）
+    pub fn connect_memory(&self) -> Result<Box<dyn DatabaseConnection>> {
+        let conn = DuckDbConn::open_in_memory()
+            .map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
+
+        Ok(Box::new(DuckDbConnection {
+            conn: Arc::new(Mutex::new(conn)),
+        }))
     }
 }
 

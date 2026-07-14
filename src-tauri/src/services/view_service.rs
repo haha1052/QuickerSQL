@@ -80,34 +80,16 @@ impl ViewService {
     /// 
     /// # Arguments
     /// * `conn` - DuckDB 数据库连接
+    /// * `table_names` - 从 SQLite 获取的表名列表（避免依赖 DuckDB 的元数据系统）
     /// 
     /// # Returns
     /// * `Result<usize, String>` - 成功返回成功创建的 VIEW 数量
     pub fn refresh_all_views(
         conn: &Box<dyn DatabaseConnection>,
+        table_names: &[String],
     ) -> Result<usize, String> {
-        // 先获取所有表名
-        let get_tables_sql = "
-            SELECT name 
-            FROM sqlite_db.sqlite_master 
-            WHERE type='table' 
-            AND name NOT LIKE 'sqlite_%'
-            AND name NOT LIKE 'duckdb_%'
-        ";
-
-        let table_names: Vec<String> = match conn.query(get_tables_sql, &[]) {
-            Ok(result) => result.rows.into_iter()
-                .filter(|row| !row.is_empty())
-                .map(|row| row[0].clone())
-                .collect(),
-            Err(e) => {
-                log::warn!("获取表名失败: {}", e);
-                Vec::new()
-            }
-        };
-
         let mut success_count = 0;
-        for table_name in &table_names {
+        for table_name in table_names {
             if Self::refresh_single_view(conn, table_name).is_ok() {
                 success_count += 1;
             }

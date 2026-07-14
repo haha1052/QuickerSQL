@@ -5,6 +5,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu';
 import { useWorkspaceStore } from '../../store';
 import { useToastStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
+import { useSetting } from '../../context/SettingsContext';
 import type { ColumnInfo, TableInfo } from '../../types';
 import { useTableStore } from '../../store';
 
@@ -50,6 +51,12 @@ const highlightText = (text: string, keyword: string): React.ReactNode => {
 export const DatabaseExplorer: React.FC = () => {
   const { t } = useLocale();
 
+  const [confirmBeforeDeleteRaw] = useSetting('trash', 'confirmBeforeDelete');
+  const confirmBeforeDelete = confirmBeforeDeleteRaw === undefined ? true : confirmBeforeDeleteRaw === 'true';
+
+  const [showSystemTablesRaw] = useSetting('database', 'showSystemTables');
+  const showSystemTables = showSystemTablesRaw === undefined ? false : showSystemTablesRaw === 'true';
+
   // ============ 从 store 读取状态 ============
   const {
     tables: storeTables,
@@ -70,7 +77,7 @@ export const DatabaseExplorer: React.FC = () => {
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
   const [expandUserTables, setExpandUserTables] = useState(true);
   const [expandSystemTables, setExpandSystemTables] = useState(true);
-  const [expandedFirstLetter, setExpandedFirstLetter] = useState<Set<string>>(new Set(['全部']));
+  const [expandedFirstLetter, setExpandedFirstLetter] = useState<Set<string>>(new Set(['all']));
 
   // ============ P1 状态 ============
   const [sortKey, setSortKey] = useState<SortKey>('name_asc');     // 排序方式
@@ -170,33 +177,38 @@ export const DatabaseExplorer: React.FC = () => {
   // ============ 操作：删除表 ============
   const handleDeleteTable = async (table: TableInfo) => {
     if (table.is_system_table) {
-      addToast(`系统表 '${table.name}' 不允许删除或修改`, 'error');
+      addToast(t('database.systemTableNotDeletable', { name: table.name }), 'error');
       return;
     }
-    if (table.row_count >= LARGE_TABLE_THRESHOLD) {
-      const ok = confirm(
-        `将删除表 '${table.name}'（共 ${formatCount(table.row_count)} 行数据），\n` +
-        `删除后可从"回收站"恢复。确认继续？`,
-      );
-      if (!ok) return;
-    } else if (!confirm(`确定删除表 '${table.name}'？`)) {
-      return;
+    if (confirmBeforeDelete) {
+      if (table.row_count >= LARGE_TABLE_THRESHOLD) {
+        const ok = confirm(
+          t('database.confirmDeleteLargeTable', {
+            name: table.name,
+            count: formatCount(table.row_count),
+            trash: t('database.trash'),
+          }),
+        );
+        if (!ok) return;
+      } else if (!confirm(t('database.confirmDeleteTable', { name: table.name }))) {
+        return;
+      }
     }
     await moveToTrash(table.name);
   };
 
   // ============ 操作：重命名表 ============
   const handleRenameTable = async (table: TableInfo) => {
-    const newName = prompt(`将表 "${table.name}" 重命名为：`, table.name);
-    if (!newName) return; // 用户取消
+    const newName = prompt(t('database.renameTablePrompt', { name: table.name }), table.name);
+    if (!newName) return;
 
     const trimmed = newName.trim();
     if (!trimmed) {
-      addToast('表名不能为空', 'warning');
+      addToast(t('database.tableNameCannotBeEmpty'), 'warning');
       return;
     }
     if (trimmed === table.name) {
-      return; // 未修改，无需操作
+      return;
     }
 
     await renameTable(table.name, trimmed);
@@ -222,10 +234,14 @@ export const DatabaseExplorer: React.FC = () => {
 
   // ============ 搜索 & 排序 & 分组 ============
   const filteredTables = useMemo(() => {
-    if (!searchTerm.trim()) return tables;
+    let result = tables;
+    if (!showSystemTables) {
+      result = result.filter((tbl) => !tbl.is_system_table);
+    }
+    if (!searchTerm.trim()) return result;
     const kw = searchTerm.toLowerCase();
-    return tables.filter((tbl) => tbl.name.toLowerCase().includes(kw));
-  }, [tables, searchTerm]);
+    return result.filter((tbl) => tbl.name.toLowerCase().includes(kw));
+  }, [tables, searchTerm, showSystemTables]);
 
   const sortedTables = useMemo(() => {
     const copy = [...filteredTables];
@@ -251,38 +267,41 @@ export const DatabaseExplorer: React.FC = () => {
       const map = new Map<string, TableInfo[]>();
       for (const tbl of sortedTables) {
         const key = tbl.is_system_table
-          ? '系统表'
+          ? 'system'
           : (() => {
             const first = tbl.name.charAt(0).toUpperCase();
-            return /[A-Z0-9]/.test(first) ? first : '其他';
+            return /[A-Z0-9]/.test(first) ? first : 'other';
           })();
         if (!map.has(key)) map.set(key, []);
         map.get(key)!.push(tbl);
       }
-      if (!map.has('系统表')) map.set('系统表', []);
+      if (showSystemTables && !map.has('system')) map.set('system', []);
       return Array.from(map.entries())
         .sort(([a], [b]) => {
-          if (a === '系统表') return -1;
-          if (b === '系统表') return 1;
+          if (a === 'system') return -1;
+          if (b === 'system') return 1;
           return a.localeCompare(b);
         })
-        .map(([title, items]) => ({
-          title,
+        .map(([key, items]) => ({
+          title: key === 'system' ? t('database.systemTables') : key === 'other' ? t('database.other') : key,
           items,
-          accent: title === '系统表',
-          groupKey: title,
+          accent: key === 'system',
+          groupKey: key,
         }));
     }
     if (groupMode === 'system_user') {
       const user = sortedTables.filter((tbl) => !tbl.is_system_table);
       const sys = sortedTables.filter((tbl) => tbl.is_system_table);
-      return [
-        { title: '用户表', items: user, accent: false, groupKey: 'user' },
-        { title: '系统表', items: sys, accent: true, groupKey: 'system' },
+      const result = [
+        { title: t('database.userTables'), items: user, accent: false, groupKey: 'user' },
       ];
+      if (showSystemTables) {
+        result.push({ title: t('database.systemTables'), items: sys, accent: true, groupKey: 'system' });
+      }
+      return result;
     }
-    return [{ title: '全部', items: sortedTables, accent: false, groupKey: 'all' }];
-  }, [sortedTables, groupMode]);
+    return [{ title: t('database.allTables'), items: sortedTables, accent: false, groupKey: 'all' }];
+  }, [sortedTables, groupMode, showSystemTables, t]);
 
   const getGroupExpanded = (g: { title: string; groupKey: string; items: TableInfo[] }) => {
     if (groupMode === 'system_user') {
@@ -342,17 +361,17 @@ export const DatabaseExplorer: React.FC = () => {
             {highlightText(table.name, searchTerm.trim())}
           </span>
 
-          {table.is_system_table && <span style={styles.systemTableBadge}>系统表</span>}
+          {table.is_system_table && <span style={styles.systemTableBadge}>{t('database.systemTableBadge')}</span>}
 
           <span style={styles.tableMeta}>
-            {table.row_count > 0 ? `${formatCount(table.row_count)} 行` : null}
+            {table.row_count > 0 ? `${formatCount(table.row_count)} ${t('database.rowCountSuffix')}` : null}
           </span>
           <span style={styles.tableMeta}>
-            {table.column_count > 0 ? `${table.column_count} 列` : null}
+            {table.column_count > 0 ? `${table.column_count} ${t('database.columnCountSuffix')}` : null}
           </span>
           {metaCache[table.name] && metaCache[table.name].index_count > 0 && (
             <span style={styles.tableMeta}>
-              {metaCache[table.name].index_count} 索引
+              {metaCache[table.name].index_count} {t('database.indexCountSuffix')}
             </span>
           )}
           {metaCache[table.name] && metaCache[table.name].size_bytes > 0 && (
@@ -368,7 +387,7 @@ export const DatabaseExplorer: React.FC = () => {
                 e.stopPropagation();
                 handleDeleteTable(table);
               }}
-              title="删除表"
+              title={t('database.dropTable')}
             >
               <TrashIcon size={ICON_SIZE} color="var(--text-tertiary)" />
             </button>
@@ -382,10 +401,10 @@ export const DatabaseExplorer: React.FC = () => {
                 <span style={styles.iconCell}>
                   <RefreshCwIcon size={ICON_SIZE} color="var(--text-tertiary)" />
                 </span>
-                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>加载列信息...</span>
+                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('database.loadingColumns')}</span>
               </div>
             )}
-            {cols && cols.length === 0 && <div style={styles.columnEmpty}>无列信息</div>}
+            {cols && cols.length === 0 && <div style={styles.columnEmpty}>{t('database.noColumns')}</div>}
             {cols && cols.length > 0 && cols.map((col: ColumnInfo) => (
               <div key={col.name} style={styles.columnItem}>
                 <span style={styles.columnName}>
@@ -413,27 +432,27 @@ export const DatabaseExplorer: React.FC = () => {
     const quotedName = needsQuotes ? `"${table.name}"` : table.name;
     const items: ContextMenuItem[] = [
       {
-        label: '查看前 100 行',
-        shortcut: '双击',
+        label: t('database.viewTop100Rows'),
+        shortcut: t('database.doubleClick'),
         onClick: () => {
-          generateAndOpenSql(table.name, `SELECT * FROM ${quotedName} LIMIT 100;`, `${table.name} (浏览)`);
+          generateAndOpenSql(table.name, `SELECT * FROM ${quotedName} LIMIT 100;`, `${table.name} (${t('database.browse')})`);
         },
       },
       {
-        label: '复制表名',
+        label: t('database.copyTableName'),
         shortcut: 'Ctrl+C',
         onClick: () => copyTableName(table.name),
       },
       {
-        label: `生成 SELECT *`,
+        label: t('database.generateSelect'),
         onClick: () => generateAndOpenSql(table.name, `SELECT * FROM ${quotedName};`, `${table.name} (SELECT)`),
       },
       {
-        label: `生成 COUNT`,
+        label: t('database.generateCount'),
         onClick: () => generateAndOpenSql(table.name, `SELECT COUNT(*) AS total FROM ${quotedName};`, `${table.name} (COUNT)`),
       },
       {
-        label: `生成 INSERT 模板`,
+        label: t('database.generateInsertTemplate'),
         onClick: () => {
           const cols = columnsCache[table.name];
           const colNames = cols && cols.length > 0
@@ -454,12 +473,12 @@ export const DatabaseExplorer: React.FC = () => {
 
     if (!table.is_system_table) {
       items.push({
-        label: '重命名表',
+        label: t('database.renameTable'),
         shortcut: 'F2',
         onClick: () => handleRenameTable(table),
       });
       items.push({
-        label: '删除表',
+        label: t('database.deleteTable'),
         shortcut: 'Del',
         danger: true,
         onClick: () => handleDeleteTable(table),
@@ -467,7 +486,7 @@ export const DatabaseExplorer: React.FC = () => {
     }
 
     return items;
-  }, [contextMenu, columnsCache]);
+  }, [contextMenu, columnsCache, t]);
 
   const loading = storeLoading;
 
@@ -492,26 +511,26 @@ export const DatabaseExplorer: React.FC = () => {
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as SortKey)}
           style={styles.selectBox}
-          title="排序方式"
+          title={t('database.sortBy')}
         >
-          <option value="name_asc">名称 A-Z</option>
-          <option value="name_desc">名称 Z-A</option>
-          <option value="row_count_desc">行数最多</option>
-          <option value="column_count_desc">列数最多</option>
+          <option value="name_asc">{t('database.sortNameAsc')}</option>
+          <option value="name_desc">{t('database.sortNameDesc')}</option>
+          <option value="row_count_desc">{t('database.sortRowCountDesc')}</option>
+          <option value="column_count_desc">{t('database.sortColumnCountDesc')}</option>
         </select>
 
         <select
           value={groupMode}
           onChange={(e) => setGroupMode(e.target.value as GroupMode)}
           style={styles.selectBox}
-          title="分组模式"
+          title={t('database.groupMode')}
         >
-          <option value="system_user">按系统/用户</option>
-          <option value="first_letter">按首字母</option>
-          <option value="none">平铺</option>
+          <option value="system_user">{t('database.groupBySystemUser')}</option>
+          <option value="first_letter">{t('database.groupByFirstLetter')}</option>
+          <option value="none">{t('database.groupNone')}</option>
         </select>
 
-        <button style={styles.refreshBtn} onClick={() => listTables()} title="刷新列表">
+        <button style={styles.refreshBtn} onClick={() => listTables()} title={t('database.refresh')}>
           <span style={styles.iconCell}>
             <RefreshCwIcon size={ICON_SIZE} color="var(--text-secondary)" />
           </span>
@@ -554,11 +573,11 @@ export const DatabaseExplorer: React.FC = () => {
                 )}
                 {isExpanded && g.items.length === 0 && (
                   <div style={styles.groupEmptyHint}>
-                    {g.title === '用户表' && (
-                      <>暂无用户表，可通过 <b>SQL</b> 执行 <code style={styles.codeTip}>CREATE TABLE "你的表名" (...)</code> 或 <b>导入 CSV/Excel</b> 创建</>
+                    {g.groupKey === 'user' && (
+                      <>{t('database.noUserTablesHint1')} <b>SQL</b> {t('database.noUserTablesHint2')} <code style={styles.codeTip}>CREATE TABLE "{t('database.tableNamePlaceholder')}" (...)</code> {t('database.noUserTablesHint3')} <b>{t('database.importCSVExcel')}</b> {t('database.noUserTablesHint4')}</>
                     )}
-                    {g.title === '系统表' && '暂无系统表'}
-                    {g.title !== '用户表' && g.title !== '系统表' && `暂无${g.title}开头的表`}
+                    {g.groupKey === 'system' && t('database.noSystemTables')}
+                    {g.groupKey !== 'user' && g.groupKey !== 'system' && t('database.noTablesWithPrefix', { prefix: g.title })}
                   </div>
                 )}
               </div>
@@ -569,7 +588,7 @@ export const DatabaseExplorer: React.FC = () => {
         {/* 搜索无结果提示 */}
         {!loading && searchTerm.trim() && sortedTables.length === 0 && (
           <div style={styles.empty}>
-            未找到匹配「{searchTerm}」的表
+            {t('database.noMatchWithTerm', { term: searchTerm })}
           </div>
         )}
       </div>
@@ -857,12 +876,11 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--accent-color)',
   },
   systemTableBadge: {
-    fontSize: '10px',
-    padding: '2px 6px',
-    background: 'var(--accent-color)',
-    color: '#fff',
+    fontSize: '11px',
+    padding: '1px 5px',
+    background: 'var(--bg-tertiary)',
+    color: 'var(--text-tertiary)',
     borderRadius: '3px',
-    fontWeight: 600,
     whiteSpace: 'nowrap',
     flexShrink: 0,
   },

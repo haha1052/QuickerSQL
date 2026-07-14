@@ -121,8 +121,19 @@ pub struct DashboardItem {
     pub updated_at: i64,
 }
 
+/// 仪表盘项布局更新参数（用于批量保存布局）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardItemLayoutUpdate {
+    pub id: String,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+}
+
 /// 仪表盘
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Dashboard {
     pub id: String,
     pub name: String,
@@ -139,6 +150,15 @@ pub struct Dashboard {
     pub created_at: i64,
     #[serde(rename = "updatedAt")]
     pub updated_at: i64,
+    // 背景设置
+    pub background_color: Option<String>,
+    pub background_image: Option<String>,
+    pub canvas_width: Option<i64>,
+    pub canvas_height: Option<i64>,
+    pub padding: Option<i64>,
+    pub grid_gap: i64,
+    pub row_height: i64,
+    pub snap_to_grid: bool,
 }
 
 /// Dashboard 精简信息（用于启动聚合返回，供前端 Dashboard 页面首屏展示）

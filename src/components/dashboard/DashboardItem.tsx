@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, Component, Dispatch, SetStateAction
 import type { ECharts } from 'echarts';
 // P0-2 启动优化：echarts 改为懒加载，避免启动时加载大型第三方库
 // import * as echarts from 'echarts'  // ← 已移至组件内部动态 import
+import { useLocale } from '../../context/LocaleContext';
 import { useDashboardStore } from '../../store';
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
 import { applyFiltersToSql, hasActiveFilters } from '../../utils/filterSql';
@@ -13,6 +14,8 @@ interface DashboardItemProps {
   isEditing: boolean;
   onRemove?: () => void;
   onLayoutChange?: (layout: { x: number; y: number; width: number; height: number }) => void;
+  layoutSettings?: { gap: number; rowHeight: number; snapToGrid: boolean };
+  onDoubleClick?: () => void;
 }
 
 /**
@@ -72,7 +75,7 @@ async function renderWithSql(
   }
 }
 
-class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode }, { hasError: boolean; error: string | null }> {
+class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode; t?: (key: string) => string }, { hasError: boolean; error: string | null }> {
   constructor(props: { children: React.ReactNode }) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -100,7 +103,7 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode }
           padding: '12px',
         }}>
           <div>
-            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>图表渲染失败</div>
+            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{this.props.t ? this.props.t('chart.renderFailed') : '图表渲染失败'}</div>
             <div style={{ fontSize: '10px', opacity: 0.8 }}>{this.state.error}</div>
           </div>
         </div>
@@ -124,18 +127,132 @@ const ChartCanvas: React.FC<{
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<ECharts | null>(null);
   const echartsModuleRef = useRef<{ init: (el: HTMLDivElement) => ECharts } | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+
+  // 防抖 resize
+  const debouncedResize = () => {
+    if (resizeTimerRef.current) {
+      clearTimeout(resizeTimerRef.current);
+    }
+    resizeTimerRef.current = setTimeout(() => {
+      if (chartInstanceRef.current && chartRef.current) {
+        const rect = chartRef.current.getBoundingClientRect();
+        containerSizeRef.current = { width: rect.width, height: rect.height };
+        chartInstanceRef.current.resize();
+      }
+    }, 80);
+  };
+
+  // 根据容器尺寸优化图表配置
+  const optimizeConfigForSize = (config: Record<string, unknown>, width: number, height: number): Record<string, unknown> => {
+    if (!config || width === 0 || height === 0) return config;
+
+    const optimized = JSON.parse(JSON.stringify(config));
+    const isSmall = width < 320 || height < 200;
+    const isVerySmall = width < 240 || height < 150;
+
+    // 调整标题
+    if (optimized.title) {
+      if (isVerySmall) {
+        optimized.title.textStyle = {
+          ...optimized.title.textStyle,
+          fontSize: 11,
+        };
+        optimized.title.top = 4;
+        optimized.title.left = 8;
+      } else if (isSmall) {
+        optimized.title.textStyle = {
+          ...optimized.title.textStyle,
+          fontSize: 12,
+        };
+        optimized.title.top = 6;
+        optimized.title.left = 10;
+      }
+    }
+
+    // 调整图例
+    if (optimized.legend) {
+      if (isVerySmall) {
+        optimized.legend.show = false;
+      } else if (isSmall) {
+        optimized.legend.top = 'auto';
+        optimized.legend.bottom = 4;
+        optimized.legend.textStyle = {
+          ...optimized.legend.textStyle,
+          fontSize: 10,
+        };
+        optimized.legend.itemWidth = 12;
+        optimized.legend.itemHeight = 8;
+      }
+    }
+
+    // 调整 grid（边距）
+    if (optimized.grid) {
+      if (isVerySmall) {
+        optimized.grid.left = 30;
+        optimized.grid.right = 10;
+        optimized.grid.top = 24;
+        optimized.grid.bottom = 20;
+      } else if (isSmall) {
+        optimized.grid.left = 40;
+        optimized.grid.right = 15;
+        optimized.grid.top = 32;
+        optimized.grid.bottom = 28;
+      }
+    }
+
+    // 调整 X 轴
+    if (optimized.xAxis && Array.isArray(optimized.xAxis)) {
+      optimized.xAxis.forEach((axis: Record<string, unknown>) => {
+        if (isVerySmall) {
+          if (axis.axisLabel) {
+            (axis.axisLabel as Record<string, unknown>).fontSize = 9;
+            (axis.axisLabel as Record<string, unknown>).rotate = 45;
+            (axis.axisLabel as Record<string, unknown>).interval = 'auto';
+          }
+          if (axis.axisTitle) {
+            (axis.axisTitle as Record<string, unknown>).show = false;
+          }
+        } else if (isSmall) {
+          if (axis.axisLabel) {
+            (axis.axisLabel as Record<string, unknown>).fontSize = 10;
+            (axis.axisLabel as Record<string, unknown>).rotate = 30;
+          }
+        }
+      });
+    }
+
+    // 调整 Y 轴
+    if (optimized.yAxis && Array.isArray(optimized.yAxis)) {
+      optimized.yAxis.forEach((axis: Record<string, unknown>) => {
+        if (isVerySmall) {
+          if (axis.axisLabel) {
+            (axis.axisLabel as Record<string, unknown>).fontSize = 9;
+          }
+          if (axis.axisTitle) {
+            (axis.axisTitle as Record<string, unknown>).show = false;
+          }
+        } else if (isSmall) {
+          if (axis.axisLabel) {
+            (axis.axisLabel as Record<string, unknown>).fontSize = 10;
+          }
+        }
+      });
+    }
+
+    return optimized;
+  };
 
   useEffect(() => {
     if (!chartConfig || !chartRef.current) return;
 
     const containerEl: HTMLDivElement = chartRef.current;
-
-    let handleResize: (() => void) | null = null;
     let localInstance: ECharts | null = chartInstanceRef.current;
     let disposed = false;
 
     (async () => {
-      // P0-2 启动优化：首次渲染时动态加载 echarts，不阻塞主 bundle
       if (!echartsModuleRef.current) {
         try {
           echartsModuleRef.current = await import('echarts');
@@ -156,13 +273,36 @@ const ChartCanvas: React.FC<{
 
         const normalized = normalizeEChartsConfig(chartConfig);
         if (!normalized) return;
-        localInstance.setOption(normalized);
 
-        handleResize = () => {
-          localInstance?.resize();
-        };
+        // 根据容器尺寸优化配置
+        const rect = containerEl.getBoundingClientRect();
+        containerSizeRef.current = { width: rect.width, height: rect.height };
+        const optimizedConfig = optimizeConfigForSize(normalized, rect.width, rect.height);
 
-        window.addEventListener('resize', handleResize);
+        localInstance.setOption(optimizedConfig, true);
+
+        // 使用 ResizeObserver 监听容器尺寸变化
+        if (typeof ResizeObserver !== 'undefined') {
+          resizeObserverRef.current = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+              const { width, height } = entry.contentRect;
+              const oldSize = containerSizeRef.current;
+              if (Math.abs(width - oldSize.width) > 1 || Math.abs(height - oldSize.height) > 1) {
+                containerSizeRef.current = { width, height };
+
+                // 更新图表配置以适应新尺寸
+                if (chartInstanceRef.current) {
+                  const currentOption = chartInstanceRef.current.getOption();
+                  const reOptimized = optimizeConfigForSize(currentOption, width, height);
+                  chartInstanceRef.current.setOption(reOptimized, { notMerge: false, lazyUpdate: true });
+                }
+
+                debouncedResize();
+              }
+            }
+          });
+          resizeObserverRef.current.observe(containerEl);
+        }
       } catch (e) {
         console.error('[ChartCanvas] ECharts渲染失败:', e);
         if (localInstance && chartInstanceRef.current === localInstance) {
@@ -179,8 +319,13 @@ const ChartCanvas: React.FC<{
 
     return () => {
       disposed = true;
-      if (handleResize) {
-        window.removeEventListener('resize', handleResize);
+      if (resizeTimerRef.current) {
+        clearTimeout(resizeTimerRef.current);
+        resizeTimerRef.current = null;
+      }
+      if (resizeObserverRef.current) {
+        resizeObserverRef.current.disconnect();
+        resizeObserverRef.current = null;
       }
       if (chartInstanceRef.current) {
         try {
@@ -199,7 +344,6 @@ const ChartCanvas: React.FC<{
       data-echarts-container="true"
       style={{
         ...styles.chart,
-        // 编辑模式下禁用 ECharts 的鼠标事件，使拖拽能穿透到外层卡片
         pointerEvents: interactive ? 'auto' : 'none',
       }}
     />
@@ -214,12 +358,16 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   isEditing,
   onRemove,
   onLayoutChange,
+  layoutSettings = { gap: 16, rowHeight: 80, snapToGrid: true },
+  onDoubleClick,
 }) => {
+  const { t } = useLocale();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const clickTimeRef = useRef<number>(0);
   const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards, refreshChartsVersion } = useDashboardStore();
   const isSelected = selectedChartId === item.chartId;
 
@@ -376,8 +524,8 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     if (!canvasEl) return;
 
     const canvasRect = canvasEl.getBoundingClientRect();
-    const colWidth = (canvasRect.width - 16) / 12;
-    const rowHeight = 80;
+    const colWidth = (canvasRect.width - layoutSettings.gap * 11) / 12;
+    const rowHeight = layoutSettings.rowHeight;
 
     const startMouseX = e.clientX;
     const startMouseY = e.clientY;
@@ -403,8 +551,8 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         document.body.style.cursor = 'move';
       }
 
-      const deltaCols = Math.round(dx / (colWidth + 16 / 12));
-      const deltaRows = Math.round(dy / (rowHeight + 16 / 12));
+      const deltaCols = Math.round(dx / (colWidth + layoutSettings.gap));
+      const deltaRows = Math.round(dy / (rowHeight + layoutSettings.gap));
 
       let newX = startX + deltaCols;
       let newY = startY + deltaRows;
@@ -445,8 +593,8 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     if (!canvasEl) return;
 
     const canvasRect = canvasEl.getBoundingClientRect();
-    const colWidth = (canvasRect.width - 16) / 12;
-    const rowHeight = 80;
+    const colWidth = (canvasRect.width - layoutSettings.gap * 11) / 12;
+    const rowHeight = layoutSettings.rowHeight;
 
     const startMouseX = e.clientX;
     const startMouseY = e.clientY;
@@ -466,14 +614,14 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
 
       if (edge === 'right' || edge === 'corner') {
         const dx = moveEvent.clientX - startMouseX;
-        const deltaCols = Math.round(dx / (colWidth + 16 / 12));
+        const deltaCols = Math.round(dx / (colWidth + layoutSettings.gap));
         newWidth = Math.max(MIN_W, Math.min(MAX_W, startWidth + deltaCols));
         newWidth = Math.min(newWidth, 12 - item.x);
       }
 
       if (edge === 'bottom' || edge === 'corner') {
         const dy = moveEvent.clientY - startMouseY;
-        const deltaRows = Math.round(dy / (rowHeight + 16 / 12));
+        const deltaRows = Math.round(dy / (rowHeight + layoutSettings.gap));
         newHeight = Math.max(MIN_H, startHeight + deltaRows);
       }
 
@@ -493,22 +641,31 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     document.addEventListener('mouseup', handleMouseUp);
   };
 
-  // Grid 位置计算
+  // Grid 位置计算 - 只设置网格位置，不设置高度
+  // 高度由 align-self: stretch 自动填充到网格单元格
   const gridStyle: React.CSSProperties = {
     gridColumn: `${item.x + 1} / span ${item.width}`,
     gridRow: `${item.y + 1} / span ${item.height}`,
-    minHeight: `${item.height * 80}px`,
   };
 
+  // 图表内边距：与间距联动，间距为0时内边距也减小
+  const itemPadding = Math.max(0, Math.min(12, layoutSettings.gap / 2 + 4));
+
   return (
-    <DashboardItemErrorBoundary>
+    <DashboardItemErrorBoundary t={t}>
       <div
         onClick={() => {
-          // 拖拽中不触发点击选中
-          if (!isDragging) {
+        if (!isDragging) {
+          const now = Date.now();
+          const diff = now - clickTimeRef.current;
+          if (diff < 300) {
+            onDoubleClick?.();
+          } else {
             setSelectedChartId(item.chartId);
           }
-        }}
+          clickTimeRef.current = now;
+        }
+      }}
         onMouseDown={isEditing && onLayoutChange ? handleDragStart : undefined}
         style={{
           ...styles.item,
@@ -518,115 +675,123 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
           ...(isDragging ? styles.itemDragging : {}),
         }}
       >
-        {/* 编辑模式下的工具栏 */}
-        {isEditing && (
-          <div style={styles.itemToolbar}>
-            <button
-              style={styles.removeBtn}
-              onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
-              title="从仪表盘移除"
-            >×</button>
-          </div>
-        )}
-        {/* 非编辑模式选中时的关闭按钮 */}
-        {!isEditing && isSelected && (
-          <div style={styles.itemToolbar}>
-            <button
-              style={styles.removeBtn}
-              onClick={(e) => {
-                e.stopPropagation();
-                setSelectedChartId(null);
-              }}
-              title="取消选择"
-            >×</button>
-          </div>
-        )}
-
-        {/* 编辑模式提示条（P1 UX 改进） */}
-        {isEditing && (
-          <div style={styles.editHintBar}>
-            <span style={styles.editHintIcon}>✋</span>
-            <span style={styles.editHintText}>拖拽移动</span>
-          </div>
-        )}
-
-        {savedChart ? (
-          <>
-            {savedChart.title && (
-              <div style={styles.itemTitle}>{savedChart.title}</div>
-            )}
-            {loading ? (
-              <div style={styles.loading}>加载中...</div>
-            ) : error ? (
-              <div style={styles.error}>
-                <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>❌ 图表加载失败</div>
-                <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'pre-wrap' }}>{error}</div>
-                <div style={{ marginTop: '10px' }}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setLoading(true);
-                      setError(null);
-                      loadSavedCharts().then(() => {
-                        setRetryKey(k => k + 1);
-                      });
-                    }}
-                    style={{
-                      padding: '4px 12px',
-                      fontSize: '11px',
-                      background: 'var(--primary)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    🗘 刷新重试
-                  </button>
+        {/* 统一容器结构 */}
+        <div style={{ ...styles.itemContainer, padding: `${itemPadding}px` }}>
+          {/* 标题行 - 固定高度 */}
+          {(savedChart?.title || isEditing) && (
+            <div style={styles.titleRow}>
+              {savedChart?.title && (
+                <div style={styles.itemTitle}>{savedChart.title}</div>
+              )}
+              {/* 编辑模式提示 */}
+              {isEditing && (
+                <div style={styles.editHintBar}>
+                  <span style={styles.editHintIcon}>✋</span>
+                  <span style={styles.editHintText}>拖拽移动</span>
                 </div>
-                {error.includes('查询不存在') && (
-                  <div style={{ fontSize: '10px', marginTop: '6px', color: 'var(--warning)' }}>
-                    💡 提示：此图表是在旧版本保存的，请重新保存图表
+              )}
+            </div>
+          )}
+
+          {/* 工具栏 - 右上角固定 */}
+          {isEditing && (
+            <div style={styles.itemToolbar}>
+              <button
+                style={styles.removeBtn}
+                onClick={(e) => { e.stopPropagation(); onRemove?.(); }}
+                title={t('dashboard.removeFromDashboard')}
+              >×</button>
+            </div>
+          )}
+          {/* 非编辑模式选中时的关闭按钮 */}
+          {!isEditing && isSelected && (
+            <div style={styles.itemToolbar}>
+              <button
+                style={styles.removeBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedChartId(null);
+                }}
+                title={t('common.cancelSelection')}
+              >×</button>
+            </div>
+          )}
+
+          {/* 图表内容区域 */}
+          <div style={styles.chartContainer}>
+            {savedChart ? (
+              <>
+                {loading ? (
+                  <div style={styles.loading}>{t('common.loading')}</div>
+                ) : error ? (
+                  <div style={styles.error}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>❌ 图表加载失败</div>
+                    <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'pre-wrap' }}>{error}</div>
+                    <div style={{ marginTop: '10px' }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setLoading(true);
+                          setError(null);
+                          loadSavedCharts().then(() => {
+                            setRetryKey(k => k + 1);
+                          });
+                        }}
+                        style={{
+                          padding: '4px 12px',
+                          fontSize: '11px',
+                          background: 'var(--primary)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        🗘 刷新重试
+                      </button>
+                    </div>
+                    {error.includes('查询不存在') && (
+                      <div style={{ fontSize: '10px', marginTop: '6px', color: 'var(--warning)' }}>
+                        💡 提示：此图表是在旧版本保存的，请重新保存图表
+                      </div>
+                    )}
+                  </div>
+                ) : chartConfig ? (
+                  <ChartCanvas
+                    chartConfig={chartConfig}
+                    interactive={!isEditing}
+                  />
+                ) : (
+                  <div style={styles.placeholder}>
+                    📈 {savedChart.chartType}
                   </div>
                 )}
-              </div>
-            ) : chartConfig ? (
-              <ChartCanvas
-                chartConfig={chartConfig}
-                interactive={!isEditing}
-              />
+              </>
             ) : (
               <div style={styles.placeholder}>
-                📈 {savedChart.chartType}
+                图表未找到
               </div>
             )}
-          </>
-        ) : (
-          <div style={styles.placeholder}>
-            图表未找到
           </div>
-        )}
+        </div>
 
-        {/* P0-2 修复：缩放手柄 —— 编辑模式下显示，hover 高亮 */}
+        {/* 缩放手柄 - 编辑模式下显示 */}
         {isEditing && onLayoutChange && (
           <>
-            {/* 右边 —— 调整宽度 */}
             <div
               className="resize-handle-right"
               style={styles.resizeHandleRight}
               onMouseDown={(e) => handleResizeStart(e, 'right')}
             />
-            {/* 下边 —— 调整高度 */}
             <div
               className="resize-handle-bottom"
               style={styles.resizeHandleBottom}
               onMouseDown={(e) => handleResizeStart(e, 'bottom')}
             />
-            {/* 右下角 —— 同时调整宽高 */}
             <div
               style={styles.resizeHandleCorner}
               onMouseDown={(e) => handleResizeStart(e, 'corner')}
-              title="拖拽以调整图表大小"
+              title={t('dashboard.dragToResize')}
             />
           </>
         )}
@@ -639,12 +804,33 @@ const styles: Record<string, React.CSSProperties> = {
   item: {
     background: 'var(--bg-secondary)',
     borderRadius: '8px',
-    padding: '12px',
     overflow: 'hidden',
     position: 'relative',
     display: 'flex',
     flexDirection: 'column',
     border: '1px solid var(--border-primary)',
+    // 移除 height: '100%'，改用 alignSelf: 'stretch' 让 grid 自动拉伸
+    boxSizing: 'border-box',
+    alignSelf: 'stretch',
+  },
+  // 新布局：统一的容器结构
+  itemContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    // 移除 height: '100%'，让 flex: 1 自动填充
+    padding: '12px',
+    boxSizing: 'border-box',
+    flex: 1,
+    minHeight: 0,
+  },
+  // 标题行 - 固定高度，不参与 flex 分配
+  titleRow: {
+    height: '32px',
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    marginBottom: '8px',
+    position: 'relative',
   },
   itemEditing: {
     border: '2px dashed var(--primary)',
@@ -662,8 +848,8 @@ const styles: Record<string, React.CSSProperties> = {
   },
   itemToolbar: {
     position: 'absolute',
-    top: '8px',
-    right: '8px',
+    top: '4px',
+    right: '4px',
     display: 'flex',
     gap: '4px',
     zIndex: 50,
@@ -681,11 +867,11 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // P1 UX：编辑模式提示条
+  // 简化编辑提示：改为更隐蔽的 UI
   editHintBar: {
     position: 'absolute',
-    top: '8px',
-    left: '8px',
+    top: '4px',
+    left: '4px',
     display: 'flex',
     alignItems: 'center',
     gap: '4px',
@@ -703,10 +889,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '13px',
     fontWeight: 600,
     color: 'var(--text-primary)',
-    marginBottom: '8px',
-    flexShrink: 0,
-    // 编辑模式下标题不参与拖拽事件
-    pointerEvents: 'none',
+    flex: 1,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  // 图表内容区域 - flex: 1 自动填充剩余空间
+  chartContainer: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
   },
   loading: {
     flex: 1,
@@ -726,11 +920,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     textAlign: 'center',
     padding: '8px',
+    overflow: 'auto',
   },
   chart: {
     flex: 1,
-    minHeight: '150px',
+    // 移除 minHeight: '150px'，让 flex: 1 自动适应容器
     width: '100%',
+    minHeight: 0,
   },
   placeholder: {
     flex: 1,
@@ -740,12 +936,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-tertiary)',
     fontSize: '14px',
   },
-  // P0-2 修复：缩放手柄 —— 可见 + hover 高亮
+  // 缩放手柄 - 统一样式
   resizeHandleRight: {
     position: 'absolute',
     right: '-2px',
-    top: '8px',
-    bottom: '8px',
+    top: '12px',
+    bottom: '12px',
     width: '6px',
     cursor: 'ew-resize',
     zIndex: 30,
@@ -756,8 +952,8 @@ const styles: Record<string, React.CSSProperties> = {
   resizeHandleBottom: {
     position: 'absolute',
     bottom: '-2px',
-    left: '8px',
-    right: '8px',
+    left: '12px',
+    right: '12px',
     height: '6px',
     cursor: 'ns-resize',
     zIndex: 30,

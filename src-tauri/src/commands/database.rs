@@ -100,7 +100,7 @@ pub fn delete_table(state: State<'_, TauriAppState>, table_name: String) -> Resu
     let row_count = crate::services::TrashService::get_table_row_count(&conn, &table_name)?;
 
     // 将表移到回收站
-    let _result = crate::services::TrashService::move_to_trash_sync(&conn, &table_name, row_count as u64)?;
+    let _result = crate::services::TrashService::move_to_trash_sync(&conn, &table_name, row_count)?;
 
     // 删除对应的 DuckDB VIEW（仅在可用时）
     if let Ok(duckdb_conn) = state.get_duckdb_connection() {
@@ -179,4 +179,42 @@ pub fn get_table_row_count(state: State<'_, TauriAppState>, table_name: String) 
 
     let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
     DatabaseService::get_row_count(&conn, &table_name)
+}
+
+/// DuckDB 诊断信息（用于排查 DuckDB 初始化失败问题）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuckDbDiagnostics {
+    pub is_available: bool,
+    pub error_message: Option<String>,
+    pub init_attempted: bool,
+}
+
+/// 获取 DuckDB 诊断信息
+#[tauri::command]
+pub fn get_duckdb_diagnostics(state: State<'_, TauriAppState>) -> DuckDbDiagnostics {
+    let duckdb_guard = state.duckdb_conn.lock().ok();
+    let is_available = duckdb_guard.as_ref().and_then(|g| g.as_ref()).is_some();
+
+    if is_available {
+        DuckDbDiagnostics {
+            is_available: true,
+            error_message: None,
+            init_attempted: true,
+        }
+    } else {
+        // 尝试触发初始化并捕获错误
+        match state.get_duckdb_connection() {
+            Ok(_) => DuckDbDiagnostics {
+                is_available: true,
+                error_message: None,
+                init_attempted: true,
+            },
+            Err(e) => DuckDbDiagnostics {
+                is_available: false,
+                error_message: Some(e),
+                init_attempted: true,
+            },
+        }
+    }
 }

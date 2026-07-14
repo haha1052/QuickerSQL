@@ -26,6 +26,9 @@ fn default_app_states() -> Vec<(String, String, String, Option<String>)> {
 
         // 工作区状态
         ("workspace".to_string(), "saved_at".to_string(), "".to_string(), Some("工作区布局最后保存时间".to_string())),
+
+        // 最近使用的项目（用于 autoConnect 功能）
+        ("project".to_string(), "last_project_name".to_string(), "".to_string(), Some("上次使用的项目名称".to_string())),
     ]
 }
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocale } from '../../context/LocaleContext';
+import { useAppStore } from '../../store';
 import { computeVisibleRange, indexToOffset } from '../../utils/virtual';
 import './TrashPanel.css';
 
@@ -14,7 +15,7 @@ interface TrashItem {
   deleted_by?: string;
 }
 
-const TRASH_ITEM_HEIGHT = 110;
+const TRASH_ITEM_HEIGHT = 50;
 
 
 
@@ -25,10 +26,10 @@ interface TrashPanelProps {
 
 const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
   const { t } = useLocale();
+  const { setMessage } = useAppStore();
   const [trashItems, setTrashItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedItem, setSelectedItem] = useState<TrashItem | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(500);
@@ -88,15 +89,16 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
       const response = await tauriService.restoreFromTrash(item.id);
       
       if (response.success) {
-        alert(response.data || t('trash.restoreSuccess'));
+        setMessage(response.data || t('trash.restoreSuccess'), 'success');
         await loadTrashList();
         if (onRefresh) onRefresh();
       } else {
-        alert(`${t('trash.restoreFail')}: ${response.error}`);
+        console.error('[TrashPanel] Restore failed:', response.error);
+        setMessage('恢复失败，请稍后重试', 'error');
       }
     } catch (err) {
       console.error('Failed to restore:', err);
-      alert(`${t('trash.restoreFail')}: ${err}`);
+      setMessage('恢复失败，请稍后重试', 'error');
     } finally {
       setLoading(false);
     }
@@ -113,14 +115,14 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
       const response = await tauriService.permanentDelete(item.id);
       
       if (response.success) {
-        alert(response.data || t('trash.permanentDeleted'));
+        setMessage(response.data || t('trash.permanentDeleted'), 'success');
         await loadTrashList();
       } else {
-        alert(`${t('trash.deleteFail')}: ${response.error}`);
+        setMessage(`${t('trash.deleteFail')}: ${response.error}`, 'error');
       }
     } catch (err) {
       console.error('Failed to delete:', err);
-      alert(`${t('trash.deleteFail')}: ${err}`);
+      setMessage(`${t('trash.deleteFail')}: ${err}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -181,8 +183,7 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
                 return (
                   <div
                     key={item.id}
-                    className={`trash-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedItem(item)}
+                    className="trash-item"
                     style={{
                       position: 'absolute',
                       top: indexToOffset(actualIndex, TRASH_ITEM_HEIGHT),
@@ -193,39 +194,28 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
                     }}
                   >
                     <div className="trash-item-info">
-                      <div className="trash-item-name">
+                      <span className="trash-item-name">
                         📊 {item.original_table_name}
-                      </div>
-                      <div className="trash-item-meta">
-                        <span className="meta-item">
-                          {t('trash.rowCount')} {item.row_count.toLocaleString()}
-                        </span>
-                        <span className="meta-item">
-                          {t('trash.deletedAt')} {formatDate(item.deleted_at)}
-                        </span>
-                        <span className={`meta-tag ${item.strategy.toLowerCase()}`}>
-                          {item.strategy === 'Rename' ? t('trash.rename') : t('trash.parquet')}
-                        </span>
-                      </div>
+                      </span>
+                      <span className="meta-item">
+                        {t('trash.rowCount')} {item.row_count.toLocaleString()}
+                      </span>
+                      <span className="meta-item">
+                        {t('trash.deletedAt')} {formatDate(item.deleted_at)}
+                      </span>
                     </div>
 
                     <div className="trash-item-actions">
                       <button
                         className="btn-action btn-restore"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleRestore(item);
-                        }}
+                        onClick={() => handleRestore(item)}
                         disabled={loading}
                       >
                         {t('trash.restore')}
                       </button>
                       <button
                         className="btn-action btn-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePermanentDelete(item);
-                        }}
+                        onClick={() => handlePermanentDelete(item)}
                         disabled={loading}
                       >
                         {t('common.delete')}

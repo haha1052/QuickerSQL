@@ -30,9 +30,18 @@ export const useImportStore = create<ImportState>((set, get) => ({
 
   setImportItems: (items) => set({ importItems: items }),
   
-  addImportItems: (items) => set((state) => ({ 
-    importItems: [...state.importItems, ...items] 
-  })),
+  addImportItems: (items) => set((state) => {
+    const existingKeys = new Set(
+      state.importItems.map((item) =>
+        item.sheetName ? `${item.filePath}::${item.sheetName}` : item.filePath
+      )
+    );
+    const newItems = items.filter((item) => {
+      const key = item.sheetName ? `${item.filePath}::${item.sheetName}` : item.filePath;
+      return !existingKeys.has(key);
+    });
+    return { importItems: [...state.importItems, ...newItems] };
+  }),
   
   updateImportItem: (id, updates) => set((state) => ({
     importItems: state.importItems.map((item) =>

@@ -3,6 +3,7 @@ import { DateRangePicker } from './DateRangePicker';
 import { SelectFilter } from './SelectFilter';
 import { TextFilter } from './TextFilter';
 import { useDashboardStore } from '../../../store';
+import { useLocale } from '../../../context/LocaleContext';
 import type { DashboardFilter } from '../../../types/dashboard';
 
 interface DashboardFilterBarProps {
@@ -14,6 +15,7 @@ export const DashboardFilterBar: React.FC<DashboardFilterBarProps> = ({
 }) => {
   const { filterValues, setFilterValue, resetFilters, refreshCharts } = useDashboardStore();
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const { t } = useLocale();
 
   if (filters.length === 0) {
     return null;
@@ -75,7 +77,7 @@ export const DashboardFilterBar: React.FC<DashboardFilterBarProps> = ({
                     options={f.options || []}
                     value={typeof val === 'string' ? val : val.join(',')}
                     onChange={(v) => setFilterValue(f.field, v)}
-                    placeholder="全部"
+                    placeholder={t('filter.all')}
                   />
                 );
               }
@@ -86,7 +88,7 @@ export const DashboardFilterBar: React.FC<DashboardFilterBarProps> = ({
                   label={f.label}
                   value={typeof val === 'string' ? val : val.join('')}
                   onChange={(v) => setFilterValue(f.field, v)}
-                  placeholder="输入..."
+                  placeholder={t('common.inputPlaceholder')}
                 />
               );
             })}

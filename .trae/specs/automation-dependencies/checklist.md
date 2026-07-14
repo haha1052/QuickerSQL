@@ -1,0 +1,16 @@
+- [ ] 检查点 1: 搜索框右侧有"+ 新建任务"按钮，始终可见
+- [ ] 检查点 2: __task_dependencies 表创建成功，字段完整
+- [ ] 检查点 3: TaskDependency 结构体定义正确（Rust + TS）
+- [ ] 检查点 4: 依赖 CRUD 接口完整（list/add/update/delete/replace）
+- [ ] 检查点 5: 4 种依赖类型都支持：time_interval / cron / task_success / task_completed
+- [ ] 检查点 6: 旧数据自动迁移：schedule_mode 转为对应依赖
+- [ ] 检查点 7: 调度器支持任务依赖触发（前置任务完成后触发后置任务）
+- [ ] 检查点 8: 时间依赖正常触发（interval / cron）
+- [ ] 检查点 9: 任务编辑器中有依赖管理 UI
+- [ ] 检查点 10: 任务详情显示依赖信息
+- [ ] 检查点 11: cargo check --quiet 通过
+- [ ] 检查点 12: cargo test 全部通过
+- [ ] 检查点 13: npx tsc --noEmit --pretty 通过
+- [ ] 检查点 14: SQL 注入检测无新增风险
+- [ ] 检查点 15: unwrap 检测无新增（测试代码除外）
+- [ ] 检查点 16: 架构分层正确（commands → services → database）

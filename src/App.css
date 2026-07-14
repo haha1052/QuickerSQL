@@ -373,10 +373,18 @@ button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(
 
 /* ==================== 工作区标签栏样式 ==================== */
 .workspace-tabs-container::-webkit-scrollbar {
-  display: none;
+  height: 6px;
 }
 
-.workspace-tabs-container {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+.workspace-tabs-container::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+}
+
+.workspace-tabs-container::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 3px;
+}
+
+.workspace-tabs-container::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
 }

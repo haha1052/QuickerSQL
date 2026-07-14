@@ -20,27 +20,78 @@ npx playwright test e2e/specs/ --headed
 E2E_WITH_WEBSERVER=1 npx playwright test
 ```
 
-## 用例状态
+## 测试用例清单
 
-- `00-basic-startup.spec.ts` ✅ 可运行（当前 skip 大部分，仅验证测试框架本身）
-- `01-workflow.spec.ts` ⏸  **需接入 tauri-driver 后启用**（所有用例当前为 skip 状态）
+| 文件 | 场景 | 用例数 | 状态 |
+|------|------|--------|------|
+| `00-basic-startup.spec.ts` | 应用启动、UI 元素验证 | 6 | ✅ 可运行 |
+| `01-sql-query.spec.ts` | SQL 执行、结果展示、历史记录、新建标签页、语法高亮、多标签页 | 10 | ✅ 可运行 |
+| `02-dashboard.spec.ts` | 仪表盘导航、图表操作 | 3 | ✅ 可运行 |
+| `03-automation.spec.ts` | 任务中心、任务创建 | 3 | ✅ 可运行 |
+| `04-settings.spec.ts` | 设置页面、主题切换 | 3 | ✅ 可运行 |
+| `01-workflow.spec.ts` | 核心用户旅程 | 4 | ⏸ skip（历史兼容） |
 
-## 下一步改进路线
+**总计：29 个测试用例**
 
-1. **接入 tauri-driver**：安装 `@tauri-apps/cli` 的 `test` 子命令或社区 `tauri-driver`
-   - 参考：https://tauri.app/v1/guides/test/webdriver/
-2. **把 01-workflow.spec.ts 中的 skip 去掉**，让真实用户旅程跑起来
-3. **添加更多 smoke tests**：导入 CSV、查看数据库状态、切换项目等
+## 测试用例说明
 
-## 手动测试清单（没有 tauri-driver 时的替代方案）
+### 00-basic-startup.spec.ts（基础启动测试）
 
-| # | 场景 | 操作 | 预期结果 |
-|---|------|------|---------|
-| 1 | 启动应用 | `npm run tauri dev` | 应用窗口在 10 秒内打开，显示主界面 |
-| 2 | 执行 SQL | 打开 SQL Tab → 输入 `SELECT 1` → 点"执行" | 结果表格显示 1 行 |
-| 3 | 查询历史 | 多次执行 SQL → 打开 Query History | 历史列表至少有 1 条 |
-| 4 | 仪表盘 | 打开仪表盘 Tab → 点击"新增图表" | 能进入 AddChartModal，可选择查询、配置图表类型 |
-| 5 | 自动化任务 | 打开任务中心 → 新建任务 → 手动执行 → 查看日志 | 任务创建成功，手动执行后有日志记录 |
-| 6 | 回收站 | 执行 `DROP TABLE xxx`（通过回收站配置）→ 打开回收站面板 | 被删除的表出现在回收站列表中 |
-| 7 | 切换项目 | 打开 ProjectManager → 创建新项目 → 切换过去 | 切换后数据库状态正确更新 |
-| 8 | 设置页面 | 打开设置 → 切换主题 / 调整查询缓存 | 设置立即生效 |
+- 应用 HTTP 响应验证
+- Header 容器、Logo 存在性
+- 标签页（SQL/Dashboard/Automation）存在性
+- 侧边栏容器存在性
+
+### 01-sql-query.spec.ts（SQL 查询测试）
+
+- SQL 页面导航
+- SQL 执行（SELECT 1）
+- 结果表格验证
+- 新建查询标签页
+- SQL 语法高亮验证
+- 执行查询状态验证
+- 结果行数验证
+- SQL 历史记录
+- 多标签页查询
+
+### 02-dashboard.spec.ts（仪表盘测试）
+
+- 仪表盘页面导航
+- 工具栏按钮存在性
+- 新增图表按钮可点击
+
+### 03-automation.spec.ts（自动化任务测试）
+
+- 任务中心页面导航
+- 任务列表容器存在性
+- 新建任务按钮可点击
+
+### 04-settings.spec.ts（设置页面测试）
+
+- 设置页面打开
+- 设置分类列表存在性
+- 主题选项存在性
+
+## 验证命令
+
+```bash
+# 列出所有测试用例
+npx playwright test --list
+
+# 运行所有测试（有 headed 模式可以看到浏览器）
+npx playwright test e2e/specs/ --headed
+
+# 运行特定文件
+npx playwright test e2e/specs/00-basic-startup.spec.ts
+
+# 运行带报告
+npx playwright test e2e/specs/ --headed && npx playwright show-report
+```
+
+## 故障排查
+
+| 问题 | 解决方案 |
+|------|---------|
+| 应用无法启动 | 确保 `npm run tauri dev` 正常运行 |
+| 测试超时 | 检查端口 1420 是否被占用 |
+| 选择器找不到元素 | 检查应用 UI 是否已加载完成 |

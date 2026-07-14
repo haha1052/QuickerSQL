@@ -1,0 +1,9 @@
+- [x] settings_service.rs 的 default_settings 中包含 result_min_height 和 result_max_height
+- [x] settings_service.rs 的 get_known_settings 白名单中包含两项
+- [x] QueryResultItem 中使用 useSetting 读取 performance.result_min_height
+- [x] QueryResultItem 中使用 useSetting 读取 performance.result_max_height
+- [x] container 样式动态应用 minHeight 和 maxHeight
+- [x] tableContainer 样式动态应用 maxHeight（= resultMaxHeight - 120）
+- [x] 默认值与之前一致（min=200, max=800）
+- [x] Rust 编译通过
+- [x] TypeScript 编译通过
