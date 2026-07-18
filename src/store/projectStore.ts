@@ -126,7 +126,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`获取数据库状态失败: ${message}`, 'error');
+      console.error('[getDatabaseStatus] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.project.get_db_status_failed' }, 'error');
       set({ error: message });
     } finally {
       set({ loading: false });
@@ -142,7 +143,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`加载项目列表失败: ${message}`, 'error');
+      console.error('[loadProjects] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.project.load_failed' }, 'error');
       set({ error: message });
     } finally {
       set({ loading: false });
@@ -175,7 +177,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`获取当前数据库路径失败: ${message}`, 'error');
+      console.error('[loadCurrentDbPath] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.project.get_db_path_failed' }, 'error');
       set({ error: message });
     } finally {
       set({ loading: false });
@@ -215,16 +218,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       set({ loading: true, error: null, importProgress: 0 });
       const response = await tauriService.importDataV2(params);
       if (response.success) {
-        useToastStore.getState().addToast(`表 "${params.table_name}" 导入成功`, 'success');
+        useToastStore.getState().addToast({ key: 'error.project.import_success', vars: { name: params.table_name } }, 'success');
         set({ importProgress: 100 });
         return true;
       }
-      useToastStore.getState().addToast(`导入失败: ${response.error || '未知错误'}`, 'error');
+      console.error('[importDataV2] failed:', response.error);
+      useToastStore.getState().addToast({ key: 'error.project.import_failed' }, 'error');
       set({ error: response.error || '导入失败' });
       return false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`导入失败: ${message}`, 'error');
+      console.error('[importDataV2] exception:', err);
+      useToastStore.getState().addToast({ key: 'error.project.import_failed' }, 'error');
       set({ error: message });
       return false;
     } finally {

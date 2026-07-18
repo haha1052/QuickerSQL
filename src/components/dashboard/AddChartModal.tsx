@@ -4,17 +4,35 @@ import { calculateNextPosition } from '../../utils/gridLayout';
 import { useLocale } from '../../context/LocaleContext';
 
 interface AddChartModalProps {
+  /** 目标仪表盘 ID，用于过滤授权图表并定位添加位置 */
   dashboardId: string;
+  /** 关闭弹窗的回调；点击遮罩、× 或取消按钮时触发 */
   onClose: () => void;
+  /** 添加成功后的回调（可选）；在 onClose 之前触发 */
   onAdded?: () => void;
 }
 
+/**
+ * 添加图表到仪表盘的模态框组件
+ *
+ * 职责：
+ * - 弹出模态框展示当前可添加到指定仪表盘的图表列表
+ * - 根据图表 visibility 与 authorizedDashboardIds 过滤可用图表
+ * - 支持按名称与标签搜索过滤
+ * - 选中图表后通过 calculateNextPosition 计算下一个网格位置并调用 addChartToDashboard
+ * - 通过 useToastStore 反馈成功/失败状态
+ *
+ * 副作用：
+ * - 挂载时调用 loadSavedCharts 加载图表列表
+ *
+ * @param props - 见 AddChartModalProps
+ */
 export const AddChartModal: React.FC<AddChartModalProps> = ({
   dashboardId,
   onClose,
   onAdded,
 }) => {
-  const { savedCharts, dashboards, loadSavedCharts, addChartToDashboard, error } = useDashboardStore();
+  const { savedCharts, dashboards, loadSavedCharts, addChartToDashboard, error, errorKey } = useDashboardStore();
   const { addToast } = useToastStore();
   const { t } = useLocale();
   const [search, setSearch] = useState('');
@@ -45,15 +63,15 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
       const position = calculateNextPosition(dashboard?.layout || []);
       const ok = await addChartToDashboard(dashboardId, selectedChartId, position);
       if (ok) {
-        addToast('已将图表添加到仪表盘', 'success');
+        addToast({ key: 'chart.add.add_success' }, 'success');
       } else {
-        addToast('添加图表失败', 'error');
+        addToast({ key: 'chart.add.add_failed' }, 'error');
       }
       onAdded?.();
       onClose();
     } catch (e) {
       console.error('Add chart failed:', e);
-      addToast('添加图表失败', 'error');
+      addToast({ key: 'chart.add.add_failed' }, 'error');
     } finally {
       setLoading(false);
     }
@@ -75,7 +93,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
     <div style={styles.overlay} onClick={onClose}>
       <div style={styles.modal} onClick={e => e.stopPropagation()}>
         <div style={styles.header}>
-          <h3 style={styles.title}>添加图表</h3>
+          <h3 style={styles.title}>{t('chart.add.title')}</h3>
           <button style={styles.closeBtn} onClick={onClose}>×</button>
         </div>
 
@@ -90,19 +108,21 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
           {filtered.length === 0 ? (
             <div style={styles.empty}>
               {error ? (
-                <div style={{ color: '#e74c3c', marginBottom: '8px' }}>错误: {error}</div>
+                <div style={{ color: '#e74c3c', marginBottom: '8px' }}>
+                  {errorKey ? t(errorKey) : `${t('chart.add.error_label')}: ${error}`}
+                </div>
               ) : null}
               <div>{t('chart.noSavedCharts')}</div>
               <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
-                当前已保存 {savedCharts.length} 个图表
+                {t('chart.add.saved_count', { count: savedCharts.length })}
               </div>
               {savedCharts.length === 0 && (
                 <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '12px', lineHeight: '1.6' }}>
-                  <strong>如何添加图表到仪表盘？</strong><br/>
-                  1. 进入「SQL 查询」页面<br/>
-                  2. 执行 SQL 查询并生成图表<br/>
-                  3. 点击「保存图表」按钮<br/>
-                  4. 返回仪表盘，点击「添加图表」
+                  <strong>{t('chart.add.how_to_title')}</strong><br/>
+                  {t('chart.add.how_to_step1')}<br/>
+                  {t('chart.add.how_to_step2')}<br/>
+                  {t('chart.add.how_to_step3')}<br/>
+                  {t('chart.add.how_to_step4')}
                 </div>
               )}
             </div>
@@ -139,7 +159,7 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
             onClick={handleAdd}
             disabled={!selectedChartId || loading}
           >
-            {loading ? '添加中...' : '添加'}
+            {loading ? t('chart.add.adding') : t('chart.add.confirm')}
           </button>
         </div>
       </div>

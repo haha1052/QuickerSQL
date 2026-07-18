@@ -9,10 +9,28 @@ import { TaskEditorModal } from '../automation/TaskEditorModal';
 // ModuleRegistry.registerModules([AllCommunityModule]);  // ← 已在 AgGridLazy 中动态处理
 
 interface SqlQueryPageProps {
+  /** 当前 SQL 查询对象，包含 sql 文本、result 与 batchResults */
   query: SqlQuery;
+  /** SQL 文本变更回调，参数为新的 SQL 字符串 */
   onChange: (sql: string) => void;
 }
 
+/**
+ * SQL 查询页面组件
+ *
+ * 职责：
+ * - 上下分屏布局：上半部分为 SQLEditor，下半部分为查询结果
+ * - 支持拖拽中间分隔条调整两栏高度（限制在 20%-80% 之间）
+ * - 结果区支持两种展示模式：
+ *   - batchResults：多语句批量结果，逐条渲染（成功/失败、影响行数、AgGrid 表格）
+ *   - result：单结果集，直接通过 AgGridLazy 渲染
+ * - 顶部提供「定时执行」按钮，打开 TaskEditorModal 创建 sql 类型任务
+ *
+ * 副作用：
+ * - 拖拽时为 window 注册 mousemove/mouseup 监听，卸载时移除
+ *
+ * @param props - 见 SqlQueryPageProps
+ */
 export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
   query,
   onChange,

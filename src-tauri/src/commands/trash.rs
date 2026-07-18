@@ -13,7 +13,10 @@ pub fn get_trash_list(state: State<'_, TauriAppState>) -> Result<TrashListRespon
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TrashService::get_trash_list_sync(&conn)
 }
 
@@ -29,7 +32,10 @@ pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Res
         return Err(format!("系统表 '{}' 不允许删除或修改", table_name));
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     // 获取行数
     let row_count = TrashService::get_table_row_count(&conn, &table_name)?;
@@ -55,7 +61,7 @@ pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Res
     if result.is_ok() {
         if let Ok(duckdb_conn) = state.get_duckdb_connection() {
             if let Ok(conn_inner) = duckdb_conn.lock() {
-                let _ = crate::services::ViewService::drop_single_view(&conn_inner, &table_name);
+                let _ = crate::services::ViewService::drop_single_view(&**conn_inner, &table_name);
             }
         }
     }
@@ -70,7 +76,10 @@ pub fn restore_from_trash(state: State<'_, TauriAppState>, trash_id: String) -> 
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = TrashService::restore_from_trash_sync(&conn, &trash_id);
 
     if result.is_ok() {
@@ -95,7 +104,10 @@ pub fn permanent_delete(state: State<'_, TauriAppState>, trash_id: String) -> Re
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = TrashService::permanent_delete_sync(&conn, &trash_id);
 
     if result.is_ok() {

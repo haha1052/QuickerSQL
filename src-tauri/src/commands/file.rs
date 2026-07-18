@@ -124,8 +124,8 @@ fn get_excel_sheets_impl(file_path: &str) -> Result<ExcelPreview, String> {
 
     let path = std::path::Path::new(file_path);
     if !path.exists() {
-        log::warn!("Excel文件不存在: {}", file_path);
-        return Err(format!("文件不存在: {}", file_path));
+        log::warn!("文件不存在: {}", file_path);
+        return Err("文件不存在，请检查文件路径".to_string());
     }
 
     match std::fs::metadata(path) {
@@ -137,7 +137,7 @@ fn get_excel_sheets_impl(file_path: &str) -> Result<ExcelPreview, String> {
         }
         Err(e) => {
             log::warn!("无法获取文件元数据: {}", e);
-            return Err(format!("无法访问文件: {}", e));
+            return Err("无法访问文件，请检查文件是否被占用或路径权限".to_string());
         }
     }
 
@@ -147,7 +147,7 @@ fn get_excel_sheets_impl(file_path: &str) -> Result<ExcelPreview, String> {
         if error_msg.to_lowercase().contains("password") || error_msg.to_lowercase().contains("encrypted") {
             "Excel文件已加密，请先解密".to_string()
         } else {
-            format!("无法打开Excel文件: {}", e)
+            "Excel文件打开失败，请检查文件格式是否正确".to_string()
         }
     })?;
 
@@ -202,8 +202,8 @@ fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview
 
     let path = std::path::Path::new(file_path);
     if !path.exists() {
-        log::warn!("Excel文件不存在: {}", file_path);
-        return Err(format!("文件不存在: {}", file_path));
+        log::warn!("文件不存在: {}", file_path);
+        return Err("文件不存在，请检查文件路径".to_string());
     }
 
     match std::fs::metadata(path) {
@@ -215,7 +215,7 @@ fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview
         }
         Err(e) => {
             log::warn!("无法获取文件元数据: {}", e);
-            return Err(format!("无法访问文件: {}", e));
+            return Err("无法访问文件，请检查文件是否被占用或路径权限".to_string());
         }
     }
 
@@ -225,13 +225,13 @@ fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview
         if error_msg.to_lowercase().contains("password") || error_msg.to_lowercase().contains("encrypted") {
             "Excel文件已加密，请先解密".to_string()
         } else {
-            format!("无法打开Excel文件: {}", e)
+            "Excel文件打开失败，请检查文件格式是否正确".to_string()
         }
     })?;
 
     let range = workbook.worksheet_range(sheet_name).map_err(|e| {
-        log::error!("无法读取Sheet '{}': {}", sheet_name, e);
-        format!("无法读取Sheet '{}': {}", sheet_name, e)
+        log::error!("[load_excel_sheet_impl] 无法读取Sheet '{}': error={}", sheet_name, e);
+        "工作表读取失败，请检查文件格式或表名".to_string()
     })?;
 
     log::info!("成功加载Sheet '{}'", sheet_name);
@@ -240,11 +240,17 @@ fn load_excel_sheet_impl(file_path: &str, sheet_name: &str) -> Result<CsvPreview
 
 fn load_all_json_data(file_path: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
     let mut file = File::open(file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
 
@@ -300,11 +306,17 @@ fn load_all_json_data(file_path: &str, auto_detect_encoding: bool, default_encod
 
 fn load_all_csv_data(file_path: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
     let mut file = File::open(file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
     let lines: Vec<&str> = text.lines().collect();
@@ -324,11 +336,17 @@ fn load_all_csv_data(file_path: &str, auto_detect_encoding: bool, default_encodi
 
 fn load_all_txt_data(file_path: &str, delimiter: &str, auto_detect_encoding: bool, default_encoding: &str) -> Result<Vec<Vec<String>>, String> {
     let mut file = File::open(file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect_encoding, default_encoding);
     let delimiter = if delimiter.is_empty() {
@@ -353,12 +371,19 @@ fn load_all_excel_data(file_path: &str, sheet_name: &str) -> Result<Vec<Vec<Stri
     use calamine::{open_workbook_auto, Reader};
     let path = std::path::Path::new(file_path);
     if !path.exists() {
-        return Err(format!("Excel文件不存在: {}", file_path));
+        log::warn!("[load_all_excel_data] Excel 文件不存在: path={}", file_path);
+        return Err("Excel文件不存在，请检查文件路径".to_string());
     }
 
-    let mut workbook = open_workbook_auto(file_path).map_err(|e| format!("无法打开Excel文件: {}", e))?;
+    let mut workbook = open_workbook_auto(file_path).map_err(|e| {
+        log::error!("[file] 无法打开Excel文件: error={}", e);
+        "Excel文件打开失败，请检查文件格式是否正确".to_string()
+    })?;
 
-    let range = workbook.worksheet_range(sheet_name).map_err(|e| format!("无法读取Sheet '{}': {}", sheet_name, e))?;
+    let range = workbook.worksheet_range(sheet_name).map_err(|e| {
+        log::error!("[file] 无法读取Sheet '{}': error={}", sheet_name, e);
+        "工作表读取失败，请检查文件格式或表名".to_string()
+    })?;
 
     let mut rows = Vec::new();
     for row in range.rows() {
@@ -374,12 +399,19 @@ fn export_excel_to_temp_csv(file_path: &str, sheet_name: &str, has_header: bool)
     use calamine::{open_workbook_auto, Reader};
     let path = Path::new(file_path);
     if !path.exists() {
-        return Err(format!("Excel文件不存在: {}", file_path));
+        log::warn!("[export_excel_to_temp_csv] Excel 文件不存在: path={}", file_path);
+        return Err("Excel文件不存在，请检查文件路径".to_string());
     }
 
-    let mut workbook = open_workbook_auto(file_path).map_err(|e| format!("无法打开Excel文件: {}", e))?;
+    let mut workbook = open_workbook_auto(file_path).map_err(|e| {
+        log::error!("[file] 无法打开Excel文件: error={}", e);
+        "Excel文件打开失败，请检查文件格式是否正确".to_string()
+    })?;
 
-    let range = workbook.worksheet_range(sheet_name).map_err(|e| format!("无法读取Sheet '{}': {}", sheet_name, e))?;
+    let range = workbook.worksheet_range(sheet_name).map_err(|e| {
+        log::error!("[file] 无法读取Sheet '{}': error={}", sheet_name, e);
+        "工作表读取失败，请检查文件格式或表名".to_string()
+    })?;
 
     // 创建应用专属临时目录（Windows: C:\Users\xxx\AppData\Local\quickersql_temp）
     let temp_dir = dirs::data_local_dir()
@@ -388,17 +420,26 @@ fn export_excel_to_temp_csv(file_path: &str, sheet_name: &str, has_header: bool)
     
     // 确保临时目录存在
     std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("无法创建临时目录: {}", e))?;
+        .map_err(|e| {
+            log::error!("[export_excel_to_temp_csv] 无法创建临时目录: error={}", e);
+            "创建临时目录失败，请检查磁盘空间".to_string()
+        })?;
     
     // 创建临时文件路径（UUID 格式避免冲突）
     let temp_path = temp_dir.join(format!("excel_import_{}.csv", uuid::Uuid::new_v4()));
     
     let mut file = File::create(&temp_path)
-        .map_err(|e| format!("无法创建临时CSV文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[export_excel_to_temp_csv] 无法创建临时CSV文件: error={}", e);
+            "创建临时文件失败，请检查磁盘空间".to_string()
+        })?;
 
     // 写入 BOM 以确保正确的 UTF-8 编码
     file.write_all(&[0xEF, 0xBB, 0xBF])
-        .map_err(|e| format!("写入BOM失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[export_excel_to_temp_csv] 写入BOM失败: error={}", e);
+            "临时文件写入失败，请检查磁盘空间".to_string()
+        })?;
 
     let rows: Vec<Vec<String>> = range.rows()
         .map(|row| row.iter().map(|cell| cell.to_string()).collect())
@@ -425,21 +466,30 @@ fn export_excel_to_temp_csv(file_path: &str, sheet_name: &str, has_header: bool)
             .join(",");
         
         writeln!(file, "{}", line)
-            .map_err(|e| format!("写入CSV行失败: {}", e))?;
+            .map_err(|e| {
+                log::error!("[export_excel_to_temp_csv] 写入CSV行失败: error={}", e);
+                "临时文件写入失败，请检查磁盘空间".to_string()
+            })?;
         
         batch_count += 1;
         
         // 每100行刷盘一次
         if batch_count % BATCH_SIZE == 0 {
             file.flush()
-                .map_err(|e| format!("刷盘失败: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[export_excel_to_temp_csv] 刷盘失败: error={}", e);
+                    "临时文件写入失败，请检查磁盘空间".to_string()
+                })?;
             log::debug!("已写入 {} 行，执行刷盘", batch_count);
         }
     }
     
     // 最终刷盘确保所有数据写入
     file.flush()
-        .map_err(|e| format!("最终刷盘失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[export_excel_to_temp_csv] 最终刷盘失败: error={}", e);
+            "临时文件写入失败，请检查磁盘空间".to_string()
+        })?;
 
     Ok(temp_path.to_string_lossy().to_string())
 }
@@ -489,7 +539,10 @@ fn load_json_content(text: &str) -> Result<Vec<serde_json::Value>, String> {
                 }
                 match serde_json::from_str::<serde_json::Value>(trimmed) {
                     Ok(value) => values.push(value),
-                    Err(e) => return Err(format!("JSON Lines 解析失败: {}", e)),
+                    Err(e) => {
+                        log::error!("[load_json_content] JSON Lines 解析失败: error={}", e);
+                        return Err("JSON 数据解析失败，请检查文件格式".to_string());
+                    }
                 }
             }
             if values.is_empty() {
@@ -558,11 +611,17 @@ pub fn load_json(
     let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
 
     let mut file = File::open(&file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
 
@@ -588,11 +647,17 @@ pub fn load_csv(
     let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
 
     let mut file = File::open(&file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
 
@@ -688,11 +753,17 @@ pub fn load_txt(
     let default_enc = default_encoding.unwrap_or_else(|| "UTF-8".to_string());
 
     let mut file = File::open(&file_path)
-        .map_err(|e| format!("无法打开文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法打开文件: error={}", e);
+            "文件打开失败，请检查文件是否被占用或路径权限".to_string()
+        })?;
 
     let mut data = Vec::new();
     file.read_to_end(&mut data)
-        .map_err(|e| format!("无法读取文件: {}", e))?;
+        .map_err(|e| {
+            log::error!("[file] 无法读取文件: error={}", e);
+            "文件读取失败，请检查文件是否被占用或文件格式".to_string()
+        })?;
 
     let text = try_decode_all_encodings(&data, auto_detect, &default_enc);
 
@@ -731,8 +802,8 @@ pub fn load_parquet(
 
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
-        log::warn!("Parquet 文件不存在: {}", file_path);
-        return Err(format!("文件不存在: {}", file_path));
+        log::warn!("[load_parquet] Parquet 文件不存在: path={}", file_path);
+        return Err("文件不存在，请检查文件路径".to_string());
     }
 
     let duckdb_conn = match state.duckdb_conn.lock() {
@@ -741,16 +812,22 @@ pub fn load_parquet(
                 log::info!("DuckDB 未初始化，创建临时内存连接");
                 let driver = crate::database::DuckDbDriver::new();
                 let conn = driver.connect_memory()
-                    .map_err(|e| format!("创建 DuckDB 内存连接失败: {}", e))?;
+                    .map_err(|e| {
+                        log::error!("[load_parquet] 创建 DuckDB 内存连接失败: error={}", e);
+                        "查询引擎初始化失败，请重试".to_string()
+                    })?;
                 *guard = Some(Arc::new(Mutex::new(conn)));
             }
             guard.clone()
         }
         Err(e) => {
-            log::warn!("获取 DuckDB 连接锁失败，创建临时连接: {}", e);
+            log::warn!("[load_parquet] 获取 DuckDB 连接锁失败，创建临时连接: error={}", e);
             let driver = crate::database::DuckDbDriver::new();
             let conn = driver.connect_memory()
-                .map_err(|e| format!("创建 DuckDB 内存连接失败: {}", e))?;
+                .map_err(|e| {
+                    log::error!("[load_parquet] 创建 DuckDB 内存连接失败: error={}", e);
+                    "查询引擎初始化失败，请重试".to_string()
+                })?;
             Some(Arc::new(Mutex::new(conn)))
         }
     };
@@ -758,7 +835,10 @@ pub fn load_parquet(
     let duckdb_conn = duckdb_conn.ok_or("无法获取 DuckDB 连接")?;
 
     let conn_guard = duckdb_conn.lock()
-        .map_err(|e| format!("获取 DuckDB 连接锁失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[load_parquet] 获取 DuckDB 连接锁失败: error={}", e);
+            "查询引擎状态异常，请重试".to_string()
+        })?;
 
     let preview = DatabaseService::preview_parquet_file(&**conn_guard, &file_path, MAX_PREVIEW_ROWS)?;
 
@@ -786,7 +866,10 @@ pub fn import_data(state: State<'_, TauriAppState>, request: ImportRequest) -> R
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[import_data] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let safe_table_name = request.table_name.replace(' ', "_");
     // 表名安全校验
     let _ = SqlIdentifier::new(&safe_table_name)?;
@@ -877,7 +960,8 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
     // 文件路径校验
     let file_path = std::path::Path::new(&request.file_path);
     if !file_path.exists() {
-        return Err(format!("文件不存在: {}", request.file_path));
+        log::warn!("[import_data_v2] 文件不存在: path={}", request.file_path);
+        return Err("文件不存在，请检查文件路径".to_string());
     }
 
     // 检查文件是否可读（readonly 检查）并获取文件大小用于计算超时
@@ -891,7 +975,8 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
             size
         }
         Err(e) => {
-            return Err(format!("无法访问文件元数据: {}", e));
+            log::error!("[import_data_v2] 无法访问文件元数据: error={}", e);
+            return Err("无法访问文件，请检查文件是否被占用或路径权限".to_string());
         }
     };
 
@@ -936,7 +1021,10 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
 
     // 克隆必要的 Arc 引用，以便在 spawn_blocking 内使用
     let db_manager = state.db_manager.clone();
-    let duckdb_conn_opt = state.duckdb_conn.lock().map_err(|e| format!("获取 DuckDB 连接失败: {}", e))?.clone();
+    let duckdb_conn_opt = state.duckdb_conn.lock().map_err(|e| {
+        log::error!("[import_data_v2] 获取 DuckDB 连接失败: error={}", e);
+        "查询引擎状态异常，请重试".to_string()
+    })?.clone();
     
     // 克隆文件路径用于超时错误日志（request 会在 spawn_blocking 中被移动）
     let file_path_for_timeout_log = request.file_path.clone();
@@ -947,7 +1035,10 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
         log::info!("进入 spawn_blocking，开始阻塞 IO 操作");
 
         // 获取连接（在 spawn_blocking 内）
-        let conn = db_manager.get_connection().map_err(|e| e.to_string())?;
+        let conn = db_manager.get_connection().map_err(|e| {
+            log::error!("[import_data_v2] spawn_blocking 内获取数据库连接失败: error={}", e);
+            "数据库连接异常，请重新打开数据库".to_string()
+        })?;
         let lock_acquire_time = blocking_start.elapsed();
         log::info!("数据库连接获取耗时: {}ms", lock_acquire_time.as_millis());
 
@@ -1064,7 +1155,7 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
         // 刷新 VIEW（仅在 DuckDB 可用时）
         if let Some(duckdb_conn) = duckdb_conn_opt {
             if let Ok(guard) = duckdb_conn.lock() {
-                let _ = crate::services::ViewService::refresh_single_view(&*guard, &safe_table_name);
+                let _ = crate::services::ViewService::refresh_single_view_with_type_casts(&**guard, &conn, &safe_table_name);
             }
         }
 
@@ -1091,7 +1182,10 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
             log::error!("导入执行超时: 文件={}, 超时时间={}秒", file_path_for_timeout_log, import_timeout.as_secs());
             "导入执行超时，请检查文件大小或数据库状态".to_string()
         })?
-        .map_err(|e| format!("spawn_blocking 执行失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[import_data_v2] spawn_blocking 执行失败: error={}", e);
+            "后台任务执行失败，请重试".to_string()
+        })?;
 
     log::info!("异步导入任务总耗时: {}ms", overall_start.elapsed().as_millis());
     result
@@ -1101,7 +1195,10 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content)
-        .map_err(|e| format!("写入文件失败: {}", e))
+        .map_err(|e| {
+            log::error!("[write_text_file] 写入文件失败: error={}", e);
+            "文件写入失败，请检查磁盘空间或文件权限".to_string()
+        })
 }
 
 /// 获取文件元数据（大小等）
@@ -1113,6 +1210,9 @@ pub fn get_file_metadata(file_path: String) -> Result<(u64, bool), String> {
     }
     match std::fs::metadata(path) {
         Ok(metadata) => Ok((metadata.len(), true)),
-        Err(e) => Err(format!("获取文件元数据失败: {}", e)),
+        Err(e) => {
+            log::error!("[get_file_metadata] 获取文件元数据失败: error={}", e);
+            Err("获取文件信息失败，请检查文件是否存在".to_string())
+        },
     }
 }

@@ -60,7 +60,10 @@ fn init_system_tables(conn: &MutexGuardConnection<'_>) {
 /// - Ok(Some(id))：当前数据库对应注册表中的某个项目
 /// - Ok(None)：当前数据库不在注册表中（可能是旧数据未迁移）
 fn get_current_project_id_inner(state: &State<'_, TauriAppState>) -> Result<Option<String>, String> {
-    let current_db_path = state.db_path.lock().map_err(|e| e.to_string())?;
+    let current_db_path = state.db_path.lock().map_err(|e| {
+        log::error!("[project] 获取数据库路径锁失败: error={}", e);
+        "数据库状态异常，请重试".to_string()
+    })?;
     let projects = ProjectService::list_projects()?;
     for project in projects {
         let project_db_path = ProjectService::resolve_db_path(&project.db_path)?;
@@ -93,7 +96,10 @@ pub fn create_project(
     project_name: String,
     description: Option<String>,
 ) -> Result<ProjectInfo, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = ProjectService::create(&project_name, description.as_deref());
 
     if let Ok(ref project_info) = result {
@@ -133,7 +139,10 @@ pub fn rename_project(
     let result = ProjectService::rename_project(&project_id, &new_name);
 
     if result.is_ok() {
-        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
             module: "project".to_string(),
             action: "rename".to_string(),
@@ -163,11 +172,17 @@ pub fn delete_project(state: State<'_, TauriAppState>, project_id: String) -> Re
             state.db_manager.close_connection();
             state.db_manager
                 .connect("sqlite", &default_db_path)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    log::error!("[delete_project] 切换到默认项目失败: error={}", e);
+                    "数据库切换失败，请重试".to_string()
+                })?;
 
             // 系统表初始化
             {
-                let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+                let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
                 init_system_tables(&conn);
             }
         }
@@ -179,7 +194,10 @@ pub fn delete_project(state: State<'_, TauriAppState>, project_id: String) -> Re
 
     // 3. 记录审计日志
     if result.is_ok() {
-        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
             module: "project".to_string(),
             action: "delete".to_string(),
@@ -212,7 +230,8 @@ pub fn switch_project(
     let db_path = ProjectService::resolve_db_path(&project_info.db_path)?;
 
     if !db_path.exists() {
-        return Err(format!("项目 '{}' 的数据库文件不存在", project_id));
+        log::warn!("[switch_project] 项目数据库文件不存在: project_id={}, db_path={:?}", project_id, db_path);
+        return Err("项目数据库文件不存在，请检查项目完整性".to_string());
     }
 
     // 3. 先更新 db_path（内部不获取 active_connection 锁）
@@ -224,11 +243,17 @@ pub fn switch_project(
     // 5. 建立新连接（此时 active_connection 不被任何 MutexGuard 持有）
     state.db_manager
         .connect("sqlite", &db_path)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[switch_project] 建立数据库连接失败: error={}", e);
+            "数据库连接失败，请检查文件".to_string()
+        })?;
 
     // 6. 系统表初始化 + 审计日志
     {
-        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
         init_system_tables(&conn);
 
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -292,12 +317,16 @@ pub fn switch_project(
                         let mut success_count = 0;
                         for table_name in &table_names {
                             if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
-                                let quoted_table =
-                                    crate::database::SqlIdentifier::quote_identifier(table_name);
-                                let create_view_sql = format!(
-                                    "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
-                                    quoted_table, quoted_table
-                                );
+                                let create_view_sql = if let Ok(sqlite_conn) = db_manager.get_connection() {
+                                    build_view_sql_with_type_casts(&sqlite_conn, table_name)
+                                } else {
+                                    let quoted_table =
+                                        crate::database::SqlIdentifier::quote_identifier(table_name);
+                                    format!(
+                                        "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                                        quoted_table, quoted_table
+                                    )
+                                };
                                 if conn.execute(&create_view_sql, &[]).is_ok() {
                                     success_count += 1;
                                 }
@@ -318,7 +347,7 @@ pub fn switch_project(
                             
                             let status = crate::models::DuckDbInitStatus {
                                 success: true,
-                                view_count: success_count as i32,
+                                view_count: success_count,
                                 total_tables: table_names.len() as i32,
                                 duration_ms,
                                 trigger: "switch_project".to_string(),
@@ -377,7 +406,10 @@ pub fn duplicate_project(
     source_id: String,
     new_name: String,
 ) -> Result<ProjectInfo, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = ProjectService::duplicate_project(&source_id, &new_name);
 
     if let Ok(ref project_info) = result {
@@ -405,7 +437,10 @@ pub fn import_project(
     source_file_path: String,
     new_name: String,
 ) -> Result<ProjectInfo, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let source_path = Path::new(&source_file_path);
     let result = ProjectService::import_project(source_path, &new_name);
 
@@ -434,7 +469,10 @@ pub fn export_project(
     project_id: String,
     dest_path: String,
 ) -> Result<String, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let dest = Path::new(&dest_path);
     let result = ProjectService::export_project(&project_id, dest)
         .map(|_| format!("项目已导出到: {}", dest_path));
@@ -471,7 +509,10 @@ pub fn get_current_project_id(state: State<'_, TauriAppState>) -> Result<String,
 /// 打开项目（保留原签名，按 db_path 打开）
 #[tauri::command]
 pub fn open_project(state: State<'_, TauriAppState>, db_path: String) -> Result<bool, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let path = PathBuf::from(db_path.clone());
     let result = ProjectService::open(&path);
 
@@ -501,7 +542,8 @@ pub fn open_database_from_path(
     let path = PathBuf::from(db_path.clone());
 
     if !path.exists() {
-        return Err(format!("数据库文件不存在: {}", db_path));
+        log::warn!("[open_database_from_path] 数据库文件不存在: db_path={}", db_path);
+        return Err("数据库文件不存在，请检查文件路径".to_string());
     }
 
     // 1. 更新 db_path（不获取 active_connection 锁）
@@ -513,11 +555,17 @@ pub fn open_database_from_path(
     // 3. 建立新连接
     state.db_manager
         .connect("sqlite", &path)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[open_database_from_path] 建立数据库连接失败: error={}", e);
+            "数据库连接失败，请检查文件".to_string()
+        })?;
 
     // 4. 初始化系统表 + 审计日志
     {
-        let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+        let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
         init_system_tables(&conn);
 
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -537,8 +585,14 @@ pub fn open_database_from_path(
 /// 导出当前数据库
 #[tauri::command]
 pub fn export_database(state: State<'_, TauriAppState>, dest_path: String) -> Result<String, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
-    let source_path = state.db_path.lock().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
+    let source_path = state.db_path.lock().map_err(|e| {
+        log::error!("[project] 获取数据库路径锁失败: error={}", e);
+        "数据库状态异常，请重试".to_string()
+    })?;
     let dest = PathBuf::from(dest_path.clone());
 
     let result = ProjectService::export_database(&source_path, &dest)
@@ -562,7 +616,10 @@ pub fn export_database(state: State<'_, TauriAppState>, dest_path: String) -> Re
 /// 获取当前数据库路径
 #[tauri::command]
 pub fn get_current_db_path(state: State<'_, TauriAppState>) -> Result<String, String> {
-    let path = state.db_path.lock().map_err(|e| e.to_string())?;
+    let path = state.db_path.lock().map_err(|e| {
+        log::error!("[project] 获取数据库路径锁失败: error={}", e);
+        "数据库状态异常，请重试".to_string()
+    })?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -573,24 +630,34 @@ pub fn export_selected_projects(
     selected_project_ids: Vec<String>,
     dest_dir: String,
 ) -> Result<Vec<String>, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[project] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let dest_path = PathBuf::from(&dest_dir);
 
     if !dest_path.exists() {
-        return Err(format!("导出目录不存在: {}", dest_dir));
+        log::error!("[export_selected_projects] 导出目录不存在: dir={}", dest_dir);
+        return Err("导出目录不存在，请检查路径".to_string());
     }
 
     let mut exported_paths = Vec::new();
 
     for project_id in &selected_project_ids {
         let project_info = ProjectService::get_project_info(project_id)
-            .map_err(|e| format!("获取项目 '{}' 信息失败: {}", project_id, e))?;
+            .map_err(|e| {
+                log::error!("[export_selected_projects] 获取项目信息失败: project_id={}, error={}", project_id, e);
+                "项目信息读取失败，请检查项目是否存在".to_string()
+            })?;
 
         let safe_name = sanitize_filename(&project_info.name);
         let export_file = dest_path.join(format!("{}.db", safe_name));
 
         ProjectService::export_project(project_id, &export_file)
-            .map_err(|e| format!("导出项目 '{}' 失败: {}", project_id, e))?;
+            .map_err(|e| {
+                log::error!("[export_selected_projects] 导出项目失败: project_id={}, export_file={:?}, error={}", project_id, export_file, e);
+                "项目导出失败，请检查目标路径权限".to_string()
+            })?;
 
         exported_paths.push(export_file.to_string_lossy().to_string());
     }
@@ -610,4 +677,54 @@ pub fn export_selected_projects(
     let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
 
     Ok(exported_paths)
+}
+
+fn build_view_sql_with_type_casts(
+    sqlite_conn: &crate::database::MutexGuardConnection,
+    table_name: &str,
+) -> String {
+    let columns = match crate::services::DatabaseService::get_columns(sqlite_conn, table_name) {
+        Ok(cols) => cols,
+        Err(e) => {
+            log::warn!("获取表 {} 的列信息失败，回退到 SELECT *: {}", table_name, e);
+            let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+            return format!(
+                "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                quoted_table, quoted_table
+            );
+        }
+    };
+
+    let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+    let select_list = columns
+        .iter()
+        .map(|col| {
+            let quoted_name = crate::database::SqlIdentifier::quote_identifier(&col.name);
+            match duckdb_cast_type(&col.data_type) {
+                Some(cast_type) => format!("CAST({} AS {}) AS {}", quoted_name, cast_type, quoted_name),
+                None => quoted_name.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "CREATE OR REPLACE VIEW {} AS SELECT {} FROM sqlite_db.{}",
+        quoted_table, select_list, quoted_table
+    )
+}
+
+fn duckdb_cast_type(sqlite_type: &str) -> Option<&'static str> {
+    let t = sqlite_type.to_uppercase();
+    match t.as_str() {
+        "INTEGER" | "INT" | "BIGINT" | "SMALLINT" | "TINYINT" | "MEDIUMINT" => Some("BIGINT"),
+        "REAL" | "FLOAT" | "DOUBLE" => Some("DOUBLE"),
+        "NUMERIC" | "DECIMAL" => Some("DECIMAL"),
+        "BOOLEAN" => Some("BOOLEAN"),
+        "DATE" => Some("DATE"),
+        "TIME" => Some("TIME"),
+        "DATETIME" | "TIMESTAMP" => Some("TIMESTAMP"),
+        "TEXT" | "VARCHAR" | "STRING" | "CHAR" | "CLOB" | "" => None,
+        _ => None,
+    }
 }

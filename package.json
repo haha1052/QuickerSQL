@@ -1,7 +1,7 @@
 {
   "name": "quickersql",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,7 +15,10 @@
     "tauri": "tauri",
     "e2e": "npx playwright test --config=e2e/playwright.config.ts",
     "e2e:headed": "npx playwright test --config=e2e/playwright.config.ts --headed",
-    "e2e:report": "npx playwright show-report"
+    "e2e:report": "npx playwright show-report",
+    "coverage:web": "vitest run --coverage",
+    "coverage:rust": "cd src-tauri && cargo tarpaulin --out Html --output-dir ../coverage/rust --workspace",
+    "coverage:rust:help": "echo 需先运行: cargo install cargo-tarpaulin"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
@@ -45,6 +48,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "jsdom": "^29.1.1",
     "monaco-editor": "^0.55.1",
     "typescript": "~5.8.3",

@@ -84,6 +84,8 @@ mod win_borderless {
         ) -> i32;
     }
 
+    // 保留 Windows SDK 原名 MARGINS，便于与 dwmapi.h 文档对照检索
+    #[allow(clippy::upper_case_acronyms)]
     #[repr(C)]
     struct MARGINS {
         cx_left_width: i32,
@@ -150,7 +152,17 @@ mod win_borderless {
         }
 
         fn log(&self, label: &str) {
-            log::info!(
+            self.log_at_level(label, log::Level::Info);
+        }
+
+        /// P2-2: 新增 debug 级别日志方法，供二次应用等场景使用，避免启动时重复 info 日志
+        fn log_debug(&self, label: &str) {
+            self.log_at_level(label, log::Level::Debug);
+        }
+
+        fn log_at_level(&self, label: &str, level: log::Level) {
+            log::log!(
+                level,
                 "[透明窗口-诊断] {}: hwnd={} | DwmExtend={} | DWM_borderColor={} | DWM_thickness={} | DWM_transitions={} | SetWindowTheme={} | ex_style_clear={} | style_clear={} | 成功率={:.1}%",
                 label,
                 if self.hwnd_valid { "✓" } else { "✗" },
@@ -345,11 +357,23 @@ mod win_borderless {
 
     /// 异步重试（最多 3 次，间隔 100ms + i*50ms）。
     /// 解决 DWM 在窗口刚创建时可能尚未就绪，导致第一次调用失败的问题。
+    ///
+    /// P2-2: 新增 `first_call_succeeded` 参数：
+    /// - 首次调用已成功时跳过重试（避免无意义的重试刷屏）
+    /// - 中间重试日志降为 debug 级别
+    /// - 最终结果（成功/失败）保留 info 级别
     pub fn schedule_async_retry(
         hwnd: *mut c_void,
         shutdown_flag: Option<Arc<AtomicBool>>,
+        first_call_succeeded: bool,
     ) {
         if hwnd.is_null() { return; }
+
+        // P2-2: 首次成功后跳过重试日志输出（避免无意义的重试刷屏）
+        if first_call_succeeded {
+            log::debug!("[透明窗口-重试] 首次调用已成功，跳过异步重试");
+            return;
+        }
 
         // *mut c_void 不是 Send —— 转为 usize（整数句柄）后跨线程传递，
         // 在 Windows 上 HWND 跨线程调用 DWM 函数是安全的。
@@ -362,7 +386,7 @@ mod win_borderless {
 
             for i in 0..3 {
                 if shut.load(Ordering::Relaxed) {
-                    log::info!("[透明窗口-重试] 收到 shutdown 信号，停止重试");
+                    log::debug!("[透明窗口-重试] 收到 shutdown 信号，停止重试");
                     break;
                 }
 
@@ -375,7 +399,8 @@ mod win_borderless {
 
                 let diag = unsafe { apply_complete(thread_hwnd) };
                 if diag.dwm_extend_frame_ok {
-                    log::info!(
+                    // P2-2: 中间重试日志降为 debug 级别（最终结果由汇总日志保留 info）
+                    log::debug!(
                         "[透明窗口-重试] 第 {} 次重试成功（DWM 扩展帧生效）",
                         i + 1
                     );
@@ -383,7 +408,8 @@ mod win_borderless {
                     best_diag.retry_count = (i + 1) as u32;
                     break;
                 } else {
-                    log::info!(
+                    // P2-2: 中间重试日志降为 debug 级别（避免刷屏）
+                    log::debug!(
                         "[透明窗口-重试] 第 {} 次重试，DWM 尚未就绪，继续等待...",
                         i + 1
                     );
@@ -392,6 +418,7 @@ mod win_borderless {
                 }
             }
 
+            // P2-2: 最终结果（成功/失败）保留 info 级别
             best_diag.log(&format!("汇总（共重试 {} 次）", best_diag.retry_count));
         });
     }
@@ -402,7 +429,8 @@ mod win_borderless {
             let hwnd = GetForegroundWindow();
             let diag = apply_complete(hwnd);
             diag.log("apply_to_current");
-            schedule_async_retry(hwnd, None);
+            // P2-2: 首次成功后跳过重试日志输出
+            schedule_async_retry(hwnd, None, diag.dwm_extend_frame_ok);
         }
     }
 
@@ -414,7 +442,25 @@ mod win_borderless {
             diag.log("apply_to_hwnd（首次调用）");
             // 缓存诊断信息，供后续 window_resize_to_main 降级决策使用
             update_latest_diagnostics(&diag);
-            schedule_async_retry(hwnd, None);
+            // P2-2: 首次成功后跳过重试日志输出
+            schedule_async_retry(hwnd, None, diag.dwm_extend_frame_ok);
+        }
+    }
+
+    /// P2-2: 对指定的窗口句柄二次应用边框消除（日志降级到 debug，避免启动时重复 info 日志）。
+    /// 用于 WebView 初始化后的二次修复场景（如 webview 初始化后样式位回填）。
+    /// 与 `apply_to_hwnd` 的区别：
+    /// - 诊断日志使用 debug 级别（避免启动时重复 info 日志）
+    /// - 不触发异步重试（首次调用已通过 schedule_async_retry 处理重试，避免重复日志）
+    pub fn apply_to_hwnd_reapply(hwnd: *mut c_void) {
+        unsafe {
+            let diag = apply_complete(hwnd);
+            // P2-2: 二次应用日志降级到 debug，避免启动时重复 info 日志
+            diag.log_debug("apply_to_hwnd（二次应用）");
+            // 缓存诊断信息，供后续 window_resize_to_main 降级决策使用
+            update_latest_diagnostics(&diag);
+            // P2-2: 二次应用不触发异步重试，避免与首次重试线程重复日志
+            // 首次调用已通过 schedule_async_retry 处理重试，二次应用仅需一次性修复
         }
     }
 
@@ -470,6 +516,16 @@ pub fn apply_borderless_to_hwnd(hwnd: *mut std::ffi::c_void) {
 
 #[cfg(not(windows))]
 pub fn apply_borderless_to_hwnd(_hwnd: *mut std::ffi::c_void) {}
+
+/// P2-2: 跨平台 API：对指定 HWND 二次应用 Win32 边框消除（日志降级到 debug，避免重复 info）。
+/// 用于 WebView 初始化后的二次修复场景。非 Windows 平台直接返回空。
+#[cfg(windows)]
+pub fn apply_borderless_to_hwnd_reapply(hwnd: *mut std::ffi::c_void) {
+    win_borderless::apply_to_hwnd_reapply(hwnd);
+}
+
+#[cfg(not(windows))]
+pub fn apply_borderless_to_hwnd_reapply(_hwnd: *mut std::ffi::c_void) {}
 
 /// 跨平台：透明窗口是否生效。
 /// Windows 下基于 win_borderless 的诊断信息；非 Windows 直接返回 true（Tauri 默认透明工作）。

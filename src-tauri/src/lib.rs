@@ -19,8 +19,33 @@ pub use models::database::{DatabaseStatus, SqlStatementResult, BatchExecuteResul
 /// 系统表 ensure 函数签名：接收数据库连接，返回 Result<(), String>
 type EnsureFn = fn(&crate::database::MutexGuardConnection<'_>) -> Result<(), String>;
 
+/// DuckDB 连接的共享句柄类型（外层 Option 表示懒加载，None=尚未初始化）
+type DuckDbConnHandle = Arc<Mutex<Option<Arc<Mutex<Box<dyn database::DatabaseConnection>>>>>>;
+
+/// 包装函数：确保 __projects_registry 表存在（位于独立的 projects.db）
+///
+/// 注意：__projects_registry 表不在主应用 DB 中，而在 <data_dir>/quickersql/projects.db。
+/// ProjectService::ensure_projects_registry_table_exists 的签名是
+/// `fn(&rusqlite::Connection) -> Result<(), String>`，与 EnsureFn 不兼容，
+/// 因此用此包装器调用 ProjectService::ensure_registry() 完成实际创建。
+/// ensure_registry() 内部会打开 projects.db 并建表，幂等可重复调用。
+fn ensure_projects_registry_wrapper(_conn: &crate::database::MutexGuardConnection<'_>) -> Result<(), String> {
+    crate::services::ProjectService::ensure_registry().map(|_| ())
+}
+
+/// 包装函数：占位 __project_info 表（每个项目的 meta.db 中）
+///
+/// 注意：__project_info 表位于每个项目的 meta.db，非主应用 DB。
+/// ProjectService::ensure_project_info_table_exists 的签名是
+/// `fn(&rusqlite::Connection) -> Result<(), String>`，与 EnsureFn 不兼容。
+/// 此表在项目创建/打开时由 ProjectService 自动创建，启动时无需在主 DB 上操作。
+/// 此处仅占位以保持 SYSTEM_TABLE_ENSURE_FNS 数组对 17 张表的完整覆盖。
+fn ensure_project_info_wrapper(_conn: &crate::database::MutexGuardConnection<'_>) -> Result<(), String> {
+    Ok(())
+}
+
 /// 系统表 ensure 函数表：(ensure 函数, 表描述)
-/// 用于在应用启动时统一初始化 SQLite 中的 8 张系统表
+/// 用于在应用启动时统一初始化 17 张系统表（15 张在主应用 DB，2 张在独立 DB）
 const SYSTEM_TABLE_ENSURE_FNS: &[(EnsureFn, &str)] = &[
     (crate::services::AuditLogService::ensure_audit_log_table_exists, "审计日志表"),
     (crate::services::TrashService::ensure_trash_table_exists, "回收站表"),
@@ -31,12 +56,14 @@ const SYSTEM_TABLE_ENSURE_FNS: &[(EnsureFn, &str)] = &[
     (crate::services::AppStateService::ensure_app_state_table_exists, "应用状态表"),
     (crate::services::AppStateService::ensure_workspace_tables_exist, "工作区表"),
     (crate::services::SqlSnippetService::ensure_table_exists, "SQL 片段表"),
+    (ensure_projects_registry_wrapper, "项目注册表（独立 DB）"),
+    (ensure_project_info_wrapper, "项目信息表（独立 DB）"),
 ];
 
 pub struct TauriAppState {
     pub db_manager: SharedDatabaseManager,
     db_path: Mutex<PathBuf>,
-    duckdb_conn: Arc<Mutex<Option<Arc<Mutex<Box<dyn database::DatabaseConnection>>>>>>,
+    duckdb_conn: DuckDbConnHandle,
     pub init_timestamp_ms: i64,
     // v9.3: Rust 初始化各阶段耗时（毫秒，Option<f64>，None = 未记录）
     pub app_init_ms: Mutex<Option<f64>>,          // TauriAppState::new() 总耗时
@@ -667,8 +694,9 @@ pub fn run() {
                     std::thread::sleep(std::time::Duration::from_millis(150));
                     if let Ok(hwnd) = w2.hwnd() {
                         let hwnd_ptr = hwnd.0;
-                        commands::startup::apply_borderless_to_hwnd(hwnd_ptr);
-                        log::info!("[透明窗口] 延迟二次边框消除完成");
+                        // P2-2: 二次应用使用 silent 变体（日志降级到 debug），避免启动时重复 info 日志
+                        commands::startup::apply_borderless_to_hwnd_reapply(hwnd_ptr);
+                        log::debug!("[透明窗口] 延迟二次边框消除完成");
                     }
                 });
             }

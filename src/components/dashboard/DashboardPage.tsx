@@ -143,13 +143,13 @@ export const DashboardPage: React.FC = () => {
 
     // 非编辑模式下点击保存，提示用户
     if (!isEditing) {
-      useToastStore.getState().addToast('请先进入编辑模式再保存', 'warning');
+      useToastStore.getState().addToast({ key: 'dashboard.enter_edit_first' }, 'warning');
       return;
     }
 
     // 编辑模式但无布局变更
     if (Object.keys(tempLayout).length === 0) {
-      useToastStore.getState().addToast('没有未保存的变更', 'info');
+      useToastStore.getState().addToast({ key: 'dashboard.no_unsaved_changes' }, 'info');
       return;
     }
 
@@ -167,13 +167,13 @@ export const DashboardPage: React.FC = () => {
       const result = await saveDashboardLayout(activeDashboard.id, layoutUpdates);
       if (result) {
         setTempLayout({});
-        useToastStore.getState().addToast('保存成功', 'success');
+        useToastStore.getState().addToast({ key: 'dashboard.save_success' }, 'success');
       } else {
-        useToastStore.getState().addToast('保存失败：未知错误', 'error');
+        useToastStore.getState().addToast({ key: 'dashboard.save_failed_unknown' }, 'error');
       }
     } catch (e) {
       console.error('[DashboardPage] 保存失败:', e);
-      useToastStore.getState().addToast(`保存失败：${(e as Error).message}`, 'error');
+      useToastStore.getState().addToast({ key: 'dashboard.save_failed_with_msg', vars: { message: (e as Error).message } }, 'error');
     } finally {
       setIsSaving(false);
     }
@@ -202,14 +202,20 @@ export const DashboardPage: React.FC = () => {
       }
 
       const currentDashboards = useDashboardStore.getState().dashboards;
-      const needsFullLoad = currentDashboards.length > 0 && currentDashboards.every(d => d.layout.length === 0);
+      const currentSavedCharts = useDashboardStore.getState().savedCharts;
+      const needsDashboardsFullLoad = currentDashboards.length > 0 && currentDashboards.every(d => d.layout.length === 0);
+      const needsChartsFullLoad = currentSavedCharts.length > 0 && currentSavedCharts.every(c => !c.sql || c.sql.trim().length === 0);
 
-      if (needsFullLoad || currentDashboards.length === 0) {
+      if (needsDashboardsFullLoad || currentDashboards.length === 0) {
         useDashboardStore.getState().loadDashboards();
+      }
+      if (needsChartsFullLoad || currentSavedCharts.length === 0) {
+        useDashboardStore.getState().loadSavedCharts();
       }
     } else if (dashboards.length === 0 && !loading) {
       hasLoadedRef.current = true;
       useDashboardStore.getState().loadDashboards();
+      useDashboardStore.getState().loadSavedCharts();
     }
   }, [isStartupLoaded, startupData, dashboards.length, loading]);
 
@@ -332,8 +338,8 @@ export const DashboardPage: React.FC = () => {
     return (
       <div style={styles.emptyContainer}>
         <div style={styles.emptyIcon}>⏳</div>
-        <div style={styles.emptyTitle}>加载中...</div>
-        <div style={styles.emptyDesc}>正在读取仪表盘数据</div>
+        <div style={styles.emptyTitle}>{t('dashboard.loading_data')}</div>
+        <div style={styles.emptyDesc}>{t('dashboard.loading_data_desc')}</div>
       </div>
     );
   }
@@ -438,17 +444,17 @@ export const DashboardPage: React.FC = () => {
   // P3-1：导出仪表盘为 PNG
   const handleExportPng = async () => {
     if (isEditing) {
-      useToastStore.getState().addToast('请先退出编辑模式', 'warning');
+      useToastStore.getState().addToast({ key: 'dashboard.exit_edit_first' }, 'warning');
       return;
     }
     if (!activeDashboard) {
-      useToastStore.getState().addToast('没有活动的仪表盘', 'error');
+      useToastStore.getState().addToast({ key: 'dashboard.no_active_dashboard' }, 'error');
       return;
     }
     const canvasEl = document.querySelector('[data-dashboard-canvas="true"]') as HTMLElement | null;
     const result = await exportDashboardToPng(activeDashboard, canvasEl, activeDashboard.name);
     if (result.success) {
-      useToastStore.getState().addToast('导出成功', 'success');
+      useToastStore.getState().addToast({ key: 'dashboard.export_success' }, 'success');
     } else {
       useToastStore.getState().addToast(result.message, 'error');
     }

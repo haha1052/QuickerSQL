@@ -92,7 +92,7 @@ pub struct EChartsLegend {
     pub top: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EChartsAxis {
     #[serde(rename = "type")]
     pub axis_type: Option<String>,
@@ -100,7 +100,7 @@ pub struct EChartsAxis {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EChartsSeries {
     pub name: String,
     #[serde(rename = "type")]
@@ -218,6 +218,107 @@ impl ChartService {
         date_patterns.iter().filter(|&&x| x).count() >= 2
     }
 
+    // ========= ECharts 配置构造辅助（P2-4 重构提取） =========
+
+    /// 在数据列中查找指定列的下标，找不到则返回带 "找不到{label}列: {name}" 的错误
+    fn find_col_idx(columns: &[String], name: &str, label: &str) -> Result<usize, String> {
+        columns
+            .iter()
+            .position(|c| c == name)
+            .ok_or_else(|| format!("找不到{}列: {}", label, name))
+    }
+
+    /// 收集所有 y 轴列在 data.columns 中的下标（找不到的列被跳过，保持顺序）
+    fn find_y_axis_indices(columns: &[String], y_axis_columns: &[String]) -> Vec<usize> {
+        y_axis_columns
+            .iter()
+            .filter_map(|col| columns.iter().position(|c| c == col))
+            .collect()
+    }
+
+    /// 从数据列中提取并解析为 f64 的数值序列
+    fn collect_numeric_series(data: &ChartData, col_idx: usize) -> Vec<f64> {
+        data.rows
+            .iter()
+            .filter_map(|row| {
+                row.get(col_idx).and_then(|v| v.trim().parse::<f64>().ok())
+            })
+            .collect()
+    }
+
+    /// 构造雷达图 indicators：从每行提取指标名，并扫描该行所有数值列求最大值（×1.2 作为 max）
+    fn build_radar_indicators(
+        data: &ChartData,
+        indicator_col_idx: usize,
+        value_indices: &[usize],
+    ) -> Vec<EChartsRadarIndicator> {
+        data.rows
+            .iter()
+            .filter_map(|row| {
+                let name = row.get(indicator_col_idx).cloned()?;
+                let mut max_val = 0.0f64;
+                for &v_idx in value_indices {
+                    if let Some(v) = row.get(v_idx).and_then(|v| v.trim().parse::<f64>().ok()) {
+                        if v > max_val {
+                            max_val = v;
+                        }
+                    }
+                }
+                let max = if max_val > 0.0 { max_val * 1.2 } else { 100.0 };
+                Some(EChartsRadarIndicator { name, max })
+            })
+            .collect()
+    }
+
+    /// 构造 EChartsTitle（统一 left="center"）
+    fn make_title(text: Option<String>) -> EChartsTitle {
+        EChartsTitle {
+            text,
+            left: "center".to_string(),
+        }
+    }
+
+    /// 构造带 shadow axisPointer 的 EChartsTooltip
+    fn make_axis_shadow_tooltip(trigger: &str) -> EChartsTooltip {
+        EChartsTooltip {
+            trigger: trigger.to_string(),
+            axis_pointer: EChartsAxisPointer {
+                pointer_type: "shadow".to_string(),
+            },
+        }
+    }
+
+    /// 构造 EChartsLegend（统一 top="30"）
+    fn make_legend(data: Vec<String>) -> EChartsLegend {
+        EChartsLegend {
+            data,
+            top: "30".to_string(),
+        }
+    }
+
+    /// 仅在启用 dataZoom 且行数 > 20 时构造 dataZoom 配置（含 inside + slider 两个组件）
+    fn build_data_zoom_if_needed(
+        show_datazoom: bool,
+        row_count: usize,
+    ) -> Option<Vec<EChartsDataZoom>> {
+        if show_datazoom && row_count > 20 {
+            Some(vec![
+                EChartsDataZoom {
+                    zoom_type: "inside".to_string(),
+                    start: 0.0,
+                    end: 100.0,
+                },
+                EChartsDataZoom {
+                    zoom_type: "slider".to_string(),
+                    start: 0.0,
+                    end: 100.0,
+                },
+            ])
+        } else {
+            None
+        }
+    }
+
     /// 智能推荐图表类型
     pub fn recommend_chart_type(columns: &[String], rows: &[Vec<String>]) -> Vec<ChartType> {
         if columns.is_empty() || rows.is_empty() {
@@ -282,7 +383,7 @@ impl ChartService {
         }
 
         // 漏斗图：有一个类别列 + 一个数值列
-        if category_columns.len() >= 1 && numeric_columns.len() >= 1 {
+        if !category_columns.is_empty() && !numeric_columns.is_empty() {
             recommendations.push(ChartType::Funnel);
         }
 
@@ -324,14 +425,8 @@ impl ChartService {
         data: &ChartData,
         config: &ChartConfig,
     ) -> Result<EChartsConfig, String> {
-        let x_axis_idx = data.columns.iter()
-            .position(|c| c == &config.x_axis_column)
-            .ok_or_else(|| format!("找不到X轴列: {}", config.x_axis_column))?;
-
-        let y_axis_indices: Vec<usize> = config.y_axis_columns.iter()
-            .filter_map(|col| data.columns.iter().position(|c| c == col))
-            .collect();
-
+        let x_axis_idx = Self::find_col_idx(&data.columns, &config.x_axis_column, "X轴")?;
+        let y_axis_indices = Self::find_y_axis_indices(&data.columns, &config.y_axis_columns);
         if y_axis_indices.is_empty() {
             return Err("找不到Y轴列".to_string());
         }
@@ -340,128 +435,65 @@ impl ChartService {
             .filter_map(|row| row.get(x_axis_idx).cloned())
             .collect();
 
+        let series_type = match config.chart_type {
+            ChartType::Bar => "bar",
+            ChartType::Line => "line",
+            ChartType::Pie => "pie",
+            ChartType::StackedBar => "bar",
+            ChartType::Area => "line",
+            ChartType::Scatter => "scatter",
+            _ => "bar",
+        };
+
         let mut series_list: Vec<EChartsSeries> = Vec::new();
-
         for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
-            let y_axis_idx = y_axis_indices.get(idx).copied();
-
-            if let Some(y_idx) = y_axis_idx {
-                let series_data: Vec<f64> = data.rows.iter()
-                    .filter_map(|row| {
-                        row.get(y_idx)
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
-                    .collect();
-
+            if let Some(y_idx) = y_axis_indices.get(idx).copied() {
+                let series_data = Self::collect_numeric_series(data, y_idx);
                 let mut series = EChartsSeries {
                     name: y_col.clone(),
-                    series_type: match config.chart_type {
-                        ChartType::Bar => "bar",
-                        ChartType::Line => "line",
-                        ChartType::Pie => "pie",
-                        ChartType::StackedBar => "bar",
-                        ChartType::Area => "line",
-                        ChartType::Scatter => "scatter",
-                        _ => "bar",
-                    }.to_string(),
+                    series_type: series_type.to_string(),
                     data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
-                    stack: None,
-                    area_style: None,
-                    radius: None,
-                    y_axis_index: None,
-                    item_style: None,
-                    axis_line: None,
-                    pointer: None,
-                    detail: None,
-                    value: None,
-                    split_line: None,
-                    axis_tick: None,
-                    axis_label: None,
+                    ..Default::default()
                 };
-
                 if config.chart_type == ChartType::StackedBar {
                     series.stack = Some("total".to_string());
                 }
-
                 if config.chart_type == ChartType::Area {
                     series.area_style = Some(serde_json::json!({}));
                 }
-
                 series_list.push(series);
             }
         }
 
-        let echarts_config = EChartsConfig {
-            title: EChartsTitle {
-                text: config.title.clone(),
-                left: "center".to_string(),
-            },
-            tooltip: EChartsTooltip {
-                trigger: if config.chart_type == ChartType::Scatter {
-                    "item".to_string()
-                } else {
-                    "axis".to_string()
-                },
-                axis_pointer: EChartsAxisPointer {
-                    pointer_type: "shadow".to_string(),
-                },
-            },
-            legend: EChartsLegend {
-                data: config.y_axis_columns.clone(),
-                top: "30".to_string(),
-            },
+        let is_scatter = config.chart_type == ChartType::Scatter;
+        Ok(EChartsConfig {
+            title: Self::make_title(config.title.clone()),
+            tooltip: Self::make_axis_shadow_tooltip(if is_scatter { "item" } else { "axis" }),
+            legend: Self::make_legend(config.y_axis_columns.clone()),
             x_axis: vec![EChartsAxis {
-                axis_type: Some(match config.chart_type {
-                    ChartType::Scatter => "value",
-                    _ => "category",
-                }.to_string()),
-                data: if config.chart_type == ChartType::Scatter {
-                    None
-                } else {
-                    Some(x_axis_data)
-                },
+                axis_type: Some(if is_scatter { "value" } else { "category" }.to_string()),
+                data: if is_scatter { None } else { Some(x_axis_data) },
                 name: config.x_axis_name.clone(),
             }],
             y_axis: vec![EChartsAxis {
                 axis_type: Some("value".to_string()),
-                data: None,
                 name: config.y_axis_name.clone(),
+                ..Default::default()
             }],
             series: series_list,
-            data_zoom: if config.show_datazoom && data.rows.len() > 20 {
-                Some(vec![
-                    EChartsDataZoom {
-                        zoom_type: "inside".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                    EChartsDataZoom {
-                        zoom_type: "slider".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                ])
-            } else {
-                None
-            },
+            data_zoom: Self::build_data_zoom_if_needed(config.show_datazoom, data.rows.len()),
             radar: None,
-        };
-
-        Ok(echarts_config)
+        })
     }
 
     fn generate_horizontal_bar_config(
         data: &ChartData,
         config: &ChartConfig,
     ) -> Result<EChartsConfig, String> {
-        let y_axis_idx = data.columns.iter()
-            .position(|c| c == &config.x_axis_column)
-            .ok_or_else(|| format!("找不到Y轴列: {}", config.x_axis_column))?;
-
-        let x_axis_indices: Vec<usize> = config.y_axis_columns.iter()
-            .filter_map(|col| data.columns.iter().position(|c| c == col))
-            .collect();
-
+        // 注意：水平条形图的 "X 轴列" 实际是数值轴（横向），"Y 轴列" 是类别轴（纵向）
+        // 为保持与配置语义一致，沿用原错误信息文案
+        let y_axis_idx = Self::find_col_idx(&data.columns, &config.x_axis_column, "Y轴")?;
+        let x_axis_indices = Self::find_y_axis_indices(&data.columns, &config.y_axis_columns);
         if x_axis_indices.is_empty() {
             return Err("找不到X轴列".to_string());
         }
@@ -471,59 +503,27 @@ impl ChartService {
             .collect();
 
         let mut series_list: Vec<EChartsSeries> = Vec::new();
-
         for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
-            let x_axis_idx_val = x_axis_indices.get(idx).copied();
-
-            if let Some(x_idx) = x_axis_idx_val {
-                let series_data: Vec<f64> = data.rows.iter()
-                    .filter_map(|row| {
-                        row.get(x_idx)
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
-                    .collect();
-
+            if let Some(x_idx) = x_axis_indices.get(idx).copied() {
+                let series_data = Self::collect_numeric_series(data, x_idx);
                 let series = EChartsSeries {
                     name: y_col.clone(),
                     series_type: "bar".to_string(),
                     data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
-                    stack: None,
-                    area_style: None,
-                    radius: None,
-                    y_axis_index: None,
-                    item_style: None,
-                    axis_line: None,
-                    pointer: None,
-                    detail: None,
-                    value: None,
-                    split_line: None,
-                    axis_tick: None,
-                    axis_label: None,
+                    ..Default::default()
                 };
-
                 series_list.push(series);
             }
         }
 
-        let echarts_config = EChartsConfig {
-            title: EChartsTitle {
-                text: config.title.clone(),
-                left: "center".to_string(),
-            },
-            tooltip: EChartsTooltip {
-                trigger: "axis".to_string(),
-                axis_pointer: EChartsAxisPointer {
-                    pointer_type: "shadow".to_string(),
-                },
-            },
-            legend: EChartsLegend {
-                data: config.y_axis_columns.clone(),
-                top: "30".to_string(),
-            },
+        Ok(EChartsConfig {
+            title: Self::make_title(config.title.clone()),
+            tooltip: Self::make_axis_shadow_tooltip("axis"),
+            legend: Self::make_legend(config.y_axis_columns.clone()),
             x_axis: vec![EChartsAxis {
                 axis_type: Some("value".to_string()),
-                data: None,
                 name: config.y_axis_name.clone(),
+                ..Default::default()
             }],
             y_axis: vec![EChartsAxis {
                 axis_type: Some("category".to_string()),
@@ -531,26 +531,9 @@ impl ChartService {
                 name: config.x_axis_name.clone(),
             }],
             series: series_list,
-            data_zoom: if config.show_datazoom && data.rows.len() > 20 {
-                Some(vec![
-                    EChartsDataZoom {
-                        zoom_type: "inside".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                    EChartsDataZoom {
-                        zoom_type: "slider".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                ])
-            } else {
-                None
-            },
+            data_zoom: Self::build_data_zoom_if_needed(config.show_datazoom, data.rows.len()),
             radar: None,
-        };
-
-        Ok(echarts_config)
+        })
     }
 
     fn generate_pie_config(
@@ -642,14 +625,8 @@ impl ChartService {
         data: &ChartData,
         config: &ChartConfig,
     ) -> Result<EChartsConfig, String> {
-        let x_axis_idx = data.columns.iter()
-            .position(|c| c == &config.x_axis_column)
-            .ok_or_else(|| format!("找不到X轴列: {}", config.x_axis_column))?;
-
-        let y_axis_indices: Vec<usize> = config.y_axis_columns.iter()
-            .filter_map(|col| data.columns.iter().position(|c| c == col))
-            .collect();
-
+        let x_axis_idx = Self::find_col_idx(&data.columns, &config.x_axis_column, "X轴")?;
+        let y_axis_indices = Self::find_y_axis_indices(&data.columns, &config.y_axis_columns);
         if y_axis_indices.len() < 2 {
             return Err("双轴图需要至少2个数值列".to_string());
         }
@@ -659,56 +636,25 @@ impl ChartService {
             .collect();
 
         let mut series_list: Vec<EChartsSeries> = Vec::new();
-
         for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
-            let y_axis_idx = y_axis_indices.get(idx).copied();
-
-            if let Some(y_idx) = y_axis_idx {
-                let series_data: Vec<f64> = data.rows.iter()
-                    .filter_map(|row| {
-                        row.get(y_idx)
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
-                    .collect();
-
+            if let Some(y_idx) = y_axis_indices.get(idx).copied() {
+                let series_data = Self::collect_numeric_series(data, y_idx);
                 let is_first = idx == 0;
                 let series = EChartsSeries {
                     name: y_col.clone(),
-                    series_type: if is_first { "bar".to_string() } else { "line".to_string() },
+                    series_type: if is_first { "bar" } else { "line" }.to_string(),
                     data: serde_json::to_value(&series_data).map_err(|e| e.to_string())?,
-                    stack: None,
-                    area_style: None,
-                    radius: None,
                     y_axis_index: Some(if is_first { 0 } else { 1 }),
-                    item_style: None,
-                    axis_line: None,
-                    pointer: None,
-                    detail: None,
-                    value: None,
-                    split_line: None,
-                    axis_tick: None,
-                    axis_label: None,
+                    ..Default::default()
                 };
-
                 series_list.push(series);
             }
         }
 
-        let echarts_config = EChartsConfig {
-            title: EChartsTitle {
-                text: config.title.clone(),
-                left: "center".to_string(),
-            },
-            tooltip: EChartsTooltip {
-                trigger: "axis".to_string(),
-                axis_pointer: EChartsAxisPointer {
-                    pointer_type: "shadow".to_string(),
-                },
-            },
-            legend: EChartsLegend {
-                data: config.y_axis_columns.clone(),
-                top: "30".to_string(),
-            },
+        Ok(EChartsConfig {
+            title: Self::make_title(config.title.clone()),
+            tooltip: Self::make_axis_shadow_tooltip("axis"),
+            legend: Self::make_legend(config.y_axis_columns.clone()),
             x_axis: vec![EChartsAxis {
                 axis_type: Some("category".to_string()),
                 data: Some(x_axis_data),
@@ -717,89 +663,37 @@ impl ChartService {
             y_axis: vec![
                 EChartsAxis {
                     axis_type: Some("value".to_string()),
-                    data: None,
                     name: config.y_axis_columns.first().cloned(),
+                    ..Default::default()
                 },
                 EChartsAxis {
                     axis_type: Some("value".to_string()),
-                    data: None,
                     name: config.y_axis_columns.get(1).cloned(),
+                    ..Default::default()
                 },
             ],
             series: series_list,
-            data_zoom: if config.show_datazoom && data.rows.len() > 20 {
-                Some(vec![
-                    EChartsDataZoom {
-                        zoom_type: "inside".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                    EChartsDataZoom {
-                        zoom_type: "slider".to_string(),
-                        start: 0.0,
-                        end: 100.0,
-                    },
-                ])
-            } else {
-                None
-            },
+            data_zoom: Self::build_data_zoom_if_needed(config.show_datazoom, data.rows.len()),
             radar: None,
-        };
-
-        Ok(echarts_config)
+        })
     }
 
     fn generate_radar_config(
         data: &ChartData,
         config: &ChartConfig,
     ) -> Result<EChartsConfig, String> {
-        let indicator_col_idx = data.columns.iter()
-            .position(|c| c == &config.x_axis_column)
-            .ok_or_else(|| format!("找不到指标名列: {}", config.x_axis_column))?;
-
-        let value_indices: Vec<usize> = config.y_axis_columns.iter()
-            .filter_map(|col| data.columns.iter().position(|c| c == col))
-            .collect();
-
+        let indicator_col_idx = Self::find_col_idx(&data.columns, &config.x_axis_column, "指标名")?;
+        let value_indices = Self::find_y_axis_indices(&data.columns, &config.y_axis_columns);
         if value_indices.is_empty() {
             return Err("找不到数值列".to_string());
         }
 
-        let indicators: Vec<EChartsRadarIndicator> = data.rows.iter()
-            .filter_map(|row| {
-                let name = row.get(indicator_col_idx).cloned()?;
-                let mut max_val = 0.0f64;
-                for &v_idx in &value_indices {
-                    if let Some(v) = row.get(v_idx)
-                        .and_then(|v| v.trim().parse::<f64>().ok())
-                    {
-                        if v > max_val {
-                            max_val = v;
-                        }
-                    }
-                }
-                let max = if max_val > 0.0 {
-                    max_val * 1.2
-                } else {
-                    100.0
-                };
-                Some(EChartsRadarIndicator { name, max })
-            })
-            .collect();
+        let indicators = Self::build_radar_indicators(data, indicator_col_idx, &value_indices);
 
         let mut series_list: Vec<EChartsSeries> = Vec::new();
-
         for (idx, y_col) in config.y_axis_columns.iter().enumerate() {
-            let v_idx = value_indices.get(idx).copied();
-
-            if let Some(col_idx) = v_idx {
-                let series_values: Vec<f64> = data.rows.iter()
-                    .filter_map(|row| {
-                        row.get(col_idx)
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
-                    .collect();
-
+            if let Some(col_idx) = value_indices.get(idx).copied() {
+                let series_values = Self::collect_numeric_series(data, col_idx);
                 let series = EChartsSeries {
                     name: y_col.clone(),
                     series_type: "radar".to_string(),
@@ -807,49 +701,22 @@ impl ChartService {
                         "value": series_values,
                         "name": y_col
                     })]).map_err(|e| e.to_string())?,
-                    stack: None,
-                    area_style: None,
-                    radius: None,
-                    y_axis_index: None,
-                    item_style: None,
-                    axis_line: None,
-                    pointer: None,
-                    detail: None,
-                    value: None,
-                    split_line: None,
-                    axis_tick: None,
-                    axis_label: None,
+                    ..Default::default()
                 };
-
                 series_list.push(series);
             }
         }
 
-        let legend_data: Vec<String> = config.y_axis_columns.clone();
-
-        let echarts_config = EChartsConfig {
-            title: EChartsTitle {
-                text: config.title.clone(),
-                left: "center".to_string(),
-            },
-            tooltip: EChartsTooltip {
-                trigger: "item".to_string(),
-                axis_pointer: EChartsAxisPointer {
-                    pointer_type: "shadow".to_string(),
-                },
-            },
-            legend: EChartsLegend {
-                data: legend_data,
-                top: "30".to_string(),
-            },
+        Ok(EChartsConfig {
+            title: Self::make_title(config.title.clone()),
+            tooltip: Self::make_axis_shadow_tooltip("item"),
+            legend: Self::make_legend(config.y_axis_columns.clone()),
             x_axis: vec![],
             y_axis: vec![],
             series: series_list,
             data_zoom: None,
             radar: Some(EChartsRadar { indicator: indicators }),
-        };
-
-        Ok(echarts_config)
+        })
     }
 
     fn generate_funnel_config(
@@ -929,31 +796,16 @@ impl ChartService {
         Ok(echarts_config)
     }
 
-    fn generate_gauge_config(
-        data: &ChartData,
-        config: &ChartConfig,
-    ) -> Result<EChartsConfig, String> {
-        let value_indices: Vec<usize> = config.y_axis_columns.iter()
-            .filter_map(|col| data.columns.iter().position(|c| c == col))
-            .collect();
-
-        let first_value_idx = value_indices.first().copied()
-            .ok_or_else(|| "找不到数值列".to_string())?;
-
-        let first_value = data.rows.first()
-            .and_then(|row| row.get(first_value_idx))
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .ok_or_else(|| "无法读取仪表盘数值".to_string())?;
-
-        let series = EChartsSeries {
-            name: config.y_axis_columns.first().cloned().unwrap_or_default(),
+    /// 构造仪表盘的 EChartsSeries（含 6 项静态 JSON 样式：axis_line / pointer / detail /
+    /// split_line / axis_tick / axis_label）
+    ///
+    /// 提取自 `generate_gauge_config`（P2-4 重构：原内联块占 55 行，
+    /// 提取后主函数由 95 行降至 ~22 行）。
+    fn build_gauge_series(name: String, value: f64) -> EChartsSeries {
+        EChartsSeries {
+            name,
             series_type: "gauge".to_string(),
             data: serde_json::Value::Array(vec![]),
-            stack: None,
-            area_style: None,
-            radius: None,
-            y_axis_index: None,
-            item_style: None,
             axis_line: Some(serde_json::json!({
                 "lineStyle": {
                     "width": 30,
@@ -965,9 +817,7 @@ impl ChartService {
                 }
             })),
             pointer: Some(serde_json::json!({
-                "itemStyle": {
-                    "color": "auto"
-                }
+                "itemStyle": { "color": "auto" }
             })),
             detail: Some(serde_json::json!({
                 "valueAnimation": true,
@@ -976,53 +826,52 @@ impl ChartService {
                 "fontSize": 30,
                 "offsetCenter": [0, "60%"]
             })),
-            value: Some(first_value),
+            value: Some(value),
             split_line: Some(serde_json::json!({
                 "distance": -30,
                 "length": 8,
-                "lineStyle": {
-                    "color": "#fff",
-                    "width": 2
-                }
+                "lineStyle": { "color": "#fff", "width": 2 }
             })),
             axis_tick: Some(serde_json::json!({
                 "distance": -30,
                 "length": 4,
-                "lineStyle": {
-                    "color": "#fff",
-                    "width": 1
-                }
+                "lineStyle": { "color": "#fff", "width": 1 }
             })),
             axis_label: Some(serde_json::json!({
                 "distance": -20,
                 "color": "#fff",
                 "fontSize": 12
             })),
-        };
+            ..Default::default()
+        }
+    }
 
-        let echarts_config = EChartsConfig {
-            title: EChartsTitle {
-                text: config.title.clone(),
-                left: "center".to_string(),
-            },
-            tooltip: EChartsTooltip {
-                trigger: "item".to_string(),
-                axis_pointer: EChartsAxisPointer {
-                    pointer_type: "shadow".to_string(),
-                },
-            },
-            legend: EChartsLegend {
-                data: vec![],
-                top: "30".to_string(),
-            },
+    fn generate_gauge_config(
+        data: &ChartData,
+        config: &ChartConfig,
+    ) -> Result<EChartsConfig, String> {
+        let value_indices = Self::find_y_axis_indices(&data.columns, &config.y_axis_columns);
+        let first_value_idx = value_indices.first().copied()
+            .ok_or_else(|| "找不到数值列".to_string())?;
+
+        let first_value = data.rows.first()
+            .and_then(|row| row.get(first_value_idx))
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .ok_or_else(|| "无法读取仪表盘数值".to_string())?;
+
+        let series_name = config.y_axis_columns.first().cloned().unwrap_or_default();
+        let series = Self::build_gauge_series(series_name, first_value);
+
+        Ok(EChartsConfig {
+            title: Self::make_title(config.title.clone()),
+            tooltip: Self::make_axis_shadow_tooltip("item"),
+            legend: Self::make_legend(vec![]),
             x_axis: vec![],
             y_axis: vec![],
             series: vec![series],
             data_zoom: None,
             radar: None,
-        };
-
-        Ok(echarts_config)
+        })
     }
 
     /// 快速生成图表配置（智能推荐）

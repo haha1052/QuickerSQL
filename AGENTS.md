@@ -2,7 +2,7 @@
 
 > 优先级：最高。所有代码修改必须在提交前对照本清单自检。
 > 生效范围：主 Agent 与所有通过 `general_purpose_task` 发起的子 Agent。
-> 版本：**v11.0**（2026-06-22，规则体系全面升级：**MCP 工具不再是"可选辅助"，而是默认开发流程的第一环**；核心原则：**先写 spec（Spec-MD）→ 读文件（Filesystem MCP）→ 写代码 → 工具验证（Windows CLI MCP）→ 确认完成**；所有 `.trae/rules/*.md` 文件版本号同步更新为 v11.0）
+> 版本：**v12.0**（2026-07-17，系统表清单同步代码现状：10 张→17 张，与 `architecture.md §三`、`docs/架构现状.md §八` 完全对齐；补登 v11.0 变更记录（TD-4 修复）；上一版 v11.0（2026-06-22）规则体系全面升级：MCP 工具成为默认开发流程第一环，新增 Spec-MD 规格驱动开发流程；所有 `.trae/rules/*.md` 文件版本号同步更新为 v11.0）
 
 ---
 
@@ -75,7 +75,7 @@ Tier-1 标识：不涉及
 
 **规则**：所有系统表**必须以 `__`（双下划线）**开头。
 
-**当前系统表清单**：
+**当前系统表清单**（17 张，与 `architecture.md §三`、`docs/架构现状.md §八` 完全对齐，基于代码实测）：
 
 | 表名 | 用途 | 创建位置 |
 |------|------|---------|
@@ -87,13 +87,21 @@ Tier-1 标识：不涉及
 | `__audit_logs` | 审计日志 | `services/audit_log_service.rs` |
 | `__trash_metadata` | 回收站元数据 | `services/trash_service.rs` |
 | `__automation_tasks` | 自动化任务定义 | `services/task_service.rs` |
-| `__automation_task_runs` | 自动化任务运行记录 | `services/task_service.rs` |
+| `__automation_runs` | 自动化任务运行记录 | `services/task_service.rs` |
+| `__task_dependencies` | 任务依赖关系 | `services/task_service.rs` |
 | `__saved_charts` | 已保存图表配置 | `services/dashboard_service.rs` |
-| `__saved_dashboards` | 仪表盘定义 | `services/dashboard_service.rs` |
+| `__dashboards` | 仪表盘定义 | `services/dashboard_service.rs` |
+| `__dashboard_items` | 仪表盘子项 | `services/dashboard_service.rs` |
+| `__saved_queries` | 已保存查询 | `services/dashboard_service.rs` |
+| `__projects_registry` | 项目注册表（全局） | `services/project_service.rs` |
+| `__project_info` | 项目内部信息（每项目 meta.db） | `services/project_service.rs` |
+| `__sql_snippets` | SQL 片段 | `services/sql_snippet_service.rs` |
 
 **约束**：
-- ✅ 新增系统表必须先更新本表 + `docs/架构现状.md`
+- ✅ 新增系统表必须先更新本表 + `docs/架构现状.md` + `.trae/rules/architecture.md §三`
+- ✅ `SqlIdentifier::is_system_table()` 只认 `__` 前缀和 `sqlite_` 前缀
 - ❌ 禁止 `_xxx`（单下划线）、`xxx`（无前缀）作为系统表名
+- ❌ 禁止在用户表名中使用 `__` 前缀（SqlIdentifier 检测须拦截）
 - 🔄 旧数据库迁移：通过 `services/migration_service.rs` 自动迁移到 `__xxx`
 
 ### 2.3 数据链路规范（基于仪表盘反复出问题的根因总结）
@@ -497,8 +505,10 @@ Step 6 → 用户确认
 | v7.0 | 历史 | 简单规范版（架构分层 + 系统表清单 + 数据链路） |
 | v8.0 | 2026-06-20 | **多角色 SubAgent 调度体系**：第一部分角色定义 + 目录门禁；第三部分 Tier-1 文件锁流程；第四部分安全零容忍速查表；第五部分本地规则覆盖 |
 | v9.0 | 2026-06-21 | **新增 MCP 工具自动选择规则（第七部分）**：filesystem / windows_cli / ollama_custom / github / browser_use 五工具的触发词、优先级、典型工作流；新增独立文档 `.trae/rules/mcp.md` |
-| **v10.0** | **2026-06-21** | **规则体系全面精简为"可验证/可执行规则"**：§1.3 调度语法从 7 行模板简化为 3 项声明；§3 文件锁从"会话锁/释放锁"等不可执行概念简化为"修改前必须完整读取"一条强制规则；§6 合规性报告从主观判断改为"工具验证结果"清单；§4 安全检测命令补充 PowerShell 语法；所有 `.trae/rules/*.md` 文件版本号同步更新为 v10.0，仅本文件保留版本变更记录；新增 `.trae/rules/release.md` 作为发布/依赖管理规范 |
+| v10.0 | 2026-06-21 | **规则体系全面精简为"可验证/可执行规则"**：§1.3 调度语法从 7 行模板简化为 3 项声明；§3 文件锁从"会话锁/释放锁"等不可执行概念简化为"修改前必须完整读取"一条强制规则；§6 合规性报告从主观判断改为"工具验证结果"清单；§4 安全检测命令补充 PowerShell 语法；所有 `.trae/rules/*.md` 文件版本号同步更新为 v10.0，仅本文件保留版本变更记录；新增 `.trae/rules/release.md` 作为发布/依赖管理规范 |
+| v11.0 | 2026-06-27 | 初版。从 security/architecture/coding/file-lock 中提炼核心约束，放在最高优先级文件确保被遵守 |
+| v12.0 | 2026-07-17 | 系统表清单同步代码现状（10/11→17 张）；architecture.md §1.2 新增"上下文层"；test.md §一测试现状重写；security.md / CLAUDE.local.md / mcp.md SQL 注入检测命令修订为两段式（排除 ident.quoted() 合法用法） |
 
 ---
 
-> 说明：从 v10.0 起，所有 `.trae/rules/` 目录下的规则文件与本文件版本号保持一致（当前 v10.0）。各规则文件末尾不再单独保留版本变更记录，统一在此处维护。
+> 说明：从 v10.0 起，所有 `.trae/rules/` 目录下的规则文件与本文件版本号保持一致（当前 v12.0）。各规则文件末尾不再单独保留版本变更记录，统一在此处维护。

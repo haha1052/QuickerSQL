@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use duckdb::Connection as DuckDbConn;
+use super::security::SqlIdentifier;
 use super::traits::*;
 
 pub struct DuckDbDriver;
@@ -108,14 +109,9 @@ impl DatabaseConnection for DuckDbConnection {
                     if let Ok(Some(row)) = result.next() {
                         let mut count = 0;
                         let mut test_row = Vec::new();
-                        loop {
-                            match row.get::<usize, String>(count) {
-                                Ok(v) => {
-                                    test_row.push(v);
-                                    count += 1;
-                                }
-                                Err(_) => break,
-                            }
+                        while let Ok(v) = row.get::<usize, String>(count) {
+                            test_row.push(v);
+                            count += 1;
                         }
                         if count > 0 {
                             rows.push(test_row);
@@ -160,7 +156,7 @@ impl DatabaseConnection for DuckDbConnection {
         }
 
         // 如果标准 query() 失败，回退到 query_arrow()
-        let mut arrow_result = stmt.query_arrow([])
+        let arrow_result = stmt.query_arrow([])
             .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
 
         let schema = arrow_result.get_schema();
@@ -172,7 +168,7 @@ impl DatabaseConnection for DuckDbConnection {
         let mut rows = Vec::new();
 
         // 遍历 Arrow 批处理
-        while let Some(batch) = arrow_result.next() {
+        for batch in arrow_result {
             for row_idx in 0..batch.num_rows() {
                 let mut row_data = Vec::new();
                 for col_idx in 0..col_count {
@@ -215,35 +211,57 @@ impl DatabaseConnection for DuckDbConnection {
     fn close(&self) {
     }
     
-    fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
+    fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
         let conn = self.conn.lock().map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        
-        // DuckDB 批量插入使用 INSERT INTO ... SELECT ... UNION ALL
+
+        // 列名同样需要经 SqlIdentifier 校验后引用，避免列名注入
+        let mut quoted_cols = Vec::with_capacity(columns.len());
+        for col in columns {
+            let col_ident = SqlIdentifier::new(col)
+                .map_err(|e| DatabaseError::Unknown(format!("无效的列名 '{}': {}", col, e)))?;
+            quoted_cols.push(col_ident.quoted());
+        }
+
+        let row_placeholder = format!(
+            "({})",
+            (0..columns.len()).map(|_| "?").collect::<Vec<_>>().join(", ")
+        );
+
+        conn.execute("BEGIN TRANSACTION", [])
+            .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
+
         let mut total_count = 0u64;
-        
         for chunk in rows.chunks(batch_size) {
-            let mut values = Vec::new();
-            
-            for row in chunk {
-                let escaped_row: Vec<String> = row.iter()
-                    .map(|v| format!("'{}'", v.replace('\'', "''")))
-                    .collect();
-                values.push(format!("({})", escaped_row.join(", ")));
-            }
-            
+            // 多行 VALUES (?, ?, ...), (?, ?, ...) 一次性插入，提升吞吐；
+            // 表名/列名均已通过 SqlIdentifier 校验，仅值走 ? 参数化（不再手工转义）
+            let row_placeholders: Vec<&str> = std::iter::repeat_n(row_placeholder.as_str(), chunk.len())
+                .collect();
+            let values_clause = row_placeholders.join(", ");
+
             let insert_sql = format!(
-                "INSERT INTO \"{}\" ({}) VALUES {}",
-                table,
-                columns.join(", "),
-                values.join(", ")
+                "INSERT INTO {} ({}) VALUES {}",
+                table.quoted(),
+                quoted_cols.join(", "),
+                values_clause
             );
-            
-            conn.execute(&insert_sql, [])
-                .map_err(|e| DatabaseError::QueryFailed(e.to_string()))?;
-            
+
+            // 扁平化所有参数（行优先展开）
+            let params: Vec<&dyn duckdb::ToSql> = chunk.iter()
+                .flat_map(|row| row.iter().map(|s| s as &dyn duckdb::ToSql))
+                .collect();
+
+            conn.execute(&insert_sql, duckdb::params_from_iter(params))
+                .map_err(|e| {
+                    let _ = conn.execute("ROLLBACK", []);
+                    DatabaseError::QueryFailed(e.to_string())
+                })?;
+
             total_count += chunk.len() as u64;
         }
-        
+
+        conn.execute("COMMIT", [])
+            .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
+
         Ok(total_count)
     }
 }

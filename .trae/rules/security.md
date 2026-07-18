@@ -3,7 +3,7 @@
 > 优先级：最高（仅次于本地 `CLAUDE.local.md`）
 > 任何涉及数据库操作、用户输入拼接的代码修改，必须先完整阅读本文件。
 > 本文件任何一条被命中即"违规 → 必须回退或重新设计"。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；SQL 注入/敏感字符串检测命令完善，所有检测都可通过 Windows CLI MCP 自动化执行）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；SQL 注入/敏感字符串检测命令完善，所有检测都可通过 Windows CLI MCP 自动化执行）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 

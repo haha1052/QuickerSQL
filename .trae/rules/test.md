@@ -2,19 +2,23 @@
 
 > 优先级：高（与 coding.md 并列）。
 > 适用：所有"新建业务 Service / 数据库层 / 前端 store"场景。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；所有测试命令可通过 Windows CLI MCP 自动化执行，编译验证门禁明确）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；所有测试命令可通过 Windows CLI MCP 自动化执行，编译验证门禁明确）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
 ## 一、项目测试现状（先对齐现状，再定要求）
 
-| 测试类型 | 现状 | 位置 |
-|---------|------|------|
-| Rust 单元测试（数据库层） | 已有 | `src-tauri/src/database/tests.rs` |
-| Rust 集成测试 | 无标准目录（`src-tauri/tests/` 不存在） | 建议 `src-tauri/tests/` |
-| Rust 模块内测试（`# [cfg(test)]`） | 已存在若干处 | `src-tauri/src/database/security.rs`、`router.rs` 等 |
-| 前端单元测试 | 无 | 建议 `src/__tests__/` 或 `src/**/*.test.tsx` |
-| 端到端 / e2e | 无 | 桌面应用 e2e 成本高，暂不强制 |
+> 数据来源：`docs/架构现状.md §7.1 / §7.3`（v21.0，2026-07-05 更新）
+
+| 测试类型 | 现状 | 位置 / 数量 |
+|---------|------|------------|
+| Rust 单元测试（数据库层） | ✅ 已有 | `src-tauri/src/database/tests.rs`（SqlIdentifier、quote_identifier 等） |
+| Rust Service 内联测试 | ✅ 已有 | 各 `*_service.rs` 末尾 `#[cfg(test)] mod tests`（QueryCache 9 用例、TaskService、DashboardService、SqlExecutionService 等） |
+| Rust 单元测试总计 | ✅ **169 passed, 0 failed** | `cargo test --quiet` |
+| 前端 TS 单元测试 | ✅ 已有 | `src/__tests__/`（6 个文件，98 个测试用例，100% 通过） |
+| 前端测试文件清单 | virtual、gridLayout、filterSql、sqlFormatter、sqlStatementParser、echartsNormalize | `src/__tests__/*.test.ts` |
+| E2E 自动化测试 | ✅ Playwright 全面就绪 | `e2e/` 目录 + `playwright.config.ts`（9 个 spec 文件，65 个测试用例） |
+| Rust 集成测试目录 | 保留 `src-tauri/tests/`（可选） | 若以后有集成测试可放这里 |
 
 ---
 

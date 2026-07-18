@@ -145,90 +145,108 @@ impl ProfileService {
         let total_rows = data.rows.len() as f64;
 
         (0..n_cols)
-            .map(|i| {
-                let mut non_null = 0i64;
-                let mut unique: std::collections::HashMap<String, i64> =
-                    std::collections::HashMap::new();
-                let mut numeric_values: Vec<f64> = Vec::new();
-                let declared_type = column_types.get(i).cloned().unwrap_or_default();
-                let declared_is_numeric = matches_type_as_numeric(&declared_type);
-
-                for row in &data.rows {
-                    let v = row.get(i).cloned().unwrap_or_default();
-                    if v.is_empty() {
-                        // SQLite 把 NULL 字符串化后为空串的情况（本项目通用约定）
-                        continue;
-                    }
-                    non_null += 1;
-                    *unique.entry(v.clone()).or_insert(0) += 1;
-                    if declared_is_numeric {
-                        if let Ok(f) = v.parse::<f64>() {
-                            numeric_values.push(f);
-                        }
-                    }
-                }
-
-                let unique_count = unique.len() as i64;
-                let mut top: Vec<ProfileTopValue> = unique
-                    .into_iter()
-                    .map(|(k, c)| ProfileTopValue { value: k, count: c })
-                    .collect();
-                top.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
-                top.truncate(TOP_N);
-
-                let numeric = if declared_is_numeric && !numeric_values.is_empty() {
-                    numeric_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    let min = *numeric_values.first().unwrap_or(&0.0);
-                    let max = *numeric_values.last().unwrap_or(&0.0);
-                    let sum: f64 = numeric_values.iter().sum();
-                    let mean = sum / numeric_values.len() as f64;
-                    let variance: f64 = numeric_values
-                        .iter()
-                        .map(|x| (x - mean).powi(2))
-                        .sum::<f64>()
-                        / numeric_values.len().max(1) as f64;
-                    let std_dev = variance.sqrt();
-                    let median = if numeric_values.is_empty() {
-                        0.0
-                    } else if numeric_values.len() % 2 == 1 {
-                        numeric_values[numeric_values.len() / 2]
-                    } else {
-                        let mid = numeric_values.len() / 2;
-                        (numeric_values[mid - 1] + numeric_values[mid]) / 2.0
-                    };
-                    ProfileNumericStats {
-                        min: Some(min),
-                        max: Some(max),
-                        mean: Some(mean),
-                        std_dev: Some(std_dev),
-                        median: Some(median),
-                    }
-                } else {
-                    ProfileNumericStats::default()
-                };
-
-                ProfileColumnSummary {
-                    column_name: column_names[i].clone(),
-                    data_type: declared_type.clone(),
-                    row_count: total_rows as i64,
-                    non_null_count: non_null,
-                    null_rate: if total_rows > 0.0 {
-                        (total_rows - non_null as f64) / total_rows
-                    } else {
-                        0.0
-                    },
-                    unique_count,
-                    unique_rate: if total_rows > 0.0 {
-                        unique_count as f64 / total_rows
-                    } else {
-                        0.0
-                    },
-                    top_values: top,
-                    is_numeric: declared_is_numeric && !numeric_values.is_empty(),
-                    numeric,
-                }
-            })
+            .map(|i| Self::summarize_single_column(i, column_names, column_types, data, total_rows))
             .collect()
+    }
+
+    /// 对单列做聚合统计：非空计数、唯一值计数、Top-N 值、数值列的统计指标
+    fn summarize_single_column(
+        i: usize,
+        column_names: &[String],
+        column_types: &[String],
+        data: &DbQueryResult,
+        total_rows: f64,
+    ) -> ProfileColumnSummary {
+        let mut non_null = 0i64;
+        let mut unique: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let mut numeric_values: Vec<f64> = Vec::new();
+        let declared_type = column_types.get(i).cloned().unwrap_or_default();
+        let declared_is_numeric = matches_type_as_numeric(&declared_type);
+
+        for row in &data.rows {
+            let v = row.get(i).cloned().unwrap_or_default();
+            if v.is_empty() {
+                // SQLite 把 NULL 字符串化后为空串的情况（本项目通用约定）
+                continue;
+            }
+            non_null += 1;
+            *unique.entry(v.clone()).or_insert(0) += 1;
+            if declared_is_numeric {
+                if let Ok(f) = v.parse::<f64>() {
+                    numeric_values.push(f);
+                }
+            }
+        }
+
+        let unique_count = unique.len() as i64;
+        let mut top: Vec<ProfileTopValue> = unique
+            .into_iter()
+            .map(|(k, c)| ProfileTopValue { value: k, count: c })
+            .collect();
+        top.sort_by(|a, b| b.count.cmp(&a.count).then(a.value.cmp(&b.value)));
+        top.truncate(TOP_N);
+
+        // 注意：numeric_values 会在 compute_numeric_stats 内被消费，
+        // 因此 is_numeric 必须先于 numeric 的计算确定下来
+        let is_numeric = declared_is_numeric && !numeric_values.is_empty();
+        let numeric = if is_numeric {
+            Self::compute_numeric_stats(numeric_values)
+        } else {
+            ProfileNumericStats::default()
+        };
+
+        ProfileColumnSummary {
+            column_name: column_names[i].clone(),
+            data_type: declared_type.clone(),
+            row_count: total_rows as i64,
+            non_null_count: non_null,
+            null_rate: if total_rows > 0.0 {
+                (total_rows - non_null as f64) / total_rows
+            } else {
+                0.0
+            },
+            unique_count,
+            unique_rate: if total_rows > 0.0 {
+                unique_count as f64 / total_rows
+            } else {
+                0.0
+            },
+            top_values: top,
+            is_numeric,
+            numeric,
+        }
+    }
+
+    /// 计算数值列的统计指标：min/max/mean/std_dev/median
+    /// 输入要求：numeric_values 非空；函数内会排序并原地修改
+    fn compute_numeric_stats(mut numeric_values: Vec<f64>) -> ProfileNumericStats {
+        numeric_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let min = *numeric_values.first().unwrap_or(&0.0);
+        let max = *numeric_values.last().unwrap_or(&0.0);
+        let sum: f64 = numeric_values.iter().sum();
+        let mean = sum / numeric_values.len() as f64;
+        let variance: f64 = numeric_values
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
+            / numeric_values.len().max(1) as f64;
+        let std_dev = variance.sqrt();
+        let median = if numeric_values.is_empty() {
+            0.0
+        } else if numeric_values.len() % 2 == 1 {
+            numeric_values[numeric_values.len() / 2]
+        } else {
+            let mid = numeric_values.len() / 2;
+            (numeric_values[mid - 1] + numeric_values[mid]) / 2.0
+        };
+        ProfileNumericStats {
+            min: Some(min),
+            max: Some(max),
+            mean: Some(mean),
+            std_dev: Some(std_dev),
+            median: Some(median),
+        }
     }
 
     // ========= 内部：辅助函数 =========

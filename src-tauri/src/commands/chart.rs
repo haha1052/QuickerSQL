@@ -123,14 +123,23 @@ pub fn save_chart_image(request: SaveImageRequest) -> Result<(), String> {
     // 解码 base64（使用 Engine API，替代 deprecated `base64::decode`）
     use base64::Engine as _;
     let binary_data = base64::engine::general_purpose::STANDARD.decode(base64_content)
-        .map_err(|e| format!("解码 base64 失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[save_chart_image] 解码 base64 失败: error={}", e);
+            "图片数据解析失败，请重新生成图表".to_string()
+        })?;
     
     // 写入文件
     let mut file = File::create(&request.file_path)
-        .map_err(|e| format!("创建文件失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[save_chart_image] 创建文件失败: error={}", e);
+            "文件创建失败，请检查路径权限".to_string()
+        })?;
     
     file.write_all(&binary_data)
-        .map_err(|e| format!("写入文件失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[save_chart_image] 写入文件失败: error={}", e);
+            "文件写入失败，请检查磁盘空间或文件权限".to_string()
+        })?;
     
     log::info!("图片已保存到: {}", request.file_path);
     Ok(())

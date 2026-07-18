@@ -2,7 +2,7 @@
 
 > 优先级：高。代码修改任务须阅读本文件 + [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 了解整体规则。
 > 生效范围：所有 Trae Agent（主 Agent 与所有子 Agent）。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步版本号；新增"规格驱动开发"流程，MCP 工具验证内化为默认开发流程一环）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步版本号；系统表清单对齐代码现状（17 张），前端架构新增上下文层）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 
@@ -48,6 +48,7 @@ types/（类型定义，禁止逻辑）
 | **通信层** | `src/services/tauri.ts` | 封装 `invoke()` 为统一 `invokeCommand`，返回 `ApiResponse<T>` | ❌ 禁止业务逻辑；❌ 禁止暴露原始 invoke 给组件 |
 | **类型层** | `src/types/*.ts` | 前后端共享类型定义 | ❌ 禁止运行时代码 |
 | **工具层** | `src/utils/` | 纯函数工具（gridLayout、echartsNormalize 等） | ❌ 禁止 IPC / 副作用 |
+| **上下文层** | `src/context/*/`、`src/styles/`、`src/pages/` | React Context（Settings/Theme/Locale 等）、全局样式、页面级组件 | ❌ 禁止在 context 内直接 invoke()；❌ 禁止在 styles 内放业务逻辑 |
 
 ### 1.3 跨层调用验证表（任何修改后自检）
 
@@ -123,9 +124,15 @@ types/（类型定义，禁止逻辑）
 | `__audit_logs` | 审计日志 | `services/audit_log_service.rs` |
 | `__trash_metadata` | 回收站元数据 | `services/trash_service.rs` |
 | `__automation_tasks` | 自动化任务定义 | `services/task_service.rs` |
-| `__automation_task_runs` | 自动化任务运行记录 | `services/task_service.rs` |
+| `__automation_runs` | 自动化任务运行记录 | `services/task_service.rs` |
+| `__task_dependencies` | 任务依赖关系 | `services/task_service.rs` |
+| `__saved_queries` | 已保存查询 | `services/dashboard_service.rs` |
 | `__saved_charts` | 已保存图表配置 | `services/dashboard_service.rs` |
-| `__saved_dashboards` | 仪表盘定义 | `services/dashboard_service.rs` |
+| `__dashboards` | 仪表盘定义 | `services/dashboard_service.rs` |
+| `__dashboard_items` | 仪表盘条目 | `services/dashboard_service.rs` |
+| `__projects_registry` | 项目注册表 | `services/project_service.rs` |
+| `__project_info` | 项目元数据 | `services/project_service.rs` |
+| `__sql_snippets` | SQL 代码片段 | `services/sql_snippet_service.rs` |
 
 **约束强化：**
 - ✅ 所有系统表必须以 `__`（双下划线）开头

@@ -23,7 +23,10 @@ pub fn get_app_state_cmd(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[app_state] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AppStateService::get_app_state(&conn, &category, &key)
 }
 
@@ -36,7 +39,10 @@ pub fn get_app_states_by_category_cmd(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[app_state] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AppStateService::get_app_states_by_category(&conn, &category)
 }
 
@@ -52,7 +58,10 @@ pub fn update_app_state_cmd(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[app_state] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = AppStateService::update_app_state(&conn, &category, &key, &value, description.as_deref());
 
     if result.is_ok() {
@@ -78,7 +87,10 @@ pub fn save_workspace_cmd(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[app_state] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AppStateService::save_workspace(&conn, &tabs)?;
 
     let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -104,7 +116,10 @@ pub fn load_workspace_cmd(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[app_state] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AppStateService::load_workspace(&conn)
 }
 
@@ -113,12 +128,18 @@ pub fn load_workspace_cmd(
 pub fn restart_app() -> Result<(), String> {
     // 获取当前可执行文件的路径
     let current_exe = std::env::current_exe()
-        .map_err(|e| format!("获取可执行文件路径失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[restart_app] 获取可执行文件路径失败: error={}", e);
+            "应用重启失败，请手动重启".to_string()
+        })?;
 
     // 启动新的实例
     std::process::Command::new(current_exe)
         .spawn()
-        .map_err(|e| format!("启动新实例失败: {}", e))?;
+        .map_err(|e| {
+            log::error!("[restart_app] 启动新实例失败: error={}", e);
+            "应用重启失败，请手动重启".to_string()
+        })?;
 
     // 退出当前实例
     // 使用 std::process::exit 会立即终止，spawn 可能在后台还未完成

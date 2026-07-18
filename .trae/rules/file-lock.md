@@ -3,7 +3,7 @@
 > 优先级：高。
 > 适用：多任务并行开发、子 Agent 协同场景。
 > 目标：避免两个 Agent 同时修改 `lib.rs`、`tauri.conf.json` 等核心文件导致的 merge 冲突 / 覆盖。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；明确 Tier-1 文件修改前必须用 Filesystem MCP 完整读取，避免并发冲突）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；明确 Tier-1 文件修改前必须用 Filesystem MCP 完整读取，避免并发冲突）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 

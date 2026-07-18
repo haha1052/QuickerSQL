@@ -5,7 +5,7 @@
 //! 关键改进：长 SQL 任务执行时通过独立临时连接运行用户 SQL，
 //! 避免长期持有主连接锁阻塞前端短命令。
 
-use crate::database::traits::{MutexGuardConnection, ToSql};
+use crate::database::traits::{DatabaseConnection, MutexGuardConnection, QueryResult, ToSql};
 use crate::database::SharedDatabaseManager;
 use crate::models::automation::*;
 use crate::utils::schedule::compute_next_run;
@@ -14,6 +14,53 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 /// 自动化任务服务
 pub struct TaskService;
+
+/// 抽象 SQL 语句执行器：让 MutexGuardConnection 与 Box<dyn DatabaseConnection>
+/// 共用同一套执行逻辑，避免在 dispatch_sql_task 中重复 if/else 分支。
+///
+/// 设计动机：MutexGuardConnection 不暴露内部 &dyn DatabaseConnection（且不可修改
+/// traits.rs），因此无法直接复用 DatabaseConnection trait；通过本 trait 在本文件内
+/// 完成多态分派，保持 dispatch_sql_task 主体简短。
+trait StatementRunner {
+    /// 执行 SELECT/SHOW/EXPLAIN/PRAGMA/WITH 类查询，返回 QueryResult
+    fn run_query(&self, sql: &str) -> std::result::Result<QueryResult, String>;
+    /// 执行 INSERT/UPDATE/DELETE 类语句，返回受影响行数
+    fn run_execute(&self, sql: &str) -> std::result::Result<u64, String>;
+}
+
+impl StatementRunner for MutexGuardConnection<'_> {
+    fn run_query(&self, sql: &str) -> std::result::Result<QueryResult, String> {
+        self.query(sql, &[]).map_err(|e| e.to_string())
+    }
+    fn run_execute(&self, sql: &str) -> std::result::Result<u64, String> {
+        self.execute(sql, &[]).map_err(|e| e.to_string())
+    }
+}
+
+impl StatementRunner for Box<dyn DatabaseConnection> {
+    fn run_query(&self, sql: &str) -> std::result::Result<QueryResult, String> {
+        // 通过 Box 的 Deref 把 &Box<dyn DatabaseConnection> 还原为 &dyn DatabaseConnection
+        self.query(sql, &[]).map_err(|e| e.to_string())
+    }
+    fn run_execute(&self, sql: &str) -> std::result::Result<u64, String> {
+        self.execute(sql, &[]).map_err(|e| e.to_string())
+    }
+}
+
+/// 任务执行上下文：`handle_execute_success` / `handle_execute_failure` 共享的执行上下文
+///
+/// 持有主连接、任务定义、运行 ID、触发类型与时间信息等共享状态，避免在两个
+/// handler 函数之间重复传递 8 个相同参数。仅在本文件内部使用，不跨模块、不序列化。
+struct TaskExecContext<'a> {
+    primary_conn: &'a MutexGuardConnection<'a>,
+    task: &'a Task,
+    run_id: &'a str,
+    task_id: &'a str,
+    trigger_type: &'a str,
+    start_unix: i64,
+    now: i64,
+    duration_ms: i64,
+}
 
 impl TaskService {
     // ============================================================
@@ -170,13 +217,13 @@ impl TaskService {
             .ok()
             .flatten()
             .and_then(|s| s.value.parse::<i64>().ok())
-            .filter(|&v| v >= 0 && v <= 10)
+            .filter(|&v| (0..=10).contains(&v))
             .unwrap_or(0);
         let default_timeout_secs: i64 = crate::services::SettingsService::get_setting(conn, "automation", "defaultTimeoutSecs")
             .ok()
             .flatten()
             .and_then(|s| s.value.parse::<i64>().ok())
-            .filter(|&v| v >= 1 && v <= 86400)
+            .filter(|&v| (1..=86400).contains(&v))
             .unwrap_or(300);
 
         let retry_on_fail = req.retry_on_fail.unwrap_or(default_retry_on_fail);
@@ -202,17 +249,18 @@ impl TaskService {
             next_run_at_sql
         );
 
-        let mut params: Vec<String> = Vec::new();
-        params.push(id.clone());
-        params.push(req.name.clone());
-        params.push(description.clone());
-        params.push(req.task_type.clone());
-        params.push(req.payload.clone());
-        params.push(req.schedule_mode.clone());
-        params.push(req.schedule_value.clone());
-        params.push("local".to_string());
-        params.push(state.clone());
-        params.push(String::new());
+        let mut params: Vec<String> = vec![
+            id.clone(),
+            req.name.clone(),
+            description.clone(),
+            req.task_type.clone(),
+            req.payload.clone(),
+            req.schedule_mode.clone(),
+            req.schedule_value.clone(),
+            "local".to_string(),
+            state.clone(),
+            String::new(),
+        ];
         if let Some(v) = next_run_at {
             params.push(v.to_string());
         }
@@ -371,7 +419,7 @@ impl TaskService {
         if recompute_next {
             let task = Self::get_task(conn, id)?;
             let state_val = new_state.as_deref().unwrap_or(&task.state);
-            let next_at = match state_val.as_ref() as &str {
+            let next_at = match state_val {
                 "enabled" => compute_next_run(now, &task.schedule_mode, &task.schedule_value),
                 _ => None,
             };
@@ -529,157 +577,24 @@ impl TaskService {
         let duration_ms = (now - start_unix).max(0) * 1000;
 
         // 4. 无论成功失败：都把 run 记录 + 任务状态 + next_run_at 写回
+        // 构造执行上下文：将共享状态集中传递，避免 too_many_arguments
+        let ctx = TaskExecContext {
+            primary_conn,
+            task: &task,
+            run_id: &run_id,
+            task_id: id,
+            trigger_type,
+            start_unix,
+            now,
+            duration_ms,
+        };
         let final_run = match &exec_result {
-            Ok((affected_rows, output_opt)) => {
-                // 成功：更新 runs + tasks
-                let output_str = output_opt.clone().unwrap_or_default();
-                // affected_rows 可能为 None（NULL）或 Some(i64)
-                let affected_sql = match affected_rows {
-                    Some(_) => "?",
-                    None => "NULL",
-                };
-                let update_run_sql = format!(
-                    "UPDATE __automation_runs SET status='success', finished_at=?, duration_ms=?, affected_rows={}, output=? WHERE id=?;",
-                    affected_sql
-                );
-                let mut params: Vec<String> = Vec::new();
-                params.push(now.to_string());
-                params.push(duration_ms.to_string());
-                if let Some(v) = affected_rows {
-                    params.push(v.to_string());
-                }
-                params.push(output_str.clone());
-                params.push(run_id.clone());
-                let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
-                if let Err(e) = primary_conn.execute(&update_run_sql, &param_refs) {
-                    log::warn!("更新 run success 失败: {}", e);
-                }
-
-                let next_at = if task.state == "enabled" {
-                    let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
-                    if !deps.is_empty() {
-                        Self::compute_next_run_from_deps(now, &deps)
-                    } else {
-                        compute_next_run(now, &task.schedule_mode, &task.schedule_value)
-                    }
-                } else {
-                    None
-                };
-
-                // next_run_at 可能为 None（NULL）或 Some(i64)
-                let next_at_sql = match next_at {
-                    Some(_) => "?",
-                    None => "NULL",
-                };
-                let update_task_sql = format!(
-                    "UPDATE __automation_tasks SET last_run_at=?, last_run_status='success', last_run_duration_ms=?, total_runs=total_runs+1, success_runs=success_runs+1, next_run_at={}, updated_at=? WHERE id=?;",
-                    next_at_sql
-                );
-                let mut params2: Vec<String> = Vec::new();
-                params2.push(now.to_string());
-                params2.push(duration_ms.to_string());
-                if let Some(v) = next_at {
-                    params2.push(v.to_string());
-                }
-                params2.push(now.to_string());
-                params2.push(id.to_string());
-                let param_refs2: Vec<&dyn ToSql> = params2.iter().map(|p| p as &dyn ToSql).collect();
-                if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs2) {
-                    log::warn!("更新 task 成功状态失败: {}", e);
-                }
-
-                TaskRun {
-                    id: run_id.clone(),
-                    task_id: id.to_string(),
-                    status: "success".to_string(),
-                    started_at: start_unix,
-                    finished_at: Some(now),
-                    duration_ms: Some(duration_ms),
-                    affected_rows: *affected_rows,
-                    output: if output_opt.as_ref().map(|s| s.is_empty()).unwrap_or(true) { None } else { output_opt.clone() },
-                    retry_count: 0,
-                    trigger_type: trigger_type.to_string(),
-                    created_at: start_unix,
-                }
-            }
-            Err(user_msg) => {
-                // 失败：更新 run 为 failed + output=用户消息；同时更新 tasks 的 next_run_at
-                let update_run_sql = "UPDATE __automation_runs SET status='failed', finished_at=?, duration_ms=?, output=? WHERE id=?;";
-                let params: [&dyn ToSql; 4] = [
-                    &now.to_string(),
-                    &duration_ms.to_string(),
-                    &user_msg.as_str(),
-                    &run_id.as_str(),
-                ];
-                if let Err(e) = primary_conn.execute(update_run_sql, &params) {
-                    log::warn!("更新 run failed 失败: {}", e);
-                }
-
-                // 失败策略：若还有重试额度，则 next_run_at = now + retry_interval_secs
-                let exceeded_retry_limit = task.failed_runs >= task.retry_on_fail.max(0);
-
-                if exceeded_retry_limit && task.retry_on_fail > 0 {
-                    let update_task_sql = "UPDATE __automation_tasks SET state='disabled', last_run_at=?, last_run_status='failed', last_run_duration_ms=?, total_runs=total_runs+1, failed_runs=failed_runs+1, updated_at=? WHERE id=?;";
-                    let params: [&dyn ToSql; 4] = [
-                        &now.to_string(),
-                        &duration_ms.to_string(),
-                        &now.to_string(),
-                        &id,
-                    ];
-                    if let Err(e) = primary_conn.execute(update_task_sql, &params) {
-                        log::warn!("更新 task disabled 失败: {}", e);
-                    }
-                } else {
-                    let next_at = if task.state == "enabled" && task.retry_on_fail > 0 {
-                        // 允许重试
-                        Some(now + task.retry_interval_secs.max(10))
-                    } else if task.state == "enabled" {
-                        // 不重试，按依赖或原调度继续
-                        let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
-                        if !deps.is_empty() {
-                            Self::compute_next_run_from_deps(now, &deps)
-                        } else {
-                            compute_next_run(now, &task.schedule_mode, &task.schedule_value)
-                        }
-                    } else {
-                        None
-                    };
-                    let next_at_sql = match next_at {
-                        Some(_) => "?",
-                        None => "NULL",
-                    };
-                    let update_task_sql = format!(
-                        "UPDATE __automation_tasks SET last_run_at=?, last_run_status='failed', last_run_duration_ms=?, total_runs=total_runs+1, failed_runs=failed_runs+1, next_run_at={}, updated_at=? WHERE id=?;",
-                        next_at_sql
-                    );
-                    let mut params: Vec<String> = Vec::new();
-                    params.push(now.to_string());
-                    params.push(duration_ms.to_string());
-                    if let Some(v) = next_at {
-                        params.push(v.to_string());
-                    }
-                    params.push(now.to_string());
-                    params.push(id.to_string());
-                    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
-                    if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs) {
-                        log::warn!("更新 task failed 失败: {}", e);
-                    }
-                }
-
-                TaskRun {
-                    id: run_id.clone(),
-                    task_id: id.to_string(),
-                    status: "failed".to_string(),
-                    started_at: start_unix,
-                    finished_at: Some(now),
-                    duration_ms: Some(duration_ms),
-                    affected_rows: None,
-                    output: Some(user_msg.clone()),
-                    retry_count: 0,
-                    trigger_type: trigger_type.to_string(),
-                    created_at: start_unix,
-                }
-            }
+            Ok((affected_rows, output_opt)) => Self::handle_execute_success(
+                &ctx,
+                *affected_rows,
+                output_opt,
+            ),
+            Err(user_msg) => Self::handle_execute_failure(&ctx, user_msg),
         };
 
         // 5. 任务完成后触发下游任务（仅触发一层，后续由调度器自然处理）
@@ -696,7 +611,204 @@ impl TaskService {
         }
     }
 
-    /// 根据 task_type 分派执行，返回 (affected_rows, output_msg)
+    /// 处理任务执行成功：更新 run 记录为 success、更新 task 状态/next_run_at，并构造返回的 TaskRun。
+    ///
+    /// 行为与原 `execute_inner` 的 Ok 分支完全一致，仅做结构提取。
+    fn handle_execute_success(
+        ctx: &TaskExecContext<'_>,
+        affected_rows: Option<i64>,
+        output_opt: &Option<String>,
+    ) -> TaskRun {
+        let primary_conn = ctx.primary_conn;
+        let task = ctx.task;
+        let run_id = ctx.run_id;
+        let task_id = ctx.task_id;
+        let trigger_type = ctx.trigger_type;
+        let start_unix = ctx.start_unix;
+        let now = ctx.now;
+        let duration_ms = ctx.duration_ms;
+
+        // 成功：更新 runs + tasks
+        let output_str = output_opt.clone().unwrap_or_default();
+        // affected_rows 可能为 None（NULL）或 Some(i64)
+        let affected_sql = match affected_rows {
+            Some(_) => "?",
+            None => "NULL",
+        };
+        let update_run_sql = format!(
+            "UPDATE __automation_runs SET status='success', finished_at=?, duration_ms=?, affected_rows={}, output=? WHERE id=?;",
+            affected_sql
+        );
+        let mut params: Vec<String> = Vec::new();
+        params.push(now.to_string());
+        params.push(duration_ms.to_string());
+        if let Some(v) = affected_rows {
+            params.push(v.to_string());
+        }
+        params.push(output_str.clone());
+        params.push(run_id.to_string());
+        let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
+        if let Err(e) = primary_conn.execute(&update_run_sql, &param_refs) {
+            log::warn!("更新 run success 失败: {}", e);
+        }
+
+        let next_at = if task.state == "enabled" {
+            let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
+            if !deps.is_empty() {
+                Self::compute_next_run_from_deps(now, &deps)
+            } else {
+                compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+            }
+        } else {
+            None
+        };
+
+        // next_run_at 可能为 None（NULL）或 Some(i64)
+        let next_at_sql = match next_at {
+            Some(_) => "?",
+            None => "NULL",
+        };
+        let update_task_sql = format!(
+            "UPDATE __automation_tasks SET last_run_at=?, last_run_status='success', last_run_duration_ms=?, total_runs=total_runs+1, success_runs=success_runs+1, next_run_at={}, updated_at=? WHERE id=?;",
+            next_at_sql
+        );
+        let mut params2: Vec<String> = Vec::new();
+        params2.push(now.to_string());
+        params2.push(duration_ms.to_string());
+        if let Some(v) = next_at {
+            params2.push(v.to_string());
+        }
+        params2.push(now.to_string());
+        params2.push(task_id.to_string());
+        let param_refs2: Vec<&dyn ToSql> = params2.iter().map(|p| p as &dyn ToSql).collect();
+        if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs2) {
+            log::warn!("更新 task 成功状态失败: {}", e);
+        }
+
+        TaskRun {
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            status: "success".to_string(),
+            started_at: start_unix,
+            finished_at: Some(now),
+            duration_ms: Some(duration_ms),
+            affected_rows,
+            output: if output_opt.as_ref().map(|s| s.is_empty()).unwrap_or(true) { None } else { output_opt.clone() },
+            retry_count: 0,
+            trigger_type: trigger_type.to_string(),
+            created_at: start_unix,
+        }
+    }
+
+    /// 处理任务执行失败：更新 run 记录为 failed、应用重试策略，并构造返回的 TaskRun。
+    ///
+    /// 行为与原 `execute_inner` 的 Err 分支完全一致，仅做结构提取。
+    fn handle_execute_failure(
+        ctx: &TaskExecContext<'_>,
+        user_msg: &str,
+    ) -> TaskRun {
+        let primary_conn = ctx.primary_conn;
+        let task = ctx.task;
+        let run_id = ctx.run_id;
+        let task_id = ctx.task_id;
+        let trigger_type = ctx.trigger_type;
+        let start_unix = ctx.start_unix;
+        let now = ctx.now;
+        let duration_ms = ctx.duration_ms;
+
+        // 失败：更新 run 为 failed + output=用户消息
+        let update_run_sql = "UPDATE __automation_runs SET status='failed', finished_at=?, duration_ms=?, output=? WHERE id=?;";
+        let params: [&dyn ToSql; 4] = [
+            &now.to_string(),
+            &duration_ms.to_string(),
+            &user_msg,
+            &run_id,
+        ];
+        if let Err(e) = primary_conn.execute(update_run_sql, &params) {
+            log::warn!("更新 run failed 失败: {}", e);
+        }
+
+        // 失败策略：若还有重试额度，则 next_run_at = now + retry_interval_secs
+        Self::apply_task_failure_update(primary_conn, task, task_id, now, duration_ms);
+
+        TaskRun {
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            status: "failed".to_string(),
+            started_at: start_unix,
+            finished_at: Some(now),
+            duration_ms: Some(duration_ms),
+            affected_rows: None,
+            output: Some(user_msg.to_string()),
+            retry_count: 0,
+            trigger_type: trigger_type.to_string(),
+            created_at: start_unix,
+        }
+    }
+
+    /// 任务失败后更新 task 状态：决定是 disable（重试上限达到）还是按重试/调度策略更新 next_run_at。
+    ///
+    /// 行为与原 `execute_inner` 的 Err 分支中的重试策略部分完全一致。
+    fn apply_task_failure_update(
+        primary_conn: &MutexGuardConnection<'_>,
+        task: &Task,
+        task_id: &str,
+        now: i64,
+        duration_ms: i64,
+    ) {
+        let exceeded_retry_limit = task.failed_runs >= task.retry_on_fail.max(0);
+
+        if exceeded_retry_limit && task.retry_on_fail > 0 {
+            let update_task_sql = "UPDATE __automation_tasks SET state='disabled', last_run_at=?, last_run_status='failed', last_run_duration_ms=?, total_runs=total_runs+1, failed_runs=failed_runs+1, updated_at=? WHERE id=?;";
+            let params: [&dyn ToSql; 4] = [
+                &now.to_string(),
+                &duration_ms.to_string(),
+                &now.to_string(),
+                &task_id,
+            ];
+            if let Err(e) = primary_conn.execute(update_task_sql, &params) {
+                log::warn!("更新 task disabled 失败: {}", e);
+            }
+        } else {
+            let next_at = if task.state == "enabled" && task.retry_on_fail > 0 {
+                // 允许重试
+                Some(now + task.retry_interval_secs.max(10))
+            } else if task.state == "enabled" {
+                // 不重试，按依赖或原调度继续
+                let deps = Self::list_dependencies(primary_conn, &task.id).unwrap_or_default();
+                if !deps.is_empty() {
+                    Self::compute_next_run_from_deps(now, &deps)
+                } else {
+                    compute_next_run(now, &task.schedule_mode, &task.schedule_value)
+                }
+            } else {
+                None
+            };
+            let next_at_sql = match next_at {
+                Some(_) => "?",
+                None => "NULL",
+            };
+            let update_task_sql = format!(
+                "UPDATE __automation_tasks SET last_run_at=?, last_run_status='failed', last_run_duration_ms=?, total_runs=total_runs+1, failed_runs=failed_runs+1, next_run_at={}, updated_at=? WHERE id=?;",
+                next_at_sql
+            );
+            let mut params: Vec<String> = Vec::new();
+            params.push(now.to_string());
+            params.push(duration_ms.to_string());
+            if let Some(v) = next_at {
+                params.push(v.to_string());
+            }
+            params.push(now.to_string());
+            params.push(task_id.to_string());
+            let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p as &dyn ToSql).collect();
+            if let Err(e) = primary_conn.execute(&update_task_sql, &param_refs) {
+                log::warn!("更新 task failed 失败: {}", e);
+            }
+        }
+    }
+
+    /// 根据 task_type 分派执行，返回 (affected_rows, output_msg)。
+    /// 主体仅作路由，每个 task_type 的实际逻辑下沉到 dispatch_* 辅助函数。
     fn dispatch(
         db_manager: &SharedDatabaseManager,
         primary_conn: &MutexGuardConnection<'_>,
@@ -704,170 +816,203 @@ impl TaskService {
         use_temp_conn: bool,
     ) -> Result<(Option<i64>, Option<String>), String> {
         // 解析 payload JSON
-        let payload_json: JsonValue = serde_json::from_str(&task.payload).unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        let payload_json: JsonValue = serde_json::from_str(&task.payload)
+            .unwrap_or(JsonValue::Object(serde_json::Map::new()));
 
         match task.task_type.as_str() {
-            "sql" => {
-                let sql = payload_json
-                    .get("sql")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "payload.sql 为空".to_string())?;
-                let statements = split_sql_statements(sql);
-                let mut last_affected: Option<i64> = None;
-                let mut out_lines: Vec<String> = Vec::new();
-
-                // 🔑 长 SQL 任务：如果配置了 use_temp_conn，则通过独立的临时连接
-                // 执行用户 SQL，避免长期持有主连接锁。系统表读写始终走 primary_conn。
-                let temp_conn_result = if use_temp_conn {
-                    match db_manager.open_temporary_connection() {
-                        Ok(c) => Some(c),
-                        Err(e) => {
-                            log::warn!("打开临时连接失败（退回主连接）: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                for (idx, stmt) in statements.iter().enumerate() {
-                    let trimmed = stmt.trim();
-                    if trimmed.is_empty() { continue; }
-
-                    let upper = trimmed.to_uppercase();
-                    let is_query_like = upper.starts_with("SELECT")
-                        || upper.starts_with("SHOW")
-                        || upper.starts_with("EXPLAIN")
-                        || upper.starts_with("PRAGMA")
-                        || upper.starts_with("WITH");
-
-                    let exec_result: Result<i64, String> = if let Some(temp_conn) = &temp_conn_result {
-                        if is_query_like {
-                            match temp_conn.query(trimmed, &[]) {
-                                Ok(result) => {
-                                    let rows = result.rows.len() as i64;
-                                    out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
-                                    Ok(rows)
-                                }
-                                Err(e) => {
-                                    let raw = e.to_string();
-                                    log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task.id, trimmed, raw);
-                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
-                                }
-                            }
-                        } else {
-                            match temp_conn.execute(trimmed, &[]) {
-                                Ok(n) => {
-                                    out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
-                                    Ok(n as i64)
-                                }
-                                Err(e) => {
-                                    let raw = e.to_string();
-                                    log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task.id, trimmed, raw);
-                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
-                                }
-                            }
-                        }
-                    } else {
-                        if is_query_like {
-                            match primary_conn.query(trimmed, &[]) {
-                                Ok(result) => {
-                                    let rows = result.rows.len() as i64;
-                                    out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
-                                    Ok(rows)
-                                }
-                                Err(e) => {
-                                    let raw = e.to_string();
-                                    log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task.id, trimmed, raw);
-                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
-                                }
-                            }
-                        } else {
-                            match primary_conn.execute(trimmed, &[]) {
-                                Ok(n) => {
-                                    out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
-                                    Ok(n as i64)
-                                }
-                                Err(e) => {
-                                    let raw = e.to_string();
-                                    log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task.id, trimmed, raw);
-                                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
-                                }
-                            }
-                        }
-                    };
-
-                    match exec_result {
-                        Ok(n) => { last_affected = Some(n); }
-                        Err(user_msg) => return Err(user_msg),
-                    }
-                }
-                Ok((last_affected, Some(out_lines.join("\n"))))
-            }
-            "refresh_chart" => {
-                let chart_id = payload_json
-                    .get("chartId")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "payload.chartId 为空".to_string())?;
-                let rows = crate::services::DashboardService::refresh_saved_chart(primary_conn, chart_id)
-                    .map_err(|e| format!("刷新图表 {} 失败：{}", chart_id, e))?;
-                Ok((Some(rows), Some(format!("图表 {} 已刷新（{} 行）", chart_id, rows))))
-            }
-            "refresh_dashboard" => {
-                let dashboard_id = payload_json
-                    .get("dashboardId")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "payload.dashboardId 为空".to_string())?;
-                let chart_sql = "SELECT DISTINCT chart_id FROM __dashboard_items WHERE dashboard_id=?;";
-                let params: [&dyn ToSql; 1] = [&dashboard_id];
-                let chart_result = primary_conn.query(chart_sql, &params)
-                    .map_err(|e| format!("读取仪表盘图表失败：{}", e))?;
-                let mut refreshed: i64 = 0;
-                let mut total_rows: i64 = 0;
-                for row in &chart_result.rows {
-                    if row.is_empty() { continue; }
-                    let cid = &row[0];
-                    if cid.is_empty() { continue; }
-                    match crate::services::DashboardService::refresh_saved_chart(primary_conn, cid) {
-                        Ok(r) => {
-                            refreshed += 1;
-                            total_rows += r;
-                        }
-                        Err(_) => continue,
-                    }
-                }
-                Ok((Some(refreshed), Some(format!("仪表盘 {} 已刷新{}张图表（合计{}行）", dashboard_id, refreshed, total_rows))))
-            }
-            "export_csv" => {
-                let sql = payload_json.get("sql").and_then(|v| v.as_str()).unwrap_or("");
-                let output_path = payload_json.get("outputPath").and_then(|v| v.as_str()).unwrap_or("");
-                if sql.is_empty() { return Err("payload.sql 为空".to_string()); }
-                let result = primary_conn.query(sql, &[])
-                    .map_err(|e| format!("导出CSV查询失败：{}", e))?;
-                if output_path.is_empty() {
-                    return Ok((Some(result.rows.len() as i64), Some(format!("查询成功：{} 行 × {} 列（未指定输出路径）", result.rows.len(), result.columns.len()))));
-                }
-                let mut csv = String::new();
-                csv.push_str(&result.columns.join(","));
-                csv.push('\n');
-                for row in &result.rows {
-                    let parts: Vec<String> = row.iter().map(|cell| {
-                        let needs_quote = cell.contains(',') || cell.contains('"') || cell.contains('\n');
-                        if needs_quote {
-                            format!("\"{}\"", cell.replace('"', "\"\""))
-                        } else {
-                            cell.clone()
-                        }
-                    }).collect();
-                    csv.push_str(&parts.join(","));
-                    csv.push('\n');
-                }
-                std::fs::write(output_path, &csv)
-                    .map_err(|e| format!("写入 CSV 失败：{}", e))?;
-                Ok((Some(result.rows.len() as i64), Some(format!("已导出 {} 行 × {} 列 → {}", result.rows.len(), result.columns.len(), output_path))))
-            }
+            "sql" => Self::dispatch_sql_task(db_manager, primary_conn, task, use_temp_conn, &payload_json),
+            "refresh_chart" => Self::dispatch_refresh_chart(primary_conn, &payload_json),
+            "refresh_dashboard" => Self::dispatch_refresh_dashboard(primary_conn, &payload_json),
+            "export_csv" => Self::dispatch_export_csv(primary_conn, &payload_json),
             other => Err(format!("未知的任务类型：{}", other)),
         }
+    }
+
+    /// 分派 sql 类型任务：按分号拆分 SQL，逐条执行（必要时通过临时连接避免阻塞主连接）
+    fn dispatch_sql_task(
+        db_manager: &SharedDatabaseManager,
+        primary_conn: &MutexGuardConnection<'_>,
+        task: &Task,
+        use_temp_conn: bool,
+        payload_json: &JsonValue,
+    ) -> Result<(Option<i64>, Option<String>), String> {
+        let sql = payload_json
+            .get("sql")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "payload.sql 为空".to_string())?;
+        let statements = split_sql_statements(sql);
+        let mut last_affected: Option<i64> = None;
+        let mut out_lines: Vec<String> = Vec::new();
+
+        // 🔑 长 SQL 任务：如果配置了 use_temp_conn，则通过独立的临时连接
+        // 执行用户 SQL，避免长期持有主连接锁。系统表读写始终走 primary_conn。
+        let temp_conn_result = Self::open_temp_connection_if_needed(db_manager, use_temp_conn);
+
+        for (idx, stmt) in statements.iter().enumerate() {
+            let trimmed = stmt.trim();
+            if trimmed.is_empty() { continue; }
+
+            let is_query_like = Self::is_query_like_statement(trimmed);
+            let exec_result: Result<i64, String> = if let Some(temp_conn) = &temp_conn_result {
+                Self::execute_single_sql_statement(
+                    temp_conn, trimmed, is_query_like, idx, &task.id, &mut out_lines,
+                )
+            } else {
+                Self::execute_single_sql_statement(
+                    primary_conn, trimmed, is_query_like, idx, &task.id, &mut out_lines,
+                )
+            };
+
+            match exec_result {
+                Ok(n) => { last_affected = Some(n); }
+                Err(user_msg) => return Err(user_msg),
+            }
+        }
+        Ok((last_affected, Some(out_lines.join("\n"))))
+    }
+
+    /// 打开临时连接（仅在 use_temp_conn=true 时尝试；失败时退回主连接并记录警告）
+    fn open_temp_connection_if_needed(
+        db_manager: &SharedDatabaseManager,
+        use_temp_conn: bool,
+    ) -> Option<Box<dyn DatabaseConnection>> {
+        if !use_temp_conn { return None; }
+        match db_manager.open_temporary_connection() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                log::warn!("打开临时连接失败（退回主连接）: {}", e);
+                None
+            }
+        }
+    }
+
+    /// 判断 SQL 语句是否为查询类（SELECT/SHOW/EXPLAIN/PRAGMA/WITH）
+    fn is_query_like_statement(trimmed: &str) -> bool {
+        let upper = trimmed.to_uppercase();
+        upper.starts_with("SELECT")
+            || upper.starts_with("SHOW")
+            || upper.starts_with("EXPLAIN")
+            || upper.starts_with("PRAGMA")
+            || upper.starts_with("WITH")
+    }
+
+    /// 执行单条 SQL 语句（统一处理查询类与执行类的成功/失败日志与输出）。
+    /// 通过 StatementRunner trait 多态：temp_conn 与 primary_conn 共用同一份逻辑。
+    fn execute_single_sql_statement(
+        runner: &dyn StatementRunner,
+        trimmed: &str,
+        is_query_like: bool,
+        idx: usize,
+        task_id: &str,
+        out_lines: &mut Vec<String>,
+    ) -> Result<i64, String> {
+        if is_query_like {
+            match runner.run_query(trimmed) {
+                Ok(result) => {
+                    let rows = result.rows.len() as i64;
+                    out_lines.push(format!("语句 #{} 查询成功（返回{}行）", idx + 1, rows));
+                    Ok(rows)
+                }
+                Err(raw) => {
+                    log::warn!("SQL 查询失败 [task={}, stmt={:?}, raw={}", task_id, trimmed, raw);
+                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                }
+            }
+        } else {
+            match runner.run_execute(trimmed) {
+                Ok(n) => {
+                    out_lines.push(format!("语句 #{} 成功（影响{}行）", idx + 1, n));
+                    Ok(n as i64)
+                }
+                Err(raw) => {
+                    log::warn!("SQL 执行失败 [task={}, stmt={:?}, raw={}]", task_id, trimmed, raw);
+                    Err(format!("第{}条 SQL 执行失败：{}", idx + 1, simplify_sql_error(&raw)))
+                }
+            }
+        }
+    }
+
+    /// 分派 refresh_chart 类型任务：刷新单张已保存图表
+    fn dispatch_refresh_chart(
+        primary_conn: &MutexGuardConnection<'_>,
+        payload_json: &JsonValue,
+    ) -> Result<(Option<i64>, Option<String>), String> {
+        let chart_id = payload_json
+            .get("chartId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "payload.chartId 为空".to_string())?;
+        let rows = crate::services::DashboardService::refresh_saved_chart(primary_conn, chart_id)
+            .map_err(|e| format!("刷新图表 {} 失败：{}", chart_id, e))?;
+        Ok((Some(rows), Some(format!("图表 {} 已刷新（{} 行）", chart_id, rows))))
+    }
+
+    /// 分派 refresh_dashboard 类型任务：批量刷新仪表盘下所有图表
+    fn dispatch_refresh_dashboard(
+        primary_conn: &MutexGuardConnection<'_>,
+        payload_json: &JsonValue,
+    ) -> Result<(Option<i64>, Option<String>), String> {
+        let dashboard_id = payload_json
+            .get("dashboardId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "payload.dashboardId 为空".to_string())?;
+        let chart_sql = "SELECT DISTINCT chart_id FROM __dashboard_items WHERE dashboard_id=?;";
+        let params: [&dyn ToSql; 1] = [&dashboard_id];
+        let chart_result = primary_conn.query(chart_sql, &params)
+            .map_err(|e| format!("读取仪表盘图表失败：{}", e))?;
+        let mut refreshed: i64 = 0;
+        let mut total_rows: i64 = 0;
+        for row in &chart_result.rows {
+            if row.is_empty() { continue; }
+            let cid = &row[0];
+            if cid.is_empty() { continue; }
+            match crate::services::DashboardService::refresh_saved_chart(primary_conn, cid) {
+                Ok(r) => {
+                    refreshed += 1;
+                    total_rows += r;
+                }
+                Err(_) => continue,
+            }
+        }
+        Ok((Some(refreshed), Some(format!("仪表盘 {} 已刷新{}张图表（合计{}行）", dashboard_id, refreshed, total_rows))))
+    }
+
+    /// 分派 export_csv 类型任务：查询数据并写出 CSV 文件
+    fn dispatch_export_csv(
+        primary_conn: &MutexGuardConnection<'_>,
+        payload_json: &JsonValue,
+    ) -> Result<(Option<i64>, Option<String>), String> {
+        let sql = payload_json.get("sql").and_then(|v| v.as_str()).unwrap_or("");
+        let output_path = payload_json.get("outputPath").and_then(|v| v.as_str()).unwrap_or("");
+        if sql.is_empty() { return Err("payload.sql 为空".to_string()); }
+        let result = primary_conn.query(sql, &[])
+            .map_err(|e| format!("导出CSV查询失败：{}", e))?;
+        if output_path.is_empty() {
+            return Ok((Some(result.rows.len() as i64), Some(format!("查询成功：{} 行 × {} 列（未指定输出路径）", result.rows.len(), result.columns.len()))));
+        }
+        let csv = Self::build_csv_content(&result);
+        std::fs::write(output_path, &csv)
+            .map_err(|e| format!("写入 CSV 失败：{}", e))?;
+        Ok((Some(result.rows.len() as i64), Some(format!("已导出 {} 行 × {} 列 → {}", result.rows.len(), result.columns.len(), output_path))))
+    }
+
+    /// 将 QueryResult 序列化为 CSV 文本（首行列名，其后每行一条记录，含必要的引号转义）
+    fn build_csv_content(result: &QueryResult) -> String {
+        let mut csv = String::new();
+        csv.push_str(&result.columns.join(","));
+        csv.push('\n');
+        for row in &result.rows {
+            let parts: Vec<String> = row.iter().map(|cell| {
+                let needs_quote = cell.contains(',') || cell.contains('"') || cell.contains('\n');
+                if needs_quote {
+                    format!("\"{}\"", cell.replace('"', "\"\""))
+                } else {
+                    cell.clone()
+                }
+            }).collect();
+            csv.push_str(&parts.join(","));
+            csv.push('\n');
+        }
+        csv
     }
 
     // ============================================================
@@ -879,7 +1024,7 @@ impl TaskService {
         task_id: &str,
         limit: Option<i64>,
     ) -> Result<Vec<TaskRun>, String> {
-        let limit_val = limit.unwrap_or(50).max(1).min(500);
+        let limit_val = limit.unwrap_or(50).clamp(1, 500);
         let sql = "SELECT id, task_id, status, started_at, finished_at, duration_ms, affected_rows, output, retry_count, trigger_type, created_at \
              FROM __automation_runs WHERE task_id=? ORDER BY created_at DESC LIMIT ?;";
         let limit_str = limit_val.to_string();
@@ -1162,6 +1307,7 @@ impl TaskService {
     /// 触发下游任务（仅一层，避免循环依赖问题）
     /// - task_success: 仅当前任务成功时触发
     /// - task_completed: 无论成功失败都触发
+    ///
     /// 下游任务状态必须是 enabled 才会被触发
     /// 从 dependency_config 读取 delaySeconds（默认 0），计算触发时间
     /// 更新下游任务的 next_run_at 为触发时间（取较小值）
@@ -1287,6 +1433,19 @@ impl TaskService {
 
 pub struct TaskScheduleEngine;
 
+/// 调度器配置（从 settings 表读取，含默认值兜底）。
+/// 由 read_scheduler_settings 一次性填充，供 scheduler_do_one_pass 各步骤共用。
+struct SchedulerSettings {
+    /// 引擎总开关（automation.engineEnabled，默认 true）
+    engine_enabled: bool,
+    /// 扫描间隔秒数（automation.scheduleIntervalSecs，范围 10..=3600，默认 30）
+    scan_interval_secs: u64,
+    /// 运行日志保留天数（automation.logRetentionDays，范围 1..=3650，默认 30）
+    log_retention_days: i64,
+    /// 单轮最大并发任务数（automation.maxConcurrentTasks，范围 1..=20，默认 3）
+    max_concurrent_tasks: i64,
+}
+
 impl TaskScheduleEngine {
     /// 在独立线程中运行，根据 settings 中的扫描间隔（默认 30 秒）扫描到期任务并执行
     pub fn run_forever(
@@ -1366,85 +1525,20 @@ impl TaskScheduleEngine {
         }
 
         // 2) 读取 settings（读取失败使用默认值，不影响运行）
-        use crate::services::SettingsService;
-        let engine_enabled = SettingsService::get_setting(&conn, "automation", "engineEnabled")
-            .ok()
-            .flatten()
-            .map(|s| !s.value.eq_ignore_ascii_case("false"))
-            .unwrap_or(true);
-        let scan_interval_secs: u64 = SettingsService::get_setting(&conn, "automation", "scheduleIntervalSecs")
-            .ok()
-            .flatten()
-            .and_then(|s| s.value.parse::<u64>().ok())
-            .filter(|&v| (10..=3600).contains(&v))
-            .unwrap_or(30);
-        let log_retention_days: i64 = SettingsService::get_setting(&conn, "automation", "logRetentionDays")
-            .ok()
-            .flatten()
-            .and_then(|s| s.value.parse::<i64>().ok())
-            .filter(|&v| (1..=3650).contains(&v))
-            .unwrap_or(30);
-
-        // 读取自动化任务相关设置
-        // 注意：defaultRetryOnFail 和 defaultTimeoutSecs 在 create_task 中使用
-        // notifyOnFailure 在 run_automation_task_now 命令中使用
-        // 这里只读取 maxConcurrentTasks
-        let max_concurrent_tasks: i64 = SettingsService::get_setting(&conn, "automation", "maxConcurrentTasks")
-            .ok()
-            .flatten()
-            .and_then(|s| s.value.parse::<i64>().ok())
-            .filter(|&v| (1..=20).contains(&v))
-            .unwrap_or(3);
+        let settings = Self::read_scheduler_settings(&conn);
 
         // 3) 引擎开关关闭时：不做任务执行，但仍按配置间隔扫描
-        if !engine_enabled {
-            return scan_interval_secs;
+        if !settings.engine_enabled {
+            return settings.scan_interval_secs;
         }
 
         // 4) 日志清理
-        // 4.1) 清理自动化任务运行日志（超过 log_retention_days 的旧日志）
-        let cutoff = chrono::Utc::now().timestamp() - log_retention_days * 86400;
-        let cleanup_sql = "DELETE FROM __automation_runs WHERE created_at < ?;";
-        let cutoff_str = cutoff.to_string();
-        let params_cleanup: [&dyn ToSql; 1] = [&cutoff_str];
-        if let Err(e) = conn.execute(cleanup_sql, &params_cleanup) {
-            log::warn!("清理过期运行日志失败: {}", e);
-        }
-
-        // 4.2) 清理审计日志（如果 auditLogAutoClean 开启）
-        let audit_log_auto_clean = SettingsService::get_setting(&conn, "security", "auditLogAutoClean")
-            .ok()
-            .flatten()
-            .map(|s| !s.value.eq_ignore_ascii_case("false"))
-            .unwrap_or(false);
-        if audit_log_auto_clean {
-            let audit_log_max_size_mb: i64 = SettingsService::get_setting(&conn, "security", "auditLogMaxSizeMB")
-                .ok()
-                .flatten()
-                .and_then(|s| s.value.parse::<i64>().ok())
-                .filter(|&v| (10..=10000).contains(&v))
-                .unwrap_or(100); // 默认 100MB
-
-            use crate::services::AuditLogService;
-            if let Err(e) = AuditLogService::cleanup_by_size(&conn, audit_log_max_size_mb) {
-                log::warn!("按大小清理审计日志失败: {}", e);
-            }
-        }
+        Self::cleanup_old_run_logs(&conn, settings.log_retention_days);
+        Self::maybe_cleanup_audit_logs(&conn);
 
         // 5) 扫描到期任务（使用 max_concurrent_tasks 限制每次扫描的任务数量）
         let now = chrono::Utc::now().timestamp();
-        let limit_str = max_concurrent_tasks.to_string();
-        let scan_sql = "SELECT id FROM __automation_tasks \
-             WHERE state='enabled' AND next_run_at IS NOT NULL AND next_run_at <= ? \
-             AND last_run_status != 'running' \
-             ORDER BY next_run_at ASC LIMIT ?;";
-        let now_str = now.to_string();
-        let params_scan: [&dyn ToSql; 2] = [&now_str, &limit_str];
-
-        let candidate_ids = match conn.query(scan_sql, &params_scan) {
-            Ok(result) => result.rows.into_iter().map(|r| r.into_iter().next().unwrap_or_default()).collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
-        };
+        let candidate_ids = Self::scan_due_task_ids(&conn, now, settings.max_concurrent_tasks);
 
         // ---- 主动释放全局 DB Mutex：扫描完成后不再需要长期持锁 ----
         //      这样后面的任务执行循环期间不会阻塞前端的 DB 命令。
@@ -1453,7 +1547,7 @@ impl TaskScheduleEngine {
         for cid in candidate_ids {
             if cid.is_empty() { continue; }
             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                return scan_interval_secs;
+                return settings.scan_interval_secs;
             }
             // 调度器启动的任务：用独立连接 + 启用临时连接（sql 任务不阻塞主连接）
             match TaskService::execute(db_manager, &cid, "schedule", true) {
@@ -1468,9 +1562,167 @@ impl TaskScheduleEngine {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
 
-        scan_interval_secs
+        settings.scan_interval_secs
         // ---- 锁已在执行循环前释放 ----
     }
+
+    /// 读取调度器配置（automation 类别 4 个设置 + 默认值兜底）。
+    ///
+    /// 注意：defaultRetryOnFail 和 defaultTimeoutSecs 在 create_task 中使用；
+    /// notifyOnFailure 在 run_automation_task_now 命令中使用；
+    /// 这里只读取调度器运行时直接使用的 4 项配置。
+    fn read_scheduler_settings(conn: &MutexGuardConnection<'_>) -> SchedulerSettings {
+        use crate::services::SettingsService;
+        let engine_enabled = SettingsService::get_setting(conn, "automation", "engineEnabled")
+            .ok()
+            .flatten()
+            .map(|s| !s.value.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+        let scan_interval_secs: u64 = SettingsService::get_setting(conn, "automation", "scheduleIntervalSecs")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<u64>().ok())
+            .filter(|&v| (10..=3600).contains(&v))
+            .unwrap_or(30);
+        let log_retention_days: i64 = SettingsService::get_setting(conn, "automation", "logRetentionDays")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| (1..=3650).contains(&v))
+            .unwrap_or(30);
+        let max_concurrent_tasks: i64 = SettingsService::get_setting(conn, "automation", "maxConcurrentTasks")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| (1..=20).contains(&v))
+            .unwrap_or(3);
+        SchedulerSettings {
+            engine_enabled,
+            scan_interval_secs,
+            log_retention_days,
+            max_concurrent_tasks,
+        }
+    }
+
+    /// 清理超过 log_retention_days 的自动化任务运行日志
+    fn cleanup_old_run_logs(conn: &MutexGuardConnection<'_>, log_retention_days: i64) {
+        let cutoff = chrono::Utc::now().timestamp() - log_retention_days * 86400;
+        let cleanup_sql = "DELETE FROM __automation_runs WHERE created_at < ?;";
+        let cutoff_str = cutoff.to_string();
+        let params_cleanup: [&dyn ToSql; 1] = [&cutoff_str];
+        if let Err(e) = conn.execute(cleanup_sql, &params_cleanup) {
+            log::warn!("清理过期运行日志失败: {}", e);
+        }
+    }
+
+    /// 若 settings 中 auditLogAutoClean=true，按 auditLogMaxSizeMB 清理审计日志
+    fn maybe_cleanup_audit_logs(conn: &MutexGuardConnection<'_>) {
+        use crate::services::SettingsService;
+        let audit_log_auto_clean = SettingsService::get_setting(conn, "security", "auditLogAutoClean")
+            .ok()
+            .flatten()
+            .map(|s| !s.value.eq_ignore_ascii_case("false"))
+            .unwrap_or(false);
+        if !audit_log_auto_clean { return; }
+
+        let audit_log_max_size_mb: i64 = SettingsService::get_setting(conn, "security", "auditLogMaxSizeMB")
+            .ok()
+            .flatten()
+            .and_then(|s| s.value.parse::<i64>().ok())
+            .filter(|&v| (10..=10000).contains(&v))
+            .unwrap_or(100); // 默认 100MB
+
+        use crate::services::AuditLogService;
+        if let Err(e) = AuditLogService::cleanup_by_size(conn, audit_log_max_size_mb) {
+            log::warn!("按大小清理审计日志失败: {}", e);
+        }
+    }
+
+    /// 扫描到期任务（state=enabled 且 next_run_at <= now 且非 running），
+    /// 按 next_run_at 升序取前 max_concurrent_tasks 条，返回 task id 列表
+    fn scan_due_task_ids(
+        conn: &MutexGuardConnection<'_>,
+        now: i64,
+        max_concurrent_tasks: i64,
+    ) -> Vec<String> {
+        let scan_sql = "SELECT id FROM __automation_tasks \
+             WHERE state='enabled' AND next_run_at IS NOT NULL AND next_run_at <= ? \
+             AND last_run_status != 'running' \
+             ORDER BY next_run_at ASC LIMIT ?;";
+        let now_str = now.to_string();
+        let limit_str = max_concurrent_tasks.to_string();
+        let params_scan: [&dyn ToSql; 2] = [&now_str, &limit_str];
+        match conn.query(scan_sql, &params_scan) {
+            Ok(result) => result
+                .rows
+                .into_iter()
+                .map(|r| r.into_iter().next().unwrap_or_default())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+// 辅助函数：将 SQLite 底层错误消息转换为用户友好的描述
+// 底层错误只记日志不给用户，以免误导。
+fn simplify_sql_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("no such table") {
+        "表不存在".to_string()
+    } else if lower.contains("no such column") {
+        "列不存在".to_string()
+    } else if lower.contains("syntax error") {
+        "SQL 语法错误".to_string()
+    } else if lower.contains("constraint failed") || lower.contains("unique constraint") {
+        "约束冲突（重复主键或唯一键冲突）".to_string()
+    } else if lower.contains("returned results") || lower.contains("did you mean to call query") {
+        "语句返回结果集（请改用 SELECT 查询）".to_string()
+    } else if lower.contains("unable to open database") {
+        "数据库不可用".to_string()
+    } else if lower.contains("database is locked") {
+        "数据库被占用，请稍后重试".to_string()
+    } else if lower.contains("out of memory") {
+        "内存不足".to_string()
+    } else if lower.contains("table") && lower.contains("already exists") {
+        "表已存在".to_string()
+    } else {
+        "SQL 执行失败".to_string()
+    }
+}
+
+// 与 commands/sql.rs 保持一致的 SQL 分割
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    for c in sql.chars() {
+        match c {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                current.push(c);
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                current.push(c);
+            }
+            ';' if !in_single_quote && !in_double_quote => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    result.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        result.push(trimmed);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -1868,66 +2120,4 @@ mod tests {
         let r = split_sql_statements("SELECT \"a;b\" FROM t; SELECT 2;");
         assert_eq!(r, vec!["SELECT \"a;b\" FROM t", "SELECT 2"]);
     }
-}
-
-// 辅助函数：将 SQLite 底层错误消息转换为用户友好的描述
-// 底层错误只记日志不给用户，以免误导。
-fn simplify_sql_error(raw: &str) -> String {
-    let lower = raw.to_lowercase();
-    if lower.contains("no such table") {
-        "表不存在".to_string()
-    } else if lower.contains("no such column") {
-        "列不存在".to_string()
-    } else if lower.contains("syntax error") {
-        "SQL 语法错误".to_string()
-    } else if lower.contains("constraint failed") || lower.contains("unique constraint") {
-        "约束冲突（重复主键或唯一键冲突）".to_string()
-    } else if lower.contains("returned results") || lower.contains("did you mean to call query") {
-        "语句返回结果集（请改用 SELECT 查询）".to_string()
-    } else if lower.contains("unable to open database") {
-        "数据库不可用".to_string()
-    } else if lower.contains("database is locked") {
-        "数据库被占用，请稍后重试".to_string()
-    } else if lower.contains("out of memory") {
-        "内存不足".to_string()
-    } else if lower.contains("table") && lower.contains("already exists") {
-        "表已存在".to_string()
-    } else {
-        "SQL 执行失败".to_string()
-    }
-}
-
-// 与 commands/sql.rs 保持一致的 SQL 分割
-fn split_sql_statements(sql: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current = String::new();
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-
-    for c in sql.chars() {
-        match c {
-            '\'' if !in_double_quote => {
-                in_single_quote = !in_single_quote;
-                current.push(c);
-            }
-            '"' if !in_single_quote => {
-                in_double_quote = !in_double_quote;
-                current.push(c);
-            }
-            ';' if !in_single_quote && !in_double_quote => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    result.push(trimmed);
-                }
-                current.clear();
-            }
-            _ => current.push(c),
-        }
-    }
-
-    let trimmed = current.trim().to_string();
-    if !trimmed.is_empty() {
-        result.push(trimmed);
-    }
-    result
 }

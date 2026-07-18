@@ -8,6 +8,11 @@ interface DashboardStore {
   activeDashboardId: string | null;
   loading: boolean;
   error: string | null;
+  /**
+   * i18n error key：当 error 来自后端原始字符串时 errorKey 为 null（组件直接显示 error）；
+   * 当 error 是前端兜底文案时 errorKey 保存对应 i18n key，组件层调用 t(errorKey) 翻译。
+   */
+  errorKey: string | null;
 
   // 图表选择状态
   selectedChartId: string | null; // 当前选中的图表（用于侧边编辑）
@@ -67,6 +72,7 @@ export const useDashboardStore = create<DashboardStore>()(
     activeDashboardId: null,
     loading: false,
     error: null,
+    errorKey: null,
     selectedChartId: null,
     filterValues: {},
     isFullscreen: false,
@@ -74,21 +80,21 @@ export const useDashboardStore = create<DashboardStore>()(
 
     // SavedChart actions
     loadSavedCharts: async (queryId?: string, tags?: string[]) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.getSavedCharts(queryId, tags);
         if (response.success && response.data) {
           set({ savedCharts: response.data, loading: false });
         } else {
-          set({ error: response.error || '加载保存的图表失败', loading: false });
+          set({ error: response.error || '加载保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.load_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     createSavedChart: async (params: CreateSavedChartParams) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.createSavedChart({
           ...params,
@@ -102,17 +108,17 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '创建保存的图表失败', loading: false });
+          set({ error: response.error || '创建保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.create_failed', loading: false });
           return null;
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
         return null;
       }
     },
 
     updateSavedChart: async ({ id, updates }: { id: string; updates: Partial<SavedChart> }) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const cleaned: Record<string, unknown> = { id };
         if (updates.name !== undefined) cleaned.name = updates.name;
@@ -135,17 +141,17 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '更新图表失败', loading: false });
+          set({ error: response.error || '更新图表失败', errorKey: response.error ? null : 'error.saved_chart.update_failed', loading: false });
           return null;
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
         return null;
       }
     },
 
     deleteSavedChart: async (id: string) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.deleteSavedChart(id);
         if (response.success) {
@@ -154,30 +160,30 @@ export const useDashboardStore = create<DashboardStore>()(
             loading: false,
           }));
         } else {
-          set({ error: response.error || '删除保存的图表失败', loading: false });
+          set({ error: response.error || '删除保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.delete_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     // Dashboard actions
     loadDashboards: async () => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.getDashboards();
         if (response.success && response.data) {
           set({ dashboards: response.data, loading: false });
         } else {
-          set({ error: response.error || '加载仪表盘列表失败', loading: false });
+          set({ error: response.error || '加载仪表盘列表失败', errorKey: response.error ? null : 'error.dashboard.load_list_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     createDashboard: async (name: string, description?: string) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.createDashboard(name, description);
         if (response.success && response.data) {
@@ -187,17 +193,17 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '创建仪表盘失败', loading: false });
+          set({ error: response.error || '创建仪表盘失败', errorKey: response.error ? null : 'error.dashboard.create_failed', loading: false });
           return null;
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
         return null;
       }
     },
 
     updateDashboard: async (id: string, updates: Partial<Dashboard>) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.updateDashboard(id, updates);
         if (response.success && response.data) {
@@ -208,15 +214,15 @@ export const useDashboardStore = create<DashboardStore>()(
             loading: false,
           }));
         } else {
-          set({ error: response.error || '更新仪表盘失败', loading: false });
+          set({ error: response.error || '更新仪表盘失败', errorKey: response.error ? null : 'error.dashboard.update_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     deleteDashboard: async (id: string) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.deleteDashboard(id);
         if (response.success) {
@@ -227,10 +233,10 @@ export const useDashboardStore = create<DashboardStore>()(
             loading: false,
           }));
         } else {
-          set({ error: response.error || '删除仪表盘失败', loading: false });
+          set({ error: response.error || '删除仪表盘失败', errorKey: response.error ? null : 'error.dashboard.delete_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
@@ -248,6 +254,7 @@ export const useDashboardStore = create<DashboardStore>()(
         isFullscreen: false,
         loading: false,
         error: null,
+        errorKey: null,
       });
     },
 
@@ -257,7 +264,7 @@ export const useDashboardStore = create<DashboardStore>()(
       chartId: string,
       position: GridPosition
     ): Promise<boolean> => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.addChartToDashboard(
           dashboardId,
@@ -278,17 +285,17 @@ export const useDashboardStore = create<DashboardStore>()(
           set({ loading: false });
           return true;
         } else {
-          set({ error: response.error || '添加图表到仪表盘失败', loading: false });
+          set({ error: response.error || '添加图表到仪表盘失败', errorKey: response.error ? null : 'error.dashboard.add_chart_failed', loading: false });
           return false;
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
         return false;
       }
     },
 
     updateDashboardItem: async (itemId: string, updates: Partial<DashboardItem>) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.updateDashboardItem(itemId, updates);
         if (response.success && response.data) {
@@ -311,15 +318,15 @@ export const useDashboardStore = create<DashboardStore>()(
           }
           set({ loading: false });
         } else {
-          set({ error: response.error || '更新仪表盘项目失败', loading: false });
+          set({ error: response.error || '更新仪表盘项目失败', errorKey: response.error ? null : 'error.dashboard.update_item_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     removeChartFromDashboard: async (itemId: string) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.removeChartFromDashboard(itemId);
         if (response.success) {
@@ -342,16 +349,16 @@ export const useDashboardStore = create<DashboardStore>()(
           }
           set({ loading: false });
         } else {
-          set({ error: response.error || '从仪表盘移除图表失败', loading: false });
+          set({ error: response.error || '从仪表盘移除图表失败', errorKey: response.error ? null : 'error.dashboard.remove_chart_failed', loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     // T2: 保存布局：遍历当前仪表盘的 layout，将每个 item 的 x/y/width/height 写回后端
     saveLayout: async (dashboardId: string) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const { dashboards } = get();
         const dashboard = dashboards.find((d) => d.id === dashboardId);
@@ -383,13 +390,13 @@ export const useDashboardStore = create<DashboardStore>()(
           set({ loading: false });
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
       }
     },
 
     // 批量保存仪表盘布局（事务性更新）
     saveDashboardLayout: async (dashboardId: string, layoutUpdates: DashboardItemLayoutUpdate[]) => {
-      set({ loading: true, error: null });
+      set({ loading: true, error: null, errorKey: null });
       try {
         const response = await tauriService.saveDashboardLayout(dashboardId, layoutUpdates);
         if (response.success && response.data) {
@@ -401,11 +408,11 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '保存仪表盘布局失败', loading: false });
+          set({ error: response.error || '保存仪表盘布局失败', errorKey: response.error ? null : 'error.dashboard.save_layout_failed', loading: false });
           return null;
         }
       } catch (e) {
-        set({ error: String(e), loading: false });
+        set({ error: String(e), errorKey: null, loading: false });
         return null;
       }
     },
@@ -488,7 +495,7 @@ export const useDashboardStore = create<DashboardStore>()(
 
     // Utility
     clearError: () => {
-      set({ error: null });
+      set({ error: null, errorKey: null });
     },
   })
 );

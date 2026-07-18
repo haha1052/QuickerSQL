@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OpenFlags};
+use super::security::SqlIdentifier;
 use super::traits::*;
 
 pub struct SqliteDriver;
@@ -171,25 +172,34 @@ impl DatabaseConnection for SqliteConnection {
     fn close(&self) {
     }
     
-    fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], _batch_size: usize) -> Result<u64> {
+    fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], _batch_size: usize) -> Result<u64> {
         let conn = self.conn.lock().map_err(|e| DatabaseError::ConnectionFailed(e.to_string()))?;
-        
+
         let mut total_count = 0u64;
-        
-        let placeholders: Vec<String> = (0..columns.len()).map(|_| "?".to_string()).collect();
+
+        // 列名同样需要经 SqlIdentifier 校验后引用，避免列名注入
+        let mut quoted_cols = Vec::with_capacity(columns.len());
+        for col in columns {
+            let col_ident = SqlIdentifier::new(col)
+                .map_err(|e| DatabaseError::Unknown(format!("无效的列名 '{}': {}", col, e)))?;
+            quoted_cols.push(col_ident.quoted());
+        }
+
+        let placeholders: Vec<&str> = (0..columns.len()).map(|_| "?").collect();
+        // 表名已由 SqlIdentifier 校验，使用 quoted() 安全拼装；值仍走 ? 参数化
         let insert_sql = format!(
-            "INSERT INTO \"{}\" ({}) VALUES ({})",
-            table,
-            columns.join(", "),
+            "INSERT INTO {} ({}) VALUES ({})",
+            table.quoted(),
+            quoted_cols.join(", "),
             placeholders.join(", ")
         );
-        
+
         conn.execute("BEGIN TRANSACTION", [])
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-        
+
         let mut stmt = conn.prepare(&insert_sql)
             .map_err(|e| DatabaseError::PrepareFailed(e.to_string()))?;
-        
+
         for row in rows {
             let params: Vec<&dyn rusqlite::ToSql> = row.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
             stmt.execute(rusqlite::params_from_iter(params))
@@ -197,13 +207,13 @@ impl DatabaseConnection for SqliteConnection {
                     let _ = conn.execute("ROLLBACK", []);
                     DatabaseError::QueryFailed(e.to_string())
                 })?;
-            
+
             total_count += 1;
         }
-        
+
         conn.execute("COMMIT", [])
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
-        
+
         Ok(total_count)
     }
 }

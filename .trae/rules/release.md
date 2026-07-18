@@ -1,7 +1,7 @@
 # QuickerSQL 发布与依赖管理规范 v10.0
 
 > 优先级：高。发布前必须阅读。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；版本号三处同步、发布前检查清单可通过 Windows CLI MCP 自动化验证）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；版本号三处同步、发布前检查清单可通过 Windows CLI MCP 自动化验证）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 

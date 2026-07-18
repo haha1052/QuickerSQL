@@ -25,6 +25,24 @@ struct ExecutionMetadata {
     error_message: Option<String>,
 }
 
+/// SQL 执行上下文：批量执行流水线中各函数共享的执行状态
+///
+/// 持有 SQLite 连接、DuckDB 连接选项、DB Manager、表名清单、查询缓存以及
+/// 结果累加器（`results` / `success_count` / `fail_count`），避免在
+/// `execute_via_duckdb_or_sqlite` 等流水线函数之间重复传递 8+ 个参数。
+///
+/// 仅在 `sql_service.rs` 内部使用，不跨模块、不序列化。
+struct SqlExecContext<'a> {
+    sqlite_conn: &'a MutexGuardConnection<'a>,
+    duckdb_conn_opt: &'a Option<Arc<Mutex<Box<dyn DatabaseConnection>>>>,
+    db_manager: &'a DatabaseManager,
+    table_names: &'a [String],
+    query_cache: Option<&'a crate::services::query_cache_service::QueryCacheService>,
+    results: &'a mut Vec<SqlStatementResult>,
+    success_count: &'a mut usize,
+    fail_count: &'a mut usize,
+}
+
 /// SQL 执行调度服务
 pub struct SqlExecutionService;
 
@@ -202,7 +220,7 @@ impl SqlExecutionService {
         let _ = crate::services::QueryHistoryService::record_query_sync(conn, request);
     }
 
-    /// 在 SQLite 主连接上执行单条语句
+    /// 在 SQLite 主连接上执行单条语句（路由到具体子函数）
     fn execute_on_sqlite(
         conn: &MutexGuardConnection<'_>,
         stmt: &str,
@@ -218,181 +236,229 @@ impl SqlExecutionService {
             || upper_stmt.starts_with("PRAGMA");
 
         if is_query_stmt {
-            match conn.query(stmt, &[]) {
-                Ok(result) => {
-                    let row_count = result.rows.len();
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: true,
-                        error: None,
-                        columns: Some(result.columns),
-                        rows: Some(result.rows),
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *success_count += 1;
-                    ExecutionMetadata {
-                        success: true,
-                        row_count: Some(row_count as i64),
-                        error_message: None,
-                    }
-                }
-                Err(e) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: false,
-                        error: Some(format!("执行查询失败: {}", e)),
-                        columns: None,
-                        rows: None,
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *fail_count += 1;
-                    ExecutionMetadata {
-                        success: false,
-                        row_count: None,
-                        error_message: Some(format!("执行查询失败: {}", e)),
-                    }
-                }
-            }
+            Self::execute_query_on_sqlite(conn, stmt, results, success_count, fail_count)
         } else if upper_stmt.starts_with("DROP TABLE") {
-            match Self::parse_drop_table_table_name(stmt) {
-                Some(table_name) => {
-                    if SqlIdentifier::is_system_table(&table_name) {
-                        let err_msg = format!("系统表 '{}' 不允许删除或修改", table_name);
-                        results.push(SqlStatementResult {
-                            statement: stmt.to_string(),
-                            success: false,
-                            error: Some(err_msg.clone()),
-                            columns: None,
-                            rows: None,
-                            affected_rows: None,
-                            engine: Some("sqlite".to_string()),
-                            execution_time_ms: None,
-                        });
-                        *fail_count += 1;
-                        ExecutionMetadata {
-                            success: false,
-                            row_count: None,
-                            error_message: Some(err_msg),
-                        }
-                    } else {
-                        let result = crate::services::TrashService::get_table_row_count(
-                            conn,
-                            &table_name,
-                        )
-                        .and_then(|row_count| {
-                            crate::services::TrashService::move_to_trash_sync(
-                                conn,
-                                &table_name,
-                                row_count,
-                            )
-                        });
+            Self::execute_drop_table_on_sqlite(conn, stmt, results, success_count, fail_count)
+        } else {
+            Self::execute_other_on_sqlite(conn, stmt, results, success_count, fail_count)
+        }
+    }
 
-                        match result {
-                            Ok(_) => {
-                                results.push(SqlStatementResult {
-                                    statement: stmt.to_string(),
-                                    success: true,
-                                    error: None,
-                                    columns: None,
-                                    rows: None,
-                                    affected_rows: Some(1),
-                                    engine: Some("sqlite".to_string()),
-                                    execution_time_ms: None,
-                                });
-                                *success_count += 1;
-                                ExecutionMetadata {
-                                    success: true,
-                                    row_count: Some(1),
-                                    error_message: None,
-                                }
-                            }
-                            Err(e) => {
-                                results.push(SqlStatementResult {
-                                    statement: stmt.to_string(),
-                                    success: false,
-                                    error: Some(format!("删除表失败: {}", e)),
-                                    columns: None,
-                                    rows: None,
-                                    affected_rows: None,
-                                    engine: Some("sqlite".to_string()),
-                                    execution_time_ms: None,
-                                });
-                                *fail_count += 1;
-                                ExecutionMetadata {
-                                    success: false,
-                                    row_count: None,
-                                    error_message: Some(format!("删除表失败: {}", e)),
-                                }
-                            }
-                        }
-                    }
-                }
-                None => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: false,
-                        error: Some("无法解析 DROP TABLE 语句中的表名".to_string()),
-                        columns: None,
-                        rows: None,
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *fail_count += 1;
-                    ExecutionMetadata {
-                        success: false,
-                        row_count: None,
-                        error_message: Some("无法解析 DROP TABLE 语句中的表名".to_string()),
-                    }
+    /// SQLite：执行查询语句（SELECT/WITH/EXPLAIN/PRAGMA）
+    fn execute_query_on_sqlite(
+        conn: &MutexGuardConnection<'_>,
+        stmt: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        match conn.query(stmt, &[]) {
+            Ok(result) => {
+                let row_count = result.rows.len();
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: Some(result.columns),
+                    rows: Some(result.rows),
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(row_count as i64),
+                    error_message: None,
                 }
             }
-        } else {
-            match conn.execute(stmt, &[]) {
-                Ok(rows) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: true,
-                        error: None,
-                        columns: None,
-                        rows: None,
-                        affected_rows: Some(rows),
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *success_count += 1;
-                    ExecutionMetadata {
-                        success: true,
-                        row_count: Some(rows as i64),
-                        error_message: None,
-                    }
-                }
-                Err(e) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: false,
-                        error: Some(format!("执行SQL失败: {}", e)),
-                        columns: None,
-                        rows: None,
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *fail_count += 1;
-                    ExecutionMetadata {
-                        success: false,
-                        row_count: None,
-                        error_message: Some(format!("执行SQL失败: {}", e)),
-                    }
+            Err(e) => {
+                let err_msg = format!("执行查询失败: {}", e);
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(err_msg),
                 }
             }
         }
     }
 
-    /// 在任意实现了 `DatabaseConnection` trait 的连接上执行 SQL
+    /// SQLite：执行 DROP TABLE 语句（系统表拦截 + 回收站移入 + 解析失败处理）
+    fn execute_drop_table_on_sqlite(
+        conn: &MutexGuardConnection<'_>,
+        stmt: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        match Self::parse_drop_table_table_name(stmt) {
+            Some(table_name) => {
+                if SqlIdentifier::is_system_table(&table_name) {
+                    let err_msg = format!("系统表 '{}' 不允许删除或修改", table_name);
+                    results.push(SqlStatementResult {
+                        statement: stmt.to_string(),
+                        success: false,
+                        error: Some(err_msg.clone()),
+                        columns: None,
+                        rows: None,
+                        affected_rows: None,
+                        engine: Some("sqlite".to_string()),
+                        execution_time_ms: None,
+                    });
+                    *fail_count += 1;
+                    ExecutionMetadata {
+                        success: false,
+                        row_count: None,
+                        error_message: Some(err_msg),
+                    }
+                } else {
+                    Self::drop_table_via_trash(
+                        conn,
+                        stmt,
+                        &table_name,
+                        results,
+                        success_count,
+                        fail_count,
+                    )
+                }
+            }
+            None => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some("无法解析 DROP TABLE 语句中的表名".to_string()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some("无法解析 DROP TABLE 语句中的表名".to_string()),
+                }
+            }
+        }
+    }
+
+    /// SQLite：通过回收站服务删除表（非系统表）
+    fn drop_table_via_trash(
+        conn: &MutexGuardConnection<'_>,
+        stmt: &str,
+        table_name: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        let result = crate::services::TrashService::get_table_row_count(conn, table_name)
+            .and_then(|row_count| {
+                crate::services::TrashService::move_to_trash_sync(conn, table_name, row_count)
+            });
+
+        match result {
+            Ok(_) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: None,
+                    rows: None,
+                    affected_rows: Some(1),
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(1),
+                    error_message: None,
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("删除表失败: {}", e);
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(err_msg),
+                }
+            }
+        }
+    }
+
+    /// SQLite：执行非查询语句（INSERT/UPDATE/DELETE/CREATE/ALTER 等）
+    fn execute_other_on_sqlite(
+        conn: &MutexGuardConnection<'_>,
+        stmt: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        match conn.execute(stmt, &[]) {
+            Ok(rows) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: None,
+                    rows: None,
+                    affected_rows: Some(rows),
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(rows as i64),
+                    error_message: None,
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("执行SQL失败: {}", e);
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(err_msg),
+                }
+            }
+        }
+    }
+
+    /// 在任意实现了 `DatabaseConnection` trait 的连接上执行 SQL（路由到具体子函数）
     fn execute_on_conn(
         conn: &dyn DatabaseConnection,
         stmt: &str,
@@ -409,82 +475,106 @@ impl SqlExecutionService {
             || upper_stmt.starts_with("PRAGMA");
 
         if is_query_stmt {
-            match conn.query(stmt, &[]) {
-                Ok(result) => {
-                    let row_count = result.rows.len();
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: true,
-                        error: None,
-                        columns: Some(result.columns),
-                        rows: Some(result.rows),
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *success_count += 1;
-                    ExecutionMetadata {
-                        success: true,
-                        row_count: Some(row_count as i64),
-                        error_message: None,
-                    }
-                }
-                Err(e) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: false,
-                        error: Some(format!("执行查询失败: {}", e)),
-                        columns: None,
-                        rows: None,
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *fail_count += 1;
-                    ExecutionMetadata {
-                        success: false,
-                        row_count: None,
-                        error_message: Some(format!("执行查询失败: {}", e)),
-                    }
+            Self::execute_query_on_conn(conn, stmt, results, success_count, fail_count)
+        } else {
+            Self::execute_other_on_conn(conn, stmt, results, success_count, fail_count)
+        }
+    }
+
+    /// 通用连接：执行查询语句（SELECT/WITH/EXPLAIN/PRAGMA）
+    fn execute_query_on_conn(
+        conn: &dyn DatabaseConnection,
+        stmt: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        match conn.query(stmt, &[]) {
+            Ok(result) => {
+                let row_count = result.rows.len();
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: Some(result.columns),
+                    rows: Some(result.rows),
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(row_count as i64),
+                    error_message: None,
                 }
             }
-        } else {
-            match conn.execute(stmt, &[]) {
-                Ok(rows) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: true,
-                        error: None,
-                        columns: None,
-                        rows: None,
-                        affected_rows: Some(rows),
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *success_count += 1;
-                    ExecutionMetadata {
-                        success: true,
-                        row_count: Some(rows as i64),
-                        error_message: None,
-                    }
+            Err(e) => {
+                let err_msg = format!("执行查询失败: {}", e);
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(err_msg),
                 }
-                Err(e) => {
-                    results.push(SqlStatementResult {
-                        statement: stmt.to_string(),
-                        success: false,
-                        error: Some(format!("执行SQL失败: {}", e)),
-                        columns: None,
-                        rows: None,
-                        affected_rows: None,
-                        engine: Some("sqlite".to_string()),
-                        execution_time_ms: None,
-                    });
-                    *fail_count += 1;
-                    ExecutionMetadata {
-                        success: false,
-                        row_count: None,
-                        error_message: Some(format!("执行SQL失败: {}", e)),
-                    }
+            }
+        }
+    }
+
+    /// 通用连接：执行非查询语句（INSERT/UPDATE/DELETE/CREATE/ALTER 等）
+    fn execute_other_on_conn(
+        conn: &dyn DatabaseConnection,
+        stmt: &str,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        fail_count: &mut usize,
+    ) -> ExecutionMetadata {
+        match conn.execute(stmt, &[]) {
+            Ok(rows) => {
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: true,
+                    error: None,
+                    columns: None,
+                    rows: None,
+                    affected_rows: Some(rows),
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *success_count += 1;
+                ExecutionMetadata {
+                    success: true,
+                    row_count: Some(rows as i64),
+                    error_message: None,
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("执行SQL失败: {}", e);
+                results.push(SqlStatementResult {
+                    statement: stmt.to_string(),
+                    success: false,
+                    error: Some(err_msg.clone()),
+                    columns: None,
+                    rows: None,
+                    affected_rows: None,
+                    engine: Some("sqlite".to_string()),
+                    execution_time_ms: None,
+                });
+                *fail_count += 1;
+                ExecutionMetadata {
+                    success: false,
+                    row_count: None,
+                    error_message: Some(err_msg),
                 }
             }
         }
@@ -565,345 +655,45 @@ impl SqlExecutionService {
             let stmt_start = Instant::now();
 
             // ------------- 缓存查寻（仅只读 + 传入了 query_cache） -------------
-            let mut from_cache = false;
-            if let Some(qc) = query_cache {
-                let trimmed = trimmed_stmt.trim_start().to_uppercase();
-                let cacheable = trimmed.starts_with("SELECT")
-                    || trimmed.starts_with("PRAGMA")
-                    || trimmed.starts_with("WITH")
-                    || trimmed.starts_with("EXPLAIN");
-                if cacheable {
-                    let cache_key =
-                        crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
-                    if let Some(cached) = qc.get(&cache_key) {
-                        let cache_engine = if duckdb_conn_opt.is_some() { "duckdb" } else { "sqlite" };
-                        let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
-                        results.push(SqlStatementResult {
-                            statement: trimmed_stmt.to_string(),
-                            success: true,
-                            error: None,
-                            columns: Some(cached.columns),
-                            rows: Some(cached.rows),
-                            affected_rows: None,
-                            engine: Some(cache_engine.to_string()),
-                            execution_time_ms: Some(execution_time_ms),
-                        });
-                        success_count += 1;
-                        execution_metadatas.push((
-                            trimmed_stmt.to_string(),
-                            stmt_start.elapsed().as_millis() as i64,
-                            ExecutionMetadata {
-                                success: true,
-                                row_count: None, // 缓存命中不走历史记录，保持兼容
-                                error_message: None,
-                            },
-                        ));
-                        from_cache = true;
-                    }
-                }
-            }
-
-            if from_cache {
+            if let Some(duration) = Self::try_cache_lookup_for_stmt(
+                query_cache,
+                &duckdb_conn_opt,
+                trimmed_stmt,
+                &stmt_start,
+                &mut results,
+                &mut success_count,
+            ) {
+                execution_metadatas.push((
+                    trimmed_stmt.to_string(),
+                    duration,
+                    ExecutionMetadata {
+                        success: true,
+                        row_count: None, // 缓存命中不走历史记录，保持兼容
+                        error_message: None,
+                    },
+                ));
                 continue;
             }
 
-            // ------------- 正常执行路径（与原逻辑保持一致） -------------
-            let use_duckdb = crate::database::router::QueryRouter::should_use_duckdb(trimmed_stmt);
-
-            let metadata: ExecutionMetadata;
-
-            if use_duckdb {
-                match &duckdb_conn_opt {
-                    Some(duckdb_conn_mutex) => {
-                        let duckdb_conn_guard = duckdb_conn_mutex
-                            .lock()
-                            .map_err(|e| format!("获取 DuckDB 连接锁失败: {}", e))?;
-
-                        let routed_sql_result =
-                            crate::database::router::QueryRouter::route_table_names(
-                                trimmed_stmt,
-                                &table_names_ref,
-                            );
-
-                        match routed_sql_result {
-                            Ok(routed_sql) => {
-                                let result = catch_unwind(|| duckdb_conn_guard.query(&routed_sql, &[]));
-
-                                match result {
-                                    Ok(Ok(query_result)) => {
-                                        let row_count = query_result.rows.len();
-                                        let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
-                                        // 先缓存再移动
-                                        let cached_result = query_result.clone();
-                                        results.push(SqlStatementResult {
-                                            statement: trimmed_stmt.to_string(),
-                                            success: true,
-                                            error: None,
-                                            columns: Some(query_result.columns),
-                                            rows: Some(query_result.rows),
-                                            affected_rows: None,
-                                            engine: Some("duckdb".to_string()),
-                                            execution_time_ms: Some(execution_time_ms),
-                                        });
-                                        success_count += 1;
-
-                                        // 成功的只读语句写回缓存
-                                        if let Some(qc) = query_cache {
-                                            let trimmed = trimmed_stmt.trim_start().to_uppercase();
-                                            let cacheable = trimmed.starts_with("SELECT")
-                                                || trimmed.starts_with("PRAGMA")
-                                                || trimmed.starts_with("WITH")
-                                                || trimmed.starts_with("EXPLAIN");
-                                            if cacheable {
-                                                let cache_key = crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
-                                                qc.set(cache_key, cached_result);
-                                            } else {
-                                                // DuckDB 侧出现写语句（正常极少），做防御性失效
-                                                qc.invalidate_all();
-                                            }
-                                        }
-
-                                        metadata = ExecutionMetadata {
-                                            success: true,
-                                            row_count: Some(row_count as i64),
-                                            error_message: None,
-                                        };
-                                    }
-                                    Ok(Err(e)) => {
-                                        let err_msg = e.to_string();
-                                        let err_lower = err_msg.to_lowercase();
-                                        let is_view_error = err_lower.contains("table not found")
-                                            || err_lower.contains("view not found")
-                                            || err_lower.contains("does not exist");
-
-                                        let retry_result: Option<ExecutionMetadata> = if is_view_error {
-                                            log::warn!(
-                                                "DuckDB 检测到表/VIEW 不存在错误，尝试刷新所有 VIEW 后重试。错误: {}",
-                                                err_msg
-                                            );
-
-                                            match crate::services::ViewService::refresh_all_views(
-                                                &*duckdb_conn_guard,
-                                                &table_names,
-                                            ) {
-                                                Ok(refresh_count) => {
-                                                    log::info!(
-                                                        "VIEW 刷新成功，共刷新 {} 个 VIEW，正在重试查询...",
-                                                        refresh_count
-                                                    );
-
-                                                    let retry_query_result = catch_unwind(|| {
-                                                        duckdb_conn_guard.query(&routed_sql, &[])
-                                                    });
-
-                                                    match retry_query_result {
-                                                        Ok(Ok(query_result)) => {
-                                                            let row_count =
-                                                                query_result.rows.len();
-                                                            let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
-                                                            let cached_result =
-                                                                query_result.clone();
-                                                            results.push(SqlStatementResult {
-                                                                statement: trimmed_stmt
-                                                                    .to_string(),
-                                                                success: true,
-                                                                error: None,
-                                                                columns: Some(
-                                                                    query_result.columns,
-                                                                ),
-                                                                rows: Some(query_result.rows),
-                                                                affected_rows: None,
-                                                                engine: Some("duckdb".to_string()),
-                                                                execution_time_ms: Some(execution_time_ms),
-                                                            });
-                                                            success_count += 1;
-
-                                                            if let Some(qc) = query_cache {
-                                                                let trimmed = trimmed_stmt
-                                                                    .trim_start()
-                                                                    .to_uppercase();
-                                                                let cacheable = trimmed
-                                                                    .starts_with("SELECT")
-                                                                    || trimmed
-                                                                        .starts_with("PRAGMA")
-                                                                    || trimmed
-                                                                        .starts_with("WITH")
-                                                                    || trimmed
-                                                                        .starts_with("EXPLAIN");
-                                                                if cacheable {
-                                                                    let cache_key = crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
-                                                                    qc.set(cache_key, cached_result);
-                                                                } else {
-                                                                    qc.invalidate_all();
-                                                                }
-                                                            }
-
-                                                            Some(ExecutionMetadata {
-                                                                success: true,
-                                                                row_count: Some(
-                                                                    row_count as i64
-                                                                ),
-                                                                error_message: None,
-                                                            })
-                                                        }
-                                                        Ok(Err(retry_e)) => {
-                                                            log::warn!(
-                                                                "DuckDB VIEW 刷新后重试仍然失败，回退到 SQLite: {}",
-                                                                retry_e
-                                                            );
-                                                            None
-                                                        }
-                                                        Err(retry_panic) => {
-                                                            log::error!(
-                                                                "DuckDB VIEW 刷新后重试发生 panic，回退到 SQLite: {:?}",
-                                                                retry_panic
-                                                            );
-                                                            None
-                                                        }
-                                                    }
-                                                }
-                                                Err(refresh_e) => {
-                                                    log::warn!(
-                                                        "VIEW 刷新失败，直接回退到 SQLite: {}",
-                                                        refresh_e
-                                                    );
-                                                    None
-                                                }
-                                            }
-                                        } else {
-                                            None
-                                        };
-
-                                        match retry_result {
-                                            Some(meta) => {
-                                                metadata = meta;
-                                            }
-                                            None => {
-                                                log::warn!(
-                                                    "DuckDB execution failed, falling back to SQLite: {}",
-                                                    err_msg
-                                                );
-                                                let err_desc: String =
-                                                    trimmed_stmt.chars().take(100).collect();
-                                                let err_details = serde_json::to_string(&serde_json::json!({
-                                                    "sql": trimmed_stmt,
-                                                    "error": err_msg,
-                                                }))
-                                                .unwrap_or_else(|_| format!("{{\"sql\":\"{}\"}}", trimmed_stmt.replace('"', "\\\"")));
-                                                let audit_req = crate::models::audit_log::RecordAuditLogRequest {
-                                                    module: "sql".to_string(),
-                                                    action: "query".to_string(),
-                                                    description: format!(
-                                                        "DuckDB execution failed: {}",
-                                                        err_desc
-                                                    ),
-                                                    status: "failed".to_string(),
-                                                    duration_ms: None,
-                                                    details: Some(err_details),
-                                                };
-                                                let _ = crate::services::AuditLogService::record_audit_log(
-                                                    sqlite_conn,
-                                                    audit_req,
-                                                );
-
-                                                metadata = Self::execute_with_connection_strategy(
-                                                    sqlite_conn,
-                                                    db_manager,
-                                                    trimmed_stmt,
-                                                    &mut results,
-                                                    &mut success_count,
-                                                    &mut fail_count,
-                                                    query_cache,
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log::error!(
-                                            "DuckDB panicked, falling back to SQLite: {:?}",
-                                            e
-                                        );
-                                        // 将 DuckDB panic 信息写入审计日志（在回退之前）
-                                        let panic_msg = if let Some(s) = e.downcast_ref::<String>() {
-                                            s.clone()
-                                        } else if let Some(s) = e.downcast_ref::<&str>() {
-                                            (*s).to_string()
-                                        } else {
-                                            "panic payload could not be serialized".to_string()
-                                        };
-                                        let panic_desc: String =
-                                            trimmed_stmt.chars().take(100).collect();
-                                        let panic_details = serde_json::to_string(&serde_json::json!({
-                                            "sql": trimmed_stmt,
-                                            "panic": panic_msg,
-                                        }))
-                                        .unwrap_or_else(|_| format!("{{\"sql\":\"{}\"}}", trimmed_stmt.replace('"', "\\\"")));
-                                        let panic_audit_req = crate::models::audit_log::RecordAuditLogRequest {
-                                            module: "sql".to_string(),
-                                            action: "query".to_string(),
-                                            description: format!(
-                                                "DuckDB panicked: {}",
-                                                panic_desc
-                                            ),
-                                            status: "failed".to_string(),
-                                            duration_ms: None,
-                                            details: Some(panic_details),
-                                        };
-                                        let _ = crate::services::AuditLogService::record_audit_log(
-                                            sqlite_conn,
-                                            panic_audit_req,
-                                        );
-
-                                        metadata = Self::execute_with_connection_strategy(
-                                            sqlite_conn,
-                                            db_manager,
-                                            trimmed_stmt,
-                                            &mut results,
-                                            &mut success_count,
-                                            &mut fail_count,
-                                            query_cache,
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!("SQL routing failed, falling back to SQLite: {}", e);
-                                metadata = Self::execute_with_connection_strategy(
-                                    sqlite_conn,
-                                    db_manager,
-                                    trimmed_stmt,
-                                    &mut results,
-                                    &mut success_count,
-                                    &mut fail_count,
-                                    query_cache,
-                                );
-                            }
-                        }
-                    }
-                    None => {
-                        log::warn!("DuckDB not initialized, using SQLite");
-                        metadata = Self::execute_with_connection_strategy(
-                            sqlite_conn,
-                            db_manager,
-                            trimmed_stmt,
-                            &mut results,
-                            &mut success_count,
-                            &mut fail_count,
-                            query_cache,
-                        );
-                    }
-                }
-            } else {
-                metadata = Self::execute_with_connection_strategy(
-                    sqlite_conn,
-                    db_manager,
-                    trimmed_stmt,
-                    &mut results,
-                    &mut success_count,
-                    &mut fail_count,
-                    query_cache,
-                );
-            }
+            // ------------- 正常执行路径（DuckDB 或 SQLite） -------------
+            // 构造执行上下文：将共享状态集中传递，避免 too_many_arguments
+            let mut ctx = SqlExecContext {
+                sqlite_conn,
+                duckdb_conn_opt: &duckdb_conn_opt,
+                db_manager,
+                table_names: &table_names,
+                query_cache,
+                results: &mut results,
+                success_count: &mut success_count,
+                fail_count: &mut fail_count,
+            };
+            let metadata = Self::execute_via_duckdb_or_sqlite(
+                &mut ctx,
+                trimmed_stmt,
+                &table_names_ref,
+                &stmt_start,
+            )?;
+            // ctx 在此退出作用域，释放对 results / success_count / fail_count 的可变借用
 
             let stmt_duration = stmt_start.elapsed().as_millis() as i64;
             if let Some(last_result) = results.last_mut() {
@@ -912,8 +702,444 @@ impl SqlExecutionService {
             execution_metadatas.push((trimmed_stmt.to_string(), stmt_duration, metadata));
         }
 
+        // 记录查询历史与审计日志（此时 DuckDB 锁已释放，避免死锁）
+        Self::record_batch_execution_logs(sqlite_conn, &execution_metadatas);
+
+        log::debug!("整体执行耗时: {:?}", overall_start.elapsed());
+
+        Ok(BatchExecuteResult {
+            results,
+            success_count,
+            fail_count,
+        })
+    }
+
+    /// 尝试从查询缓存中获取只读语句的结果。
+    ///
+    /// 命中缓存时：将缓存结果推入 `results`，递增 `success_count`，
+    /// 并返回 `Some(duration)` 供调用方记录 metadata。
+    /// 未命中或不可缓存时：返回 `None`，调用方走正常执行路径。
+    fn try_cache_lookup_for_stmt(
+        query_cache: Option<&crate::services::query_cache_service::QueryCacheService>,
+        duckdb_conn_opt: &Option<Arc<Mutex<Box<dyn DatabaseConnection>>>>,
+        trimmed_stmt: &str,
+        stmt_start: &Instant,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+    ) -> Option<i64> {
+        let qc = query_cache?;
+        let trimmed = trimmed_stmt.trim_start().to_uppercase();
+        let cacheable = trimmed.starts_with("SELECT")
+            || trimmed.starts_with("PRAGMA")
+            || trimmed.starts_with("WITH")
+            || trimmed.starts_with("EXPLAIN");
+        if !cacheable {
+            return None;
+        }
+        let cache_key = crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
+        let cached = qc.get(&cache_key)?;
+
+        let cache_engine = if duckdb_conn_opt.is_some() { "duckdb" } else { "sqlite" };
+        let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
+        results.push(SqlStatementResult {
+            statement: trimmed_stmt.to_string(),
+            success: true,
+            error: None,
+            columns: Some(cached.columns),
+            rows: Some(cached.rows),
+            affected_rows: None,
+            engine: Some(cache_engine.to_string()),
+            execution_time_ms: Some(execution_time_ms),
+        });
+        *success_count += 1;
+        // 返回 duration（保留原始代码中 stmt_start.elapsed() 二次调用的行为）
+        Some(stmt_start.elapsed().as_millis() as i64)
+    }
+
+    /// 根据语句类型选择 DuckDB 或 SQLite 执行路径。
+    ///
+    /// DuckDB 不可用、路由失败、查询失败或 panic 时均回退到 SQLite。
+    fn execute_via_duckdb_or_sqlite(
+        ctx: &mut SqlExecContext<'_>,
+        trimmed_stmt: &str,
+        table_names_ref: &[&str],
+        stmt_start: &Instant,
+    ) -> Result<ExecutionMetadata, String> {
+        let use_duckdb = crate::database::router::QueryRouter::should_use_duckdb(trimmed_stmt);
+
+        if !use_duckdb {
+            let query_cache = ctx.query_cache;
+            return Ok(Self::execute_with_connection_strategy(
+                ctx.sqlite_conn,
+                ctx.db_manager,
+                trimmed_stmt,
+                &mut *ctx.results,
+                &mut *ctx.success_count,
+                &mut *ctx.fail_count,
+                query_cache,
+            ));
+        }
+
+        // use_duckdb == true：需要 DuckDB 连接
+        let duckdb_conn_mutex = match ctx.duckdb_conn_opt {
+            Some(m) => m,
+            None => {
+                log::warn!("DuckDB not initialized, using SQLite");
+                let query_cache = ctx.query_cache;
+                return Ok(Self::execute_with_connection_strategy(
+                    ctx.sqlite_conn,
+                    ctx.db_manager,
+                    trimmed_stmt,
+                    &mut *ctx.results,
+                    &mut *ctx.success_count,
+                    &mut *ctx.fail_count,
+                    query_cache,
+                ));
+            }
+        };
+
+        let duckdb_conn_guard = duckdb_conn_mutex
+            .lock()
+            .map_err(|e| format!("获取 DuckDB 连接锁失败: {}", e))?;
+
+        match crate::database::router::QueryRouter::route_table_names(
+            trimmed_stmt,
+            table_names_ref,
+        ) {
+            Ok(routed_sql) => Ok(Self::execute_routed_duckdb_query(
+                ctx,
+                &duckdb_conn_guard,
+                trimmed_stmt,
+                &routed_sql,
+                stmt_start,
+            )),
+            Err(e) => {
+                log::warn!("SQL routing failed, falling back to SQLite: {}", e);
+                let query_cache = ctx.query_cache;
+                Ok(Self::execute_with_connection_strategy(
+                    ctx.sqlite_conn,
+                    ctx.db_manager,
+                    trimmed_stmt,
+                    &mut *ctx.results,
+                    &mut *ctx.success_count,
+                    &mut *ctx.fail_count,
+                    query_cache,
+                ))
+            }
+        }
+    }
+
+    /// 执行已路由的 DuckDB 查询，处理 panic 安全保护与成功/失败/panic 三种分支。
+    fn execute_routed_duckdb_query(
+        ctx: &mut SqlExecContext<'_>,
+        duckdb_conn_guard: &std::sync::MutexGuard<'_, Box<dyn DatabaseConnection>>,
+        trimmed_stmt: &str,
+        routed_sql: &str,
+        stmt_start: &Instant,
+    ) -> ExecutionMetadata {
+        let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+            duckdb_conn_guard.query(routed_sql, &[])
+        }));
+
+        match result {
+            Ok(Ok(query_result)) => {
+                let query_cache = ctx.query_cache;
+                Self::handle_duckdb_query_success(
+                    query_result,
+                    trimmed_stmt,
+                    stmt_start,
+                    &mut *ctx.results,
+                    &mut *ctx.success_count,
+                    query_cache,
+                )
+            }
+            Ok(Err(e)) => Self::handle_duckdb_query_error(
+                ctx,
+                duckdb_conn_guard,
+                trimmed_stmt,
+                routed_sql,
+                stmt_start,
+                e,
+            ),
+            Err(e) => Self::handle_duckdb_panic(ctx, trimmed_stmt, e),
+        }
+    }
+
+    /// DuckDB 查询成功：推入结果、写回缓存、返回成功 metadata。
+    fn handle_duckdb_query_success(
+        query_result: crate::database::traits::QueryResult,
+        trimmed_stmt: &str,
+        stmt_start: &Instant,
+        results: &mut Vec<SqlStatementResult>,
+        success_count: &mut usize,
+        query_cache: Option<&crate::services::query_cache_service::QueryCacheService>,
+    ) -> ExecutionMetadata {
+        let row_count = query_result.rows.len();
+        let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
+        // 先缓存再移动
+        let cached_result = query_result.clone();
+        results.push(SqlStatementResult {
+            statement: trimmed_stmt.to_string(),
+            success: true,
+            error: None,
+            columns: Some(query_result.columns),
+            rows: Some(query_result.rows),
+            affected_rows: None,
+            engine: Some("duckdb".to_string()),
+            execution_time_ms: Some(execution_time_ms),
+        });
+        *success_count += 1;
+
+        Self::cache_duckdb_result_if_cacheable(query_cache, trimmed_stmt, cached_result);
+
+        ExecutionMetadata {
+            success: true,
+            row_count: Some(row_count as i64),
+            error_message: None,
+        }
+    }
+
+    /// DuckDB 查询失败：若是表/VIEW 不存在错误，先刷新 VIEW 再重试；
+    /// 仍然失败则记录审计日志并回退到 SQLite。
+    fn handle_duckdb_query_error(
+        ctx: &mut SqlExecContext<'_>,
+        duckdb_conn_guard: &std::sync::MutexGuard<'_, Box<dyn DatabaseConnection>>,
+        trimmed_stmt: &str,
+        routed_sql: &str,
+        stmt_start: &Instant,
+        error: crate::database::traits::DatabaseError,
+    ) -> ExecutionMetadata {
+        let err_msg = error.to_string();
+        let err_lower = err_msg.to_lowercase();
+        let is_view_error = err_lower.contains("table not found")
+            || err_lower.contains("view not found")
+            || err_lower.contains("does not exist");
+
+        let retry_result: Option<ExecutionMetadata> = if is_view_error {
+            Self::try_duckdb_view_refresh_retry(
+                ctx,
+                duckdb_conn_guard,
+                trimmed_stmt,
+                routed_sql,
+                stmt_start,
+                &err_msg,
+            )
+        } else {
+            None
+        };
+
+        match retry_result {
+            Some(meta) => meta,
+            None => {
+                log::warn!(
+                    "DuckDB execution failed, falling back to SQLite: {}",
+                    err_msg
+                );
+                Self::record_audit_log_duckdb_failure(ctx.sqlite_conn, trimmed_stmt, &err_msg);
+                let query_cache = ctx.query_cache;
+                Self::execute_with_connection_strategy(
+                    ctx.sqlite_conn,
+                    ctx.db_manager,
+                    trimmed_stmt,
+                    &mut *ctx.results,
+                    &mut *ctx.success_count,
+                    &mut *ctx.fail_count,
+                    query_cache,
+                )
+            }
+        }
+    }
+
+    /// 刷新所有 VIEW 后重试 DuckDB 查询。
+    /// 成功则推入结果 + 写回缓存 + 返回 metadata；失败则返回 None 供调用方回退。
+    fn try_duckdb_view_refresh_retry(
+        ctx: &mut SqlExecContext<'_>,
+        duckdb_conn_guard: &std::sync::MutexGuard<'_, Box<dyn DatabaseConnection>>,
+        trimmed_stmt: &str,
+        routed_sql: &str,
+        stmt_start: &Instant,
+        err_msg: &str,
+    ) -> Option<ExecutionMetadata> {
+        log::warn!(
+            "DuckDB 检测到表/VIEW 不存在错误，尝试刷新所有 VIEW 后重试。错误: {}",
+            err_msg
+        );
+
+        match crate::services::ViewService::refresh_all_views_with_type_casts(
+            &***duckdb_conn_guard,
+            ctx.sqlite_conn,
+            ctx.table_names,
+        ) {
+            Ok(refresh_count) => {
+                log::info!(
+                    "VIEW 刷新成功，共刷新 {} 个 VIEW，正在重试查询...",
+                    refresh_count
+                );
+
+                let retry_query_result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    duckdb_conn_guard.query(routed_sql, &[])
+                }));
+
+                match retry_query_result {
+                    Ok(Ok(query_result)) => {
+                        let row_count = query_result.rows.len();
+                        let execution_time_ms = stmt_start.elapsed().as_millis() as i64;
+                        let cached_result = query_result.clone();
+                        ctx.results.push(SqlStatementResult {
+                            statement: trimmed_stmt.to_string(),
+                            success: true,
+                            error: None,
+                            columns: Some(query_result.columns),
+                            rows: Some(query_result.rows),
+                            affected_rows: None,
+                            engine: Some("duckdb".to_string()),
+                            execution_time_ms: Some(execution_time_ms),
+                        });
+                        *ctx.success_count += 1;
+
+                        let query_cache = ctx.query_cache;
+                        Self::cache_duckdb_result_if_cacheable(
+                            query_cache,
+                            trimmed_stmt,
+                            cached_result,
+                        );
+
+                        Some(ExecutionMetadata {
+                            success: true,
+                            row_count: Some(row_count as i64),
+                            error_message: None,
+                        })
+                    }
+                    Ok(Err(retry_e)) => {
+                        log::warn!(
+                            "DuckDB VIEW 刷新后重试仍然失败，回退到 SQLite: {}",
+                            retry_e
+                        );
+                        None
+                    }
+                    Err(retry_panic) => {
+                        log::error!(
+                            "DuckDB VIEW 刷新后重试发生 panic，回退到 SQLite: {:?}",
+                            retry_panic
+                        );
+                        None
+                    }
+                }
+            }
+            Err(refresh_e) => {
+                log::warn!(
+                    "VIEW 刷新失败，直接回退到 SQLite: {}",
+                    refresh_e
+                );
+                None
+            }
+        }
+    }
+
+    /// DuckDB 发生 panic：记录审计日志后回退到 SQLite 执行。
+    fn handle_duckdb_panic(
+        ctx: &mut SqlExecContext<'_>,
+        trimmed_stmt: &str,
+        panic_payload: Box<dyn std::any::Any + Send>,
+    ) -> ExecutionMetadata {
+        log::error!(
+            "DuckDB panicked, falling back to SQLite: {:?}",
+            panic_payload
+        );
+        // 将 DuckDB panic 信息写入审计日志（在回退之前）
+        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            "panic payload could not be serialized".to_string()
+        };
+        let panic_desc: String = trimmed_stmt.chars().take(100).collect();
+        let panic_details = serde_json::to_string(&serde_json::json!({
+            "sql": trimmed_stmt,
+            "panic": panic_msg,
+        }))
+        .unwrap_or_else(|_| format!("{{\"sql\":\"{}\"}}", trimmed_stmt.replace('"', "\\\"")));
+        let panic_audit_req = crate::models::audit_log::RecordAuditLogRequest {
+            module: "sql".to_string(),
+            action: "query".to_string(),
+            description: format!("DuckDB panicked: {}", panic_desc),
+            status: "failed".to_string(),
+            duration_ms: None,
+            details: Some(panic_details),
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(
+            ctx.sqlite_conn,
+            panic_audit_req,
+        );
+
+        let query_cache = ctx.query_cache;
+        Self::execute_with_connection_strategy(
+            ctx.sqlite_conn,
+            ctx.db_manager,
+            trimmed_stmt,
+            &mut *ctx.results,
+            &mut *ctx.success_count,
+            &mut *ctx.fail_count,
+            query_cache,
+        )
+    }
+
+    /// 仅缓存成功的只读 DuckDB 查询结果；写语句则触发全量失效。
+    fn cache_duckdb_result_if_cacheable(
+        query_cache: Option<&crate::services::query_cache_service::QueryCacheService>,
+        trimmed_stmt: &str,
+        cached_result: crate::database::traits::QueryResult,
+    ) {
+        let qc = match query_cache {
+            Some(qc) => qc,
+            None => return,
+        };
+        let trimmed = trimmed_stmt.trim_start().to_uppercase();
+        let cacheable = trimmed.starts_with("SELECT")
+            || trimmed.starts_with("PRAGMA")
+            || trimmed.starts_with("WITH")
+            || trimmed.starts_with("EXPLAIN");
+        if cacheable {
+            let cache_key =
+                crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
+            qc.set(cache_key, cached_result);
+        } else {
+            // DuckDB 侧出现写语句（正常极少），做防御性失效
+            qc.invalidate_all();
+        }
+    }
+
+    /// 将 DuckDB 执行失败信息写入审计日志（用于回退 SQLite 前的记录）。
+    fn record_audit_log_duckdb_failure(
+        sqlite_conn: &MutexGuardConnection<'_>,
+        trimmed_stmt: &str,
+        err_msg: &str,
+    ) {
+        let err_desc: String = trimmed_stmt.chars().take(100).collect();
+        let err_details = serde_json::to_string(&serde_json::json!({
+            "sql": trimmed_stmt,
+            "error": err_msg,
+        }))
+        .unwrap_or_else(|_| format!("{{\"sql\":\"{}\"}}", trimmed_stmt.replace('"', "\\\"")));
+        let audit_req = crate::models::audit_log::RecordAuditLogRequest {
+            module: "sql".to_string(),
+            action: "query".to_string(),
+            description: format!("DuckDB execution failed: {}", err_desc),
+            status: "failed".to_string(),
+            duration_ms: None,
+            details: Some(err_details),
+        };
+        let _ = crate::services::AuditLogService::record_audit_log(sqlite_conn, audit_req);
+    }
+
+    /// 批量记录查询历史与审计日志。
+    fn record_batch_execution_logs(
+        sqlite_conn: &MutexGuardConnection<'_>,
+        execution_metadatas: &[(String, i64, ExecutionMetadata)],
+    ) {
         // 记录查询历史（此时 DuckDB 锁已释放，避免死锁）
-        for (sql_stmt, duration, meta) in &execution_metadatas {
+        for (sql_stmt, duration, meta) in execution_metadatas {
             Self::record_query_to_history(
                 sqlite_conn,
                 sql_stmt,
@@ -925,7 +1151,7 @@ impl SqlExecutionService {
         }
 
         // 记录审计日志
-        for (sql_stmt, duration, meta) in &execution_metadatas {
+        for (sql_stmt, duration, meta) in execution_metadatas {
             let description: String = sql_stmt.chars().take(100).collect();
             let details = serde_json::to_string(&serde_json::json!({
                 "sql": sql_stmt,
@@ -943,16 +1169,11 @@ impl SqlExecutionService {
                 duration_ms: Some(*duration),
                 details: Some(details),
             };
-            let _ = crate::services::AuditLogService::record_audit_log(sqlite_conn, audit_request);
+            let _ = crate::services::AuditLogService::record_audit_log(
+                sqlite_conn,
+                audit_request,
+            );
         }
-
-        log::debug!("整体执行耗时: {:?}", overall_start.elapsed());
-
-        Ok(BatchExecuteResult {
-            results,
-            success_count,
-            fail_count,
-        })
     }
 
     /// SQLite 端的连接策略：优先临时连接（长查询），失败回退到主连接
@@ -1001,35 +1222,60 @@ impl SqlExecutionService {
 
         // 根据刚刚执行的最后一条结果做缓存写回 / 写操作失效
         if let Some(qc) = query_cache {
-            if let Some(last) = results.last() {
-                if last.statement == trimmed_stmt {
-                    let trimmed = trimmed_stmt.trim_start().to_uppercase();
-                    let cacheable = trimmed.starts_with("SELECT")
-                        || trimmed.starts_with("PRAGMA")
-                        || trimmed.starts_with("WITH")
-                        || trimmed.starts_with("EXPLAIN");
-                    if last.success && cacheable {
-                        if let (Some(columns), Some(rows)) = (&last.columns, &last.rows) {
-                            let cache_key = crate::services::query_cache_service::make_cache_key(
-                                trimmed_stmt, &[],
-                            );
-                            qc.set(
-                                cache_key,
-                                crate::database::traits::QueryResult {
-                                    columns: columns.clone(),
-                                    rows: rows.clone(),
-                                },
-                            );
-                        }
-                    } else if !cacheable {
-                        // 写语句 → 全量失效
-                        qc.invalidate_all();
-                    }
-                }
-            }
+            Self::apply_cache_post_exec(qc, results, trimmed_stmt);
         }
 
         metadata
+    }
+
+    /// P2-4 重构：从 `execute_with_connection_strategy` 提取的缓存写回 / 失效逻辑
+    ///
+    /// 原为 5 层嵌套（`if let Some(qc)` → `if let Some(last)` → `if last.statement == ...`
+    /// → `if last.success && cacheable` → `if let (Some(columns), Some(rows))`），通过
+    /// early return 降为最大 2 层，行为完全保持一致：
+    /// - 取最后一条结果；若与 `trimmed_stmt` 不匹配则直接返回
+    /// - 只读语句（SELECT/PRAGMA/WITH/EXPLAIN）+ 成功 + 含 columns/rows → 写回缓存
+    /// - 只读语句但失败 → 不操作（保持原 else 分支空逻辑）
+    /// - 写语句（非只读）→ 触发全量失效
+    fn apply_cache_post_exec(
+        qc: &crate::services::query_cache_service::QueryCacheService,
+        results: &[SqlStatementResult],
+        trimmed_stmt: &str,
+    ) {
+        let last = match results.last() {
+            Some(last) => last,
+            None => return,
+        };
+        if last.statement != trimmed_stmt {
+            return;
+        }
+
+        let trimmed = trimmed_stmt.trim_start().to_uppercase();
+        let cacheable = trimmed.starts_with("SELECT")
+            || trimmed.starts_with("PRAGMA")
+            || trimmed.starts_with("WITH")
+            || trimmed.starts_with("EXPLAIN");
+
+        if !cacheable {
+            // 写语句 → 全量失效
+            qc.invalidate_all();
+            return;
+        }
+        // 只读语句 + 成功 + 含结果 → 写回缓存
+        if !last.success {
+            return;
+        }
+        if let (Some(columns), Some(rows)) = (&last.columns, &last.rows) {
+            let cache_key =
+                crate::services::query_cache_service::make_cache_key(trimmed_stmt, &[]);
+            qc.set(
+                cache_key,
+                crate::database::traits::QueryResult {
+                    columns: columns.clone(),
+                    rows: rows.clone(),
+                },
+            );
+        }
     }
 }
 
@@ -1406,11 +1652,11 @@ mod tests {
 
     #[test]
     fn test_is_all_readonly_case_and_whitespace() {
-        assert!(SqlExecutionService::is_all_readonly(&vec![
+        assert!(SqlExecutionService::is_all_readonly(&[
             "   select * from users".to_string(),
             "\nSELECT 1".to_string(),
         ]));
-        assert!(!SqlExecutionService::is_all_readonly(&vec![
+        assert!(!SqlExecutionService::is_all_readonly(&[
             "SELECT 1".to_string(),
             "   insert into t values(1)".to_string(),
         ]));

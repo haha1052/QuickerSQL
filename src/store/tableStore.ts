@@ -109,7 +109,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       set({ tables: response.data ?? [], error: null });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`加载表列表失败: ${message}`, 'error');
+      console.error('[listTables] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.table.load_failed' }, 'error');
       set({ error: message });
     } finally {
       set({ loading: false });
@@ -169,13 +170,14 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       if (!response.success) {
         throw new Error(response.error || '移到回收站失败');
       }
-      useToastStore.getState().addToast(`表 "${tableName}" 已移到回收站`, 'success');
+      useToastStore.getState().addToast({ key: 'table.movedToTrash', vars: { name: tableName } }, 'success');
       // 刷新表列表
       await get().listTables();
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`删除失败: ${message}`, 'error');
+      console.error('[moveToTrash] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.table.delete_failed' }, 'error');
       set({ error: message });
       return false;
     }
@@ -187,7 +189,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       if (!response.success) {
         throw new Error(response.error || '重命名表失败');
       }
-      useToastStore.getState().addToast(`表已重命名为 "${newTableName}"`, 'success');
+      useToastStore.getState().addToast({ key: 'table.renamed', vars: { name: newTableName } }, 'success');
       // 清除旧表名的缓存，并刷新表列表
       set((state) => {
         const nextCols = { ...state.columnsCache };
@@ -200,7 +202,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      useToastStore.getState().addToast(`重命名失败: ${message}`, 'error');
+      console.error('[renameTable] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.table.rename_failed' }, 'error');
       set({ error: message });
       return false;
     }

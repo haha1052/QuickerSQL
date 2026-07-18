@@ -19,7 +19,10 @@ pub async fn profile_table(
     let conn = state
         .db_manager
         .get_connection()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[profile_table] 获取数据库连接失败: error={}", e);
+            "数据库连接异常，请重新打开数据库".to_string()
+        })?;
 
     ProfileService::profile_table(&conn, &table_name, force_full_scan.unwrap_or(false))
 }

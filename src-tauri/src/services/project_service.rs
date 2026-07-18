@@ -67,6 +67,49 @@ impl ProjectService {
         format!("{}/{}/{}", PROJECTS_SUBDIR, uuid, PROJECT_DB_FILENAME)
     }
 
+    // ==================== Schema 管理（P0-5 修复） ====================
+
+    /// 确保 `__project_info` 表存在（统一入口，避免 schema 重复维护）
+    ///
+    /// 修复 P0-5：原 5 处重复 `CREATE TABLE` 收敛到此函数。
+    /// DDL 以原始 5 处 schema 为准（5 处字段完全一致，无字段合并需求）。
+    /// 使用 `CREATE TABLE IF NOT EXISTS` 保证幂等性，可安全重复调用。
+    pub fn ensure_project_info_table_exists(conn: &Connection) -> Result<(), String> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS __project_info (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                schema_version INTEGER NOT NULL
+            )",
+            [],
+        )
+        .map_err(|e| format!("创建 __project_info 表失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 确保 `__projects_registry` 表存在（统一入口）
+    ///
+    /// 修复 P0-5：原 2 处重复 `CREATE TABLE` 收敛到此函数。
+    /// DDL 以原始 2 处 schema 为准（2 处字段完全一致）。
+    /// 使用 `CREATE TABLE IF NOT EXISTS` 保证幂等性。
+    pub fn ensure_projects_registry_table_exists(conn: &Connection) -> Result<(), String> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS __projects_registry (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                db_path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_opened_at TEXT,
+                description TEXT
+            )",
+            [],
+        )
+        .map_err(|e| format!("创建 __projects_registry 表失败: {}", e))?;
+        Ok(())
+    }
+
     // ==================== 注册表管理 ====================
 
     /// 确保注册表数据库存在，返回注册表数据库文件路径
@@ -87,22 +130,7 @@ impl ProjectService {
         if !registry_path.exists() {
             // 首次创建：打开连接并建表
             let conn = Self::open_connection_with_flags(&registry_path)?;
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS __projects_registry (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    db_path TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_opened_at TEXT,
-                    description TEXT
-                )",
-                [],
-            ).map_err(|e| {
-                let msg = format!("创建项目注册表失败: {}", e);
-                log::error!("{}", msg);
-                msg
-            })?;
+            Self::ensure_projects_registry_table_exists(&conn)?;
             log::info!("项目注册表已创建: {}", registry_path.display());
         }
 
@@ -332,29 +360,7 @@ impl ProjectService {
             })?;
 
         // 4. 更新新库的 __project_info（确保表存在 → 清空旧记录 → 插入新记录）
-        {
-            let conn = Connection::open(&new_db_path)
-                .map_err(|e| format!("打开新项目数据库失败: {}", e))?;
-
-            // 确保 __project_info 表存在（源库可能没有）
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS __project_info (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL
-                )",
-                [],
-            ).map_err(|e| format!("确保项目信息表存在失败: {}", e))?;
-
-            // 清空旧记录（源项目的 id），写入新 id 和 name
-            conn.execute("DELETE FROM __project_info", [])
-                .map_err(|e| format!("清理项目信息表失败: {}", e))?;
-            conn.execute(
-                "INSERT INTO __project_info (id, name, created_at, schema_version) VALUES (?, ?, ?, ?)",
-                params![&new_id, new_name, &now, CURRENT_SCHEMA_VERSION],
-            ).map_err(|e| format!("写入新项目信息失败: {}", e))?;
-        }
+        Self::update_duplicated_project_info(&new_db_path, &new_id, new_name, &now)?;
 
         // 5. 写入注册表
         let relative_db_path = Self::build_relative_db_path(&new_id);
@@ -382,6 +388,29 @@ impl ProjectService {
             last_opened_at: None,
             description: source.description,
         })
+    }
+
+    /// 更新复制项目的新库 __project_info：确保表存在 → 清空旧记录 → 写入新 id/name
+    ///
+    /// 提取自 `duplicate_project` 步骤 4（P2-4 重构：原内联块占 16 行，提取得 18 行子函数，
+    /// 主函数 duplicate_project 由 83 行降至 70 行）。
+    fn update_duplicated_project_info(
+        new_db_path: &Path,
+        new_id: &str,
+        new_name: &str,
+        now: &str,
+    ) -> Result<(), String> {
+        let conn = Connection::open(new_db_path)
+            .map_err(|e| format!("打开新项目数据库失败: {}", e))?;
+        Self::ensure_project_info_table_exists(&conn)?;
+        conn.execute("DELETE FROM __project_info", [])
+            .map_err(|e| format!("清理项目信息表失败: {}", e))?;
+        conn.execute(
+            "INSERT INTO __project_info (id, name, created_at, schema_version) VALUES (?, ?, ?, ?)",
+            params![new_id, new_name, now, CURRENT_SCHEMA_VERSION],
+        )
+        .map_err(|e| format!("写入新项目信息失败: {}", e))?;
+        Ok(())
     }
 
     /// 删除项目
@@ -545,15 +574,7 @@ impl ProjectService {
             let conn = Connection::open(&new_db_path)
                 .map_err(|e| format!("打开导入的数据库失败: {}", e))?;
 
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS __project_info (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL
-                )",
-                [],
-            ).map_err(|e| format!("确保项目信息表存在失败: {}", e))?;
+            Self::ensure_project_info_table_exists(&conn)?;
 
             // 清空旧记录，写入新记录
             conn.execute("DELETE FROM __project_info", [])
@@ -850,18 +871,7 @@ impl ProjectService {
             .map_err(|e| format!("打开注册表连接失败: {}", e))?;
 
         // 始终确保表存在（CREATE TABLE IF NOT EXISTS 是幂等的）
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS __projects_registry (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                db_path TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_opened_at TEXT,
-                description TEXT
-            )",
-            [],
-        ).map_err(|e| format!("创建注册表失败: {}", e))?;
+        Self::ensure_projects_registry_table_exists(&conn)?;
 
         if is_new {
             log::info!("项目注册表已创建: {}", registry_path.display());
@@ -886,10 +896,8 @@ impl ProjectService {
             .map_err(|e| format!("查询注册表失败: {}", e))?;
 
         let mut set = std::collections::HashSet::new();
-        for name in names {
-            if let Ok(n) = name {
-                set.insert(n);
-            }
+        for n in names.flatten() {
+            set.insert(n);
         }
         Ok(set)
     }
@@ -970,15 +978,7 @@ impl ProjectService {
             let conn = Connection::open(&new_meta_db)
                 .map_err(|e| format!("打开迁移后的数据库失败: {}", e))?;
 
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS __project_info (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL
-                )",
-                [],
-            ).map_err(|e| format!("创建项目信息表失败: {}", e))?;
+            Self::ensure_project_info_table_exists(&conn)?;
 
             // 清空旧记录，写入新记录（防止旧数据残留）
             conn.execute("DELETE FROM __project_info", [])
@@ -1065,7 +1065,7 @@ impl ProjectService {
     /// 初始化数据库
     ///
     /// 创建新数据库文件，配置 PRAGMA 参数，并创建 __project_info 表
-    fn init_database(db_path: &PathBuf) -> Result<(), String> {
+    fn init_database(db_path: &Path) -> Result<(), String> {
         let conn = Self::open_connection_with_flags(db_path)?;
 
         conn.execute_batch(
@@ -1076,15 +1076,7 @@ impl ProjectService {
         ).map_err(|e| format!("配置数据库参数失败: {}", e))?;
 
         // 创建项目信息表（spec.md FR-1）
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS __project_info (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                schema_version INTEGER NOT NULL
-            )",
-            [],
-        ).map_err(|e| format!("创建项目信息表失败: {}", e))?;
+        Self::ensure_project_info_table_exists(&conn)?;
 
         Ok(())
     }
@@ -1138,6 +1130,55 @@ mod tests {
         if let Ok(Some(proj)) = ProjectService::find_project_by_name(name) {
             let _ = ProjectService::delete_project(&proj.id);
         }
+    }
+
+    // ============================================================
+    // P0-5 修复：ensure_*_table_exists 幂等性测试
+    // 验证 CREATE TABLE IF NOT EXISTS 可安全重复调用
+    // ============================================================
+
+    #[test]
+    fn test_ensure_project_info_table_idempotent() {
+        let conn = Connection::open_in_memory().expect("打开内存数据库失败");
+        // 第一次调用：应成功创建表
+        let first = ProjectService::ensure_project_info_table_exists(&conn);
+        assert!(first.is_ok(), "第一次建表失败: {:?}", first.err());
+        // 第二次调用：因 IF NOT EXISTS 应幂等成功，不报错
+        let second = ProjectService::ensure_project_info_table_exists(&conn);
+        assert!(second.is_ok(), "第二次建表应幂等成功: {:?}", second.err());
+
+        // 验证表确实存在且 schema 正确（可写入全部 4 个字段）
+        conn.execute(
+            "INSERT INTO __project_info (id, name, created_at, schema_version) VALUES (?, ?, ?, ?)",
+            params!["test-id", "test-name", "2024-01-01T00:00:00Z", 1],
+        )
+        .expect("写入 __project_info 失败");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM __project_info", [], |row| row.get(0))
+            .expect("查询 __project_info 失败");
+        assert_eq!(count, 1, "应有 1 条记录");
+    }
+
+    #[test]
+    fn test_ensure_projects_registry_table_idempotent() {
+        let conn = Connection::open_in_memory().expect("打开内存数据库失败");
+        // 第一次调用：应成功创建表
+        let first = ProjectService::ensure_projects_registry_table_exists(&conn);
+        assert!(first.is_ok(), "第一次建表失败: {:?}", first.err());
+        // 第二次调用：因 IF NOT EXISTS 应幂等成功
+        let second = ProjectService::ensure_projects_registry_table_exists(&conn);
+        assert!(second.is_ok(), "第二次建表应幂等成功: {:?}", second.err());
+
+        // 验证表确实存在且 schema 正确（可写入全部 7 个字段）
+        conn.execute(
+            "INSERT INTO __projects_registry (id, name, db_path, created_at, updated_at, last_opened_at, description) VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+            params!["test-id", "test-name", "projects/test-id/meta.db", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+        )
+        .expect("写入 __projects_registry 失败");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM __projects_registry", [], |row| row.get(0))
+            .expect("查询 __projects_registry 失败");
+        assert_eq!(count, 1, "应有 1 条记录");
     }
 
     #[test]
@@ -1687,11 +1728,7 @@ mod tests {
         std::fs::create_dir_all(&existing_project_dir).unwrap();
         {
             let conn = Connection::open(existing_project_dir.join(PROJECT_DB_FILENAME)).unwrap();
-            conn.execute(
-                "CREATE TABLE __project_info (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL, schema_version INTEGER NOT NULL)",
-                [],
-            )
-            .unwrap();
+            ProjectService::ensure_project_info_table_exists(&conn).unwrap();
             conn.execute(
                 "INSERT INTO __project_info VALUES (?, ?, ?, ?)",
                 params!["existing-uuid-1234", "already_migrated", "2024-01-01T00:00:00Z", 1],

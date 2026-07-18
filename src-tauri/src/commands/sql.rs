@@ -35,7 +35,10 @@ pub async fn execute_sql(
         let sqlite_conn = state
             .db_manager
             .get_connection()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                log::error!("[execute_sql] 获取数据库连接失败: error={}", e);
+                "数据库连接异常，请重新打开数据库".to_string()
+            })?;
 
         // Phase 16: 获取信号量许可（SQL 查询并发控制）
         // 注意：sqlite_conn 在此块结束时被 drop，之后的 await 不会跨越 MutexGuard
@@ -43,7 +46,8 @@ pub async fn execute_sql(
         drop(sqlite_conn);
 
         let _permit = state.query_semaphore.acquire().await.map_err(|e| {
-            format!("获取查询信号量失败: {}", e)
+            log::error!("[execute_sql] 获取查询信号量失败: error={}", e);
+            "系统繁忙，请稍后重试".to_string()
         })?;
 
         match duckdb_result {
@@ -61,7 +65,10 @@ pub async fn execute_sql(
     let sqlite_conn = state
         .db_manager
         .get_connection()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[execute_sql] 获取数据库连接失败（缓存检查阶段）: error={}", e);
+            "数据库连接异常，请重新打开数据库".to_string()
+        })?;
     // 说明：这里仅做"全命中直接短路"的优化；部分命中场景交给 `execute_sql_batch`
     // 内部按句处理缓存/执行/写回。
     if cache_enabled {
@@ -196,7 +203,10 @@ pub fn list_sql_snippets(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::list_snippets(&conn, category.as_deref())
 }
 
@@ -209,7 +219,10 @@ pub fn get_sql_snippet(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::get_snippet(&conn, &id)
 }
 
@@ -233,7 +246,10 @@ pub fn create_sql_snippet(
         return Err("SQL 内容不能为空".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::create_snippet(
         &conn,
         &name,
@@ -244,7 +260,10 @@ pub fn create_sql_snippet(
     )
 }
 
+// TODO(2026-07-17): Tauri command 参数 8 个，参数由前端 invoke 反序列化，
+// 重构成 struct 会改变前端调用契约，留待 v24.0 统一引入 UpdateSqlSnippetParams
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn update_sql_snippet(
     state: State<'_, TauriAppState>,
     id: String,
@@ -266,7 +285,10 @@ pub fn update_sql_snippet(
         return Err("SQL 内容不能为空".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::update_snippet(
         &conn,
         &id,
@@ -288,7 +310,10 @@ pub fn delete_sql_snippet(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::delete_snippet(&conn, &id)
 }
 
@@ -301,7 +326,10 @@ pub fn toggle_snippet_favorite(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[sql] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SqlSnippetService::toggle_favorite(&conn, &id)
 }
 
@@ -320,7 +348,10 @@ pub fn preload_duckdb(
 
     let db_manager = state.db_manager.clone();
     let db_path = {
-        let guard = state.db_path.lock().map_err(|e| e.to_string())?;
+        let guard = state.db_path.lock().map_err(|e| {
+            log::error!("[preload_duckdb] 获取数据库路径锁失败: error={}", e);
+            "数据库状态异常，请重试".to_string()
+        })?;
         guard.clone()
     };
     let duckdb_conn = state.duckdb_conn.clone();
@@ -361,11 +392,15 @@ pub fn preload_duckdb(
                     let mut success_count = 0;
                     for table_name in &table_names {
                         if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
-                            let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
-                            let create_view_sql = format!(
-                                "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
-                                quoted_table, quoted_table
-                            );
+                            let create_view_sql = if let Ok(sqlite_conn) = db_manager.get_connection() {
+                                build_view_sql_with_type_casts(&sqlite_conn, table_name)
+                            } else {
+                                let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+                                format!(
+                                    "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                                    quoted_table, quoted_table
+                                )
+                            };
                             if conn.execute(&create_view_sql, &[]).is_ok() {
                                 success_count += 1;
                             }
@@ -381,7 +416,7 @@ pub fn preload_duckdb(
                         
                         let status = crate::models::DuckDbInitStatus {
                             success: true,
-                            view_count: success_count as i32,
+                            view_count: success_count,
                             total_tables: table_names.len() as i32,
                             duration_ms,
                             trigger: "preload".to_string(),
@@ -432,4 +467,54 @@ pub fn preload_duckdb(
         message: "DuckDB 预加载已启动".into(),
         data: Some("preloading".into()),
     })
+}
+
+fn build_view_sql_with_type_casts(
+    sqlite_conn: &crate::database::MutexGuardConnection,
+    table_name: &str,
+) -> String {
+    let columns = match crate::services::DatabaseService::get_columns(sqlite_conn, table_name) {
+        Ok(cols) => cols,
+        Err(e) => {
+            log::warn!("获取表 {} 的列信息失败，回退到 SELECT *: {}", table_name, e);
+            let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+            return format!(
+                "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
+                quoted_table, quoted_table
+            );
+        }
+    };
+
+    let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
+    let select_list = columns
+        .iter()
+        .map(|col| {
+            let quoted_name = crate::database::SqlIdentifier::quote_identifier(&col.name);
+            match duckdb_cast_type(&col.data_type) {
+                Some(cast_type) => format!("CAST({} AS {}) AS {}", quoted_name, cast_type, quoted_name),
+                None => quoted_name.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "CREATE OR REPLACE VIEW {} AS SELECT {} FROM sqlite_db.{}",
+        quoted_table, select_list, quoted_table
+    )
+}
+
+fn duckdb_cast_type(sqlite_type: &str) -> Option<&'static str> {
+    let t = sqlite_type.to_uppercase();
+    match t.as_str() {
+        "INTEGER" | "INT" | "BIGINT" | "SMALLINT" | "TINYINT" | "MEDIUMINT" => Some("BIGINT"),
+        "REAL" | "FLOAT" | "DOUBLE" => Some("DOUBLE"),
+        "NUMERIC" | "DECIMAL" => Some("DECIMAL"),
+        "BOOLEAN" => Some("BOOLEAN"),
+        "DATE" => Some("DATE"),
+        "TIME" => Some("TIME"),
+        "DATETIME" | "TIMESTAMP" => Some("TIMESTAMP"),
+        "TEXT" | "VARCHAR" | "STRING" | "CHAR" | "CLOB" | "" => None,
+        _ => None,
+    }
 }

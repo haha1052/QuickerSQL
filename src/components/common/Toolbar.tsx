@@ -21,12 +21,21 @@ import type { WorkspaceTabType, ImportItem } from '../../types';
 import { useLocale } from '../../context/LocaleContext';
 
 interface LayoutMenuItemProps {
+  /** 菜单项显示文本 */
   label: string;
+  /** 点击菜单项的回调 */
   onClick: () => void;
+  /** 是否为菜单第一项（用于边框样式） */
   isFirst?: boolean;
+  /** 是否为菜单最后一项（用于边框样式） */
   isLast?: boolean;
 }
 
+/**
+ * 布局菜单项组件（用于 Toolbar 的布局下拉菜单）
+ *
+ * @param props - 见 LayoutMenuItemProps
+ */
 const LayoutMenuItem: React.FC<LayoutMenuItemProps> = ({ label, onClick }) => {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -50,13 +59,34 @@ const LayoutMenuItem: React.FC<LayoutMenuItemProps> = ({ label, onClick }) => {
 };
 
 interface ToolbarProps {
+  /** 当前激活的 Tab 类型，决定渲染哪一种工具栏（csv / sql / dashboard / automation） */
   activeTab: TabType;
+  /** 添加文件回调（保留接口，当前未使用） */
   onAddFile?: () => void;
+  /** 批量导入回调；csv Tab 下点击「批量导入」按钮时触发 */
   onBatchImport?: () => void;
+  /** 清空队列回调；csv Tab 下点击「清空」按钮时触发 */
   onClearQueue?: () => void;
+  /** 是否使用紧凑模式（更小的按钮与间距）；默认 false */
   compact?: boolean;
 }
 
+/**
+ * 顶部工具栏组件
+ *
+ * 职责：
+ * - 根据 activeTab 渲染不同工具栏：
+ *   - csv：添加文件、全选、表头切换、批量导入、清空队列
+ *   - sql：新建 SQL、打开/保存 .sql 文件、刷新数据库状态、导出结果 CSV、布局切换
+ *   - dashboard / automation：返回 null（不显示工具栏）
+ * - 布局下拉菜单提供 4 种预设：100/0、80/20、50/50、20/80
+ * - 通过 tauriService 调用 loadCsv / getExcelSheets / loadExcelSheet 等接口
+ *
+ * 副作用：
+ * - 点击外部时关闭布局下拉菜单（document mousedown 监听）
+ *
+ * @param props - 见 ToolbarProps
+ */
 export const Toolbar: React.FC<ToolbarProps> = ({
   activeTab,
   onAddFile: _onAddFile, // 未使用的参数

@@ -320,7 +320,7 @@ mod tests {
             let request = RecordQueryHistoryRequest {
                 sql: format!("SELECT {} FROM dual", i),
                 name: Some(format!("查询{}", i)),
-                execution_time_ms: Some(10 * i as i64),
+                execution_time_ms: Some(10 * i),
                 row_count: Some(i),
                 success: true,
                 error_message: None,

@@ -7,6 +7,11 @@ import { TaskEditorModal } from './TaskEditorModal';
 import { TaskRunLogsPanel } from './TaskRunLogsPanel';
 import type { Task, TaskType, TaskState, TaskRunStatus } from '../../types/automation';
 
+/**
+ * 将 Unix 时间戳（秒）格式化为 yyyy-MM-dd HH:mm 字符串
+ * @param ts - Unix 时间戳（秒），为 null 时返回 '-'
+ * @returns 格式化后的日期字符串
+ */
 const formatDateTime = (ts: number | null): string => {
   if (!ts) return '-';
   const d = new Date(ts * 1000);
@@ -14,6 +19,12 @@ const formatDateTime = (ts: number | null): string => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+/**
+ * 渲染任务类型徽章（SQL / 刷新图表 / 刷新仪表盘 / 导出 CSV）
+ * @param t - i18n 翻译函数
+ * @param taskType - 任务类型
+ * @returns 带颜色背景的徽章 ReactNode
+ */
 const getTaskTypeBadge = (t: (key: string) => string, taskType: TaskType): React.ReactNode => {
   const map: Record<TaskType, React.CSSProperties> = {
     sql: { background: 'rgba(0,123,255,0.12)', color: Colors.primary },
@@ -39,6 +50,12 @@ const getTaskTypeBadge = (t: (key: string) => string, taskType: TaskType): React
   );
 };
 
+/**
+ * 渲染任务状态徽章（enabled / disabled / paused）
+ * @param t - i18n 翻译函数
+ * @param state - 任务状态
+ * @returns 带颜色背景的徽章 ReactNode
+ */
 const getStateBadge = (t: (key: string) => string, state: TaskState): React.ReactNode => {
   const map: Record<TaskState, React.CSSProperties> = {
     enabled: { background: 'rgba(40,167,69,0.15)', color: Colors.success },
@@ -62,6 +79,12 @@ const getStateBadge = (t: (key: string) => string, state: TaskState): React.Reac
   );
 };
 
+/**
+ * 渲染任务最近一次运行状态徽章（success / failed / running / skipped）
+ * @param t - i18n 翻译函数
+ * @param status - 运行状态；为 null/undefined 时返回 '-'
+ * @returns 带颜色背景的徽章 ReactNode
+ */
 const getRunStatusBadge = (t: (key: string) => string, status: TaskRunStatus | undefined | null): React.ReactNode => {
   if (!status) return <span style={{ color: Colors.textSecondary, fontSize: FontSizes.caption }}>-</span>;
   const map: Record<TaskRunStatus, React.CSSProperties> = {
@@ -88,6 +111,16 @@ const getRunStatusBadge = (t: (key: string) => string, status: TaskRunStatus | u
   );
 };
 
+/**
+ * 根据任务的调度模式生成可读摘要
+ * - interval：按秒数转换为天/小时/分钟/秒描述
+ * - cron：直接展示 cron 表达式
+ * - 其他：返回"仅手动执行"
+ *
+ * @param t - i18n 翻译函数，支持 vars 参数
+ * @param task - 任务对象
+ * @returns 调度摘要字符串
+ */
 const getScheduleSummary = (t: (key: string, vars?: Record<string, string | number>) => string, task: Task): string => {
   if (task.scheduleMode === 'interval') {
     const v = parseInt(task.scheduleValue, 10);
@@ -100,6 +133,22 @@ const getScheduleSummary = (t: (key: string, vars?: Record<string, string | numb
   return t('task.scheduleManualOnly');
 };
 
+/**
+ * 任务中心页面组件
+ *
+ * 职责：
+ * - 左右分栏布局：左侧为任务列表（统计卡片 + 筛选 + 表格 + 分页），右侧为 TaskRunLogsPanel
+ * - 支持按状态、类型、调度模式筛选；按名称/描述搜索；按更新时间/名称排序
+ * - 分页展示（默认每页 20 条，可切换 10/20/50/100），支持上一页/下一页
+ * - 行操作：启用/禁用切换、立即运行、编辑、删除（带 confirm）
+ * - 顶部「新建任务」按钮打开 TaskEditorModal
+ * - 中间分隔条可拖拽调整左右栏宽度（限制 30%-70%）
+ *
+ * 副作用：
+ * - 启动时优先消费 StartupContext 中的 tasks 缓存
+ * - 启动后每 30 秒后台调用 loadTasks 刷新
+ * - 拖拽时为 document 注册 mousemove/mouseup 监听
+ */
 export const TaskCenterPage: React.FC = () => {
   const {
     tasks,

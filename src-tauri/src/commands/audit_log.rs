@@ -14,7 +14,10 @@ pub fn record_audit_log_cmd(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[audit_log] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     let enabled = SettingsService::get_setting(&conn, "security", "enableAuditLog")
         .ok()
@@ -39,7 +42,10 @@ pub fn query_audit_logs_cmd(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[audit_log] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AuditLogService::query_audit_logs(&conn, request)
 }
 
@@ -53,7 +59,10 @@ pub fn cleanup_expired_audit_logs_cmd(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[audit_log] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AuditLogService::cleanup_expired_logs(&conn, retention_days)
 }
 
@@ -64,7 +73,10 @@ pub fn count_audit_logs_cmd(state: State<'_, TauriAppState>) -> Result<i64, Stri
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[audit_log] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AuditLogService::count_audit_logs(&conn)
 }
 
@@ -75,6 +87,9 @@ pub fn clear_all_audit_logs_cmd(state: State<'_, TauriAppState>) -> Result<(), S
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[audit_log] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     AuditLogService::clear_all_audit_logs(&conn)
 }

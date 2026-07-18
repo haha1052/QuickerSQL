@@ -2,9 +2,19 @@ import { create } from 'zustand';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
+/**
+ * Toast 消息支持两种形式：
+ * - string：直接显示的字符串（如已翻译文本、后端原始错误）
+ * - { key, vars? }：i18n key + 翻译变量，由 Toast UI 组件调用 t() 翻译
+ *
+ * 设计原因：stores 不在 React 树内无法调用 useLocale()，所以通过对象形式传递 i18n key，
+ * 由组件层（Toast.tsx）在渲染时翻译。组件层调用 addToast 时也可直接传 string。
+ */
+export type ToastMessage = string | { key: string; vars?: Record<string, string | number> };
+
 export interface Toast {
   id: string;
-  message: string;
+  message: ToastMessage;
   type: ToastType;
   duration: number;
 }
@@ -12,7 +22,7 @@ export interface Toast {
 interface ToastState {
   toasts: Toast[];
   maxToasts: number;
-  addToast: (message: string, type?: ToastType, duration?: number) => string;
+  addToast: (message: ToastMessage, type?: ToastType, duration?: number) => string;
   removeToast: (id: string) => void;
   clearToasts: () => void;
 }

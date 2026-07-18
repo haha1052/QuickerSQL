@@ -2,7 +2,7 @@
 
 > 优先级：高（仅次于 security.md / architecture.md）
 > 适用：Rust 与 TS 两部分代码；子 Agent 在任何"代码生成/修改"任务中必须遵循本文件。
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；新增 MCP 工具验证命令，异常处理/命名规范可程序化验证）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；新增 MCP 工具验证命令，异常处理/命名规范可程序化验证）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 

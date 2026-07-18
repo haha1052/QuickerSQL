@@ -3,7 +3,7 @@
 > 优先级：高。AI 在 Code/IDE 模式下做开发时的工具使用规范。
 > 配套文档：[AGENTS.md 第七部分（§7）](file:///e:/LA_DUCK/la-duck/AGENTS.md)
 > 生效范围：主 Agent 与所有子 Agent（通过 general_purpose_task 发起的任务）
-> 版本：**v11.0**（2026-06-22，与 AGENTS.md 同步；增加 Spec-MD 规格驱动开发工具说明、MCP 工具验证命令汇总、典型任务的工具调用模板）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
+> 版本：**v12.0**（2026-07-17，与 AGENTS.md 同步；增加 Spec-MD 规格驱动开发工具说明、MCP 工具验证命令汇总、典型任务的工具调用模板）。版本变更记录仅在 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) 中维护。
 
 ---
 

@@ -57,7 +57,7 @@ export const useQueryExecution = () => {
 
         if (!batchResults || !Array.isArray(batchResults)) {
           console.error('[useQueryExecution] Invalid batchResults format:', response.data);
-          setMessage('查询结果解析失败，请稍后重试', 'error');
+          setMessage(t('error.query.parse_failed'), 'error');
           return;
         }
 
@@ -85,12 +85,12 @@ export const useQueryExecution = () => {
         }
       } else {
         console.error('[useQueryExecution] SQL execution error:', response.error);
-        setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+        setMessage(t('error.query.check_syntax'), 'error');
         addToHistory(sqlSource, false, null, maxHistorySize);
       }
     } catch (error) {
       console.error('[useQueryExecution] SQL execution exception:', error);
-      setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+      setMessage(t('error.query.check_syntax'), 'error');
       addToHistory(sqlSource, false, null, maxHistorySize);
     } finally {
       setQueryLoading(null);

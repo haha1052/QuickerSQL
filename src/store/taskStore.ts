@@ -265,7 +265,8 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       });
       endLoading(set);
     } catch (err) {
-      useToastStore.getState().addToast(`加载任务列表失败: ${String(err)}`, 'error');
+      console.error('[loadTasks] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.load_failed' }, 'error');
       set({ error: String(err) });
       endLoading(set);
     }
@@ -287,11 +288,12 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       if (!response.success || !response.data) {
         throw new Error(response.error || '创建任务失败');
       }
-      useToastStore.getState().addToast(`任务 "${response.data.name}" 已创建`, 'success');
+      useToastStore.getState().addToast({ key: 'task.created', vars: { name: response.data.name } }, 'success');
       await get().loadTasks();
       return response.data;
     } catch (err) {
-      useToastStore.getState().addToast(`创建任务失败: ${String(err)}`, 'error');
+      console.error('[createTask] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.create_failed' }, 'error');
       set({ error: String(err) });
       return null;
     } finally {
@@ -309,7 +311,8 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       await get().loadTasks();
       return response.data;
     } catch (err) {
-      useToastStore.getState().addToast(`更新任务失败: ${String(err)}`, 'error');
+      console.error('[updateTask] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.update_failed' }, 'error');
       set({ error: String(err) });
       return null;
     } finally {
@@ -324,14 +327,15 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       if (!response.success) {
         throw new Error(response.error || '删除任务失败');
       }
-      useToastStore.getState().addToast('任务已删除', 'success');
+      useToastStore.getState().addToast({ key: 'task.deleted' }, 'success');
       if (get().selectedTaskId === id) {
         set({ selectedTaskId: null, taskRuns: [] });
       }
       await get().loadTasks();
       return true;
     } catch (err) {
-      useToastStore.getState().addToast(`删除任务失败: ${String(err)}`, 'error');
+      console.error('[deleteTask] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.delete_failed' }, 'error');
       set({ error: String(err) });
       return false;
     } finally {
@@ -346,11 +350,12 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       if (!response.success || !response.data) {
         throw new Error(response.error || '启用任务失败');
       }
-      useToastStore.getState().addToast(`任务已启用`, 'success');
+      useToastStore.getState().addToast({ key: 'task.enabled_short' }, 'success');
       await get().loadTasks();
       return response.data;
     } catch (err) {
-      useToastStore.getState().addToast(`启用任务失败: ${String(err)}`, 'error');
+      console.error('[enableTask] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.enable_failed' }, 'error');
       set({ error: String(err) });
       return null;
     } finally {
@@ -365,11 +370,12 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       if (!response.success || !response.data) {
         throw new Error(response.error || '禁用任务失败');
       }
-      useToastStore.getState().addToast(`任务已禁用`, 'success');
+      useToastStore.getState().addToast({ key: 'task.disabled_short' }, 'success');
       await get().loadTasks();
       return response.data;
     } catch (err) {
-      useToastStore.getState().addToast(`禁用任务失败: ${String(err)}`, 'error');
+      console.error('[disableTask] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.disable_failed' }, 'error');
       set({ error: String(err) });
       return null;
     } finally {
@@ -384,14 +390,15 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
       if (!response.success || !response.data) {
         throw new Error(response.error || '执行任务失败');
       }
-      useToastStore.getState().addToast(`任务执行成功`, 'success');
+      useToastStore.getState().addToast({ key: 'task.executed' }, 'success');
       await get().loadTasks();
       if (get().selectedTaskId === id) {
         await get().loadTaskRuns(id, 50);
       }
       return response.data;
     } catch (err) {
-      useToastStore.getState().addToast(`执行任务失败: ${String(err)}`, 'error');
+      console.error('[runTaskNow] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.run_failed' }, 'error');
       set({ error: String(err) });
       return null;
     } finally {
@@ -451,10 +458,11 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
             },
           };
         });
-        useToastStore.getState().addToast('依赖已添加', 'success');
+        useToastStore.getState().addToast({ key: 'task.dependency_added' }, 'success');
       }
     } catch (err) {
-      useToastStore.getState().addToast(`添加依赖失败: ${String(err)}`, 'error');
+      console.error('[addDependency] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.add_dependency_failed' }, 'error');
     }
   },
 
@@ -473,10 +481,11 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
             },
           };
         });
-        useToastStore.getState().addToast('依赖已更新', 'success');
+        useToastStore.getState().addToast({ key: 'task.dependency_updated' }, 'success');
       }
     } catch (err) {
-      useToastStore.getState().addToast(`更新依赖失败: ${String(err)}`, 'error');
+      console.error('[updateDependency] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.update_dependency_failed' }, 'error');
     }
   },
 
@@ -493,10 +502,11 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
             },
           };
         });
-        useToastStore.getState().addToast('依赖已删除', 'success');
+        useToastStore.getState().addToast({ key: 'task.dependency_deleted' }, 'success');
       }
     } catch (err) {
-      useToastStore.getState().addToast(`删除依赖失败: ${String(err)}`, 'error');
+      console.error('[deleteDependency] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.delete_dependency_failed' }, 'error');
     }
   },
 
@@ -510,10 +520,11 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
             [taskId]: response.data as TaskDependency[],
           },
         }));
-        useToastStore.getState().addToast('依赖已更新', 'success');
+        useToastStore.getState().addToast({ key: 'task.dependency_updated' }, 'success');
       }
     } catch (err) {
-      useToastStore.getState().addToast(`更新依赖失败: ${String(err)}`, 'error');
+      console.error('[replaceDependencies] failed:', err);
+      useToastStore.getState().addToast({ key: 'error.task.replace_dependency_failed' }, 'error');
     }
   },
 

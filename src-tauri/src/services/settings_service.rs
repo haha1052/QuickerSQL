@@ -8,6 +8,9 @@ use chrono::Utc;
 /// 设置服务
 pub struct SettingsService;
 
+/// 默认设置项元组类型：(category, key, default_value, value_type, options, description)
+type DefaultSettingEntry = (String, String, String, SettingValueType, Option<String>, Option<String>);
+
 /// 分类定义
 const CATEGORIES: &[(&str, &str, &str)] = &[
     ("appearance", "外观", "🎨"),
@@ -27,7 +30,12 @@ const CATEGORIES: &[(&str, &str, &str)] = &[
 ];
 
 /// 默认设置定义
-fn default_settings() -> Vec<(String, String, String, SettingValueType, Option<String>, Option<String>)> {
+///
+/// 保留说明（> 80 行）：本函数为纯数据初始化器，无任何逻辑分支；每行为一条设置项元组，
+/// 已按分类用 `// ========== xxx (n项) ==========` 注释分块组织。
+/// 拆分为 ~14 个分类辅助函数会过度碎片化静态数据表、反而降低可读性，
+/// 故按 P2-4 验收标准"保留项须有注释说明保留理由"保留为单函数。
+fn default_settings() -> Vec<DefaultSettingEntry> {
     vec![
         // ========== 外观设置 (7项) ==========
         ("appearance".to_string(), "theme".to_string(), "light".to_string(), SettingValueType::Select, Some(r#"["light","dark","system"]"#.to_string()), Some("界面主题".to_string())),
@@ -180,6 +188,11 @@ fn default_settings() -> Vec<(String, String, String, SettingValueType, Option<S
 }
 
 /// 返回已实现的设置项集合（分类, 键）
+///
+/// 保留说明（> 80 行）：本函数为纯数据初始化器，仅向 HashSet 插入 (category, key) 元组，
+/// 已按分类用 `// ========== xxx (n项) ==========` 注释分块组织。
+/// 拆分为 ~14 个分类辅助函数会过度碎片化静态数据表、反而降低可读性，
+/// 故按 P2-4 验收标准"保留项须有注释说明保留理由"保留为单函数。
 fn implemented_settings() -> std::collections::HashSet<(String, String)> {
     let mut set = std::collections::HashSet::new();
 
@@ -581,7 +594,7 @@ impl SettingsService {
         
         // 处理每行数据
         for row in result.rows {
-            let id = row.get(0).ok_or("设置数据缺少 id 列")?.clone();
+            let id = row.first().ok_or("设置数据缺少 id 列")?.clone();
             let category_str = row.get(1).ok_or("设置数据缺少 category 列")?.clone();
             let key = row.get(2).ok_or("设置数据缺少 key 列")?.clone();
             let value = row.get(3).ok_or("设置数据缺少 value 列")?.clone();
@@ -635,66 +648,39 @@ impl SettingsService {
         let select_sql = "SELECT id, category, key, value, value_type, description, options, is_visible, is_system, updated_at FROM __settings WHERE category = ? AND key = ?";
         let result = conn.query(select_sql, &[&category, &key])
             .map_err(|e| format!("获取设置失败：{}", e))?;
-        
-        if result.rows.is_empty() {
-            // Fallback 逻辑：处理重命名/迁移的设置项
-            let fallback = match (category, key) {
-                ("editor", "tabSize") => Some(("appearance", "tabSize")),
-                ("database", "queryTimeout") => Some(("performance", "query_timeout")),
-                _ => None,
-            };
 
-            if let Some((fallback_category, fallback_key)) = fallback {
-                let fallback_sql = "SELECT id, category, key, value, value_type, description, options, is_visible, is_system, updated_at FROM __settings WHERE category = ? AND key = ?";
-                let fallback_result = conn.query(fallback_sql, &[&fallback_category, &fallback_key])
-                    .map_err(|e| format!("获取 fallback 设置失败：{}", e))?;
-
-                if !fallback_result.rows.is_empty() {
-                    let row = fallback_result.rows.get(0).ok_or("fallback 设置数据行不存在")?;
-                    let id = row.get(0).ok_or("设置数据缺少 id 列")?.clone();
-                    let category_str = row.get(1).ok_or("设置数据缺少 category 列")?.clone();
-                    let key_str = row.get(2).ok_or("设置数据缺少 key 列")?.clone();
-                    let value = row.get(3).ok_or("设置数据缺少 value 列")?.clone();
-                    let value_type_str = row.get(4).ok_or("设置数据缺少 value_type 列")?.clone();
-                    let description = row.get(5).map(|s| if s.is_empty() { None } else { Some(s.clone()) }).unwrap_or(None);
-                    let options = row.get(6).map(|s| if s.is_empty() { None } else { Some(s.clone()) }).unwrap_or(None);
-                    let is_visible = row.get(7).map(|s| s.parse().unwrap_or(true)).unwrap_or(true);
-                    let is_system = row.get(8).map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
-                    let updated_at_str = row.get(9).ok_or("设置数据缺少 updated_at 列")?.clone();
-
-                    let value_type = match value_type_str.to_lowercase().as_str() {
-                        "number" => SettingValueType::Number,
-                        "boolean" => SettingValueType::Boolean,
-                        "select" => SettingValueType::Select,
-                        "multiselect" => SettingValueType::MultiSelect,
-                        _ => SettingValueType::String,
-                    };
-
-                    let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now());
-
-                    return Ok(Some(SettingItem {
-                        id,
-                        category: category_str,
-                        key: key_str,
-                        value,
-                        value_type,
-                        description,
-                        options,
-                        is_visible,
-                        is_system,
-                        updated_at,
-                    }));
-                }
-            }
-
-            return Ok(None);
+        if let Some(row) = result.rows.first() {
+            return Ok(Some(Self::row_to_setting_item(row)?));
         }
-        
-        // SAFETY: 上面已检查 result.rows 非空，所以 get(0) 一定返回 Some
-        let row = result.rows.get(0).ok_or("设置数据行不存在")?;
-        let id = row.get(0).ok_or("设置数据缺少 id 列")?.clone();
+
+        // Fallback 逻辑：处理重命名/迁移的设置项
+        if let Some((fallback_category, fallback_key)) = Self::get_fallback_mapping(category, key) {
+            let fallback_sql = "SELECT id, category, key, value, value_type, description, options, is_visible, is_system, updated_at FROM __settings WHERE category = ? AND key = ?";
+            let fallback_result = conn.query(fallback_sql, &[&fallback_category, &fallback_key])
+                .map_err(|e| format!("获取 fallback 设置失败：{}", e))?;
+
+            if let Some(row) = fallback_result.rows.first() {
+                return Ok(Some(Self::row_to_setting_item(row)?));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// 设置项重命名/迁移的 fallback 映射
+    /// 当查询原始 (category, key) 失败时，尝试这些已重命名的旧位置
+    fn get_fallback_mapping(category: &str, key: &str) -> Option<(&'static str, &'static str)> {
+        match (category, key) {
+            ("editor", "tabSize") => Some(("appearance", "tabSize")),
+            ("database", "queryTimeout") => Some(("performance", "query_timeout")),
+            _ => None,
+        }
+    }
+
+    /// 从查询结果行解析 SettingItem（10 列固定顺序）
+    /// 同时被 get_setting 主查询与 fallback 查询复用，避免两处重复解析
+    fn row_to_setting_item(row: &[String]) -> Result<SettingItem, String> {
+        let id = row.first().ok_or("设置数据缺少 id 列")?.clone();
         let category_str = row.get(1).ok_or("设置数据缺少 category 列")?.clone();
         let key_str = row.get(2).ok_or("设置数据缺少 key 列")?.clone();
         let value = row.get(3).ok_or("设置数据缺少 value 列")?.clone();
@@ -704,7 +690,7 @@ impl SettingsService {
         let is_visible = row.get(7).map(|s| s.parse().unwrap_or(true)).unwrap_or(true);
         let is_system = row.get(8).map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
         let updated_at_str = row.get(9).ok_or("设置数据缺少 updated_at 列")?.clone();
-        
+
         let value_type = match value_type_str.to_lowercase().as_str() {
             "number" => SettingValueType::Number,
             "boolean" => SettingValueType::Boolean,
@@ -712,12 +698,12 @@ impl SettingsService {
             "multiselect" => SettingValueType::MultiSelect,
             _ => SettingValueType::String,
         };
-        
+
         let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
-        
-        Ok(Some(SettingItem {
+
+        Ok(SettingItem {
             id,
             category: category_str,
             key: key_str,
@@ -728,7 +714,7 @@ impl SettingsService {
             is_visible,
             is_system,
             updated_at,
-        }))
+        })
     }
 
     /// 更新设置
@@ -912,10 +898,9 @@ mod tests {
         let cat = "";
         let key = "someKey";
         assert!(cat.is_empty(), "空 category 应被拒绝");
-        // 正常路径
-        assert!(!"validCat".is_empty());
-        assert!(!"someKey".is_empty());
-        let _ = key;
+        // 正常路径（占位断言：原代码用 const 字面量断言非空，已被 clippy 标记为常量
+        // 表达式始终为 false，移除等价于无操作，保留注释说明原意图）
+        let _ = ("validCat", key);
     }
 
     #[test]

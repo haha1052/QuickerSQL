@@ -473,11 +473,13 @@ impl DatabaseService {
 
         for batch in rows.chunks(batch_size) {
             // 构建批量插入的 SQL: INSERT INTO table (cols) VALUES (row1), (row2), ...
-            let row_placeholders: Vec<String> = std::iter::repeat(format!(
-                "({})",
-                std::iter::repeat("?").take(columns.len()).collect::<Vec<_>>().join(", ")
-            ))
-            .take(batch.len())
+            let row_placeholders: Vec<String> = std::iter::repeat_n(
+                format!(
+                    "({})",
+                    std::iter::repeat_n("?", columns.len()).collect::<Vec<_>>().join(", ")
+                ),
+                batch.len(),
+            )
             .collect();
 
             let sql = format!(

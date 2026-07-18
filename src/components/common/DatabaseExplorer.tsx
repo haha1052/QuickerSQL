@@ -15,11 +15,20 @@ const WRAPPER_SIZE = 16;
 const LARGE_TABLE_THRESHOLD = 10000;
 
 // ============ 类型定义 ============
+/** 表排序方式：名称升/降序、行数降序、列数降序 */
 type SortKey = 'name_asc' | 'name_desc' | 'row_count_desc' | 'column_count_desc';
+/** 分组模式：系统/用户分组、首字母分组、不分组 */
 type GroupMode = 'system_user' | 'first_letter' | 'none';
 
 // ============ 工具函数 ============
+/** 将数字按 zh-CN 区域格式化为千位分隔字符串 */
 const formatCount = (n: number) => n.toLocaleString('zh-CN');
+
+/**
+ * 将字节数格式化为带单位的可读字符串（B/KB/MB/GB/TB）
+ * @param bytes - 字节数
+ * @returns 形如 "1.5 MB" 的字符串；<=0 时返回 "0 B"
+ */
 const formatSize = (bytes: number) => {
   if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -32,7 +41,12 @@ const formatSize = (bytes: number) => {
   return `${size.toFixed(1)} ${units[i]}`;
 };
 
-// 搜索词高亮：在 text 中找到 keyword 并将其用 <mark> 包裹
+/**
+ * 搜索词高亮：在 text 中找到 keyword 并将其用 <mark> 包裹
+ * @param text - 原始文本
+ * @param keyword - 搜索关键词（大小写不敏感）
+ * @returns 包含高亮 span 的 ReactNode；未匹配时返回原文本
+ */
 const highlightText = (text: string, keyword: string): React.ReactNode => {
   if (!keyword) return text;
   const lower = text.toLowerCase();
@@ -48,6 +62,27 @@ const highlightText = (text: string, keyword: string): React.ReactNode => {
   );
 };
 
+/**
+ * 数据库浏览器组件
+ *
+ * 职责：
+ * - 列出所有表（用户表 + 系统表），支持搜索、排序、分组
+ * - 表行可展开查看列信息（懒加载 columnsCache 与 metaCache）
+ * - 双击表名生成 `SELECT * FROM <table> LIMIT 100` 并打开新 SQL Tab
+ * - 右键菜单提供：查看前 100 行、复制表名、生成 SELECT/COUNT/INSERT 模板、重命名、删除
+ * - 删除表时按 row_count 与 confirmBeforeDelete 设置走回收站流程
+ * - 排序：名称升/降序、行数降序、列数降序
+ * - 分组：系统/用户分组、首字母分组、不分组
+ *
+ * 副作用：
+ * - 启动时优先消费 StartupContext 的 tablesList
+ * - 启动后 500ms 若本地仍为空则触发 listTables
+ * - storeTables 变化时同步到本地 tables
+ *
+ * 设置依赖：
+ * - trash.confirmBeforeDelete：是否删除前确认
+ * - database.showSystemTables：是否显示系统表
+ */
 export const DatabaseExplorer: React.FC = () => {
   const { t } = useLocale();
 

@@ -1,6 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useToastStore, type Toast as ToastItem } from '../../store';
+import { useLocale } from '../../context/LocaleContext';
 
+/**
+ * 根据 Toast 类型返回背景/文字/边框配色
+ * @param type - Toast 类型（success / error / warning / 其他默认 info）
+ * @returns 包含 background、color、borderColor 的样式对象
+ */
 const getToastStyles = (type: ToastItem['type']) => {
   switch (type) {
     case 'success':
@@ -30,6 +36,11 @@ const getToastStyles = (type: ToastItem['type']) => {
   }
 };
 
+/**
+ * 根据 Toast 类型返回对应的 emoji 图标
+ * @param type - Toast 类型
+ * @returns 对应的 emoji 字符串
+ */
 const getIcon = (type: ToastItem['type']) => {
   switch (type) {
     case 'success':
@@ -44,18 +55,41 @@ const getIcon = (type: ToastItem['type']) => {
 };
 
 interface SingleToastProps {
+  /** 单条 Toast 数据，包含 id、type、message、duration 等 */
   toast: ToastItem;
+  /** 移除 Toast 的回调，参数为 Toast id；动画结束后触发 */
   onRemove: (id: string) => void;
 }
 
+/**
+ * 单条 Toast 组件
+ *
+ * 职责：
+ * - 渲染单条 Toast（图标 + 消息 + 关闭按钮）
+ * - 自动倒计时关闭（duration 为 0 时不自动关闭）
+ * - 鼠标悬停时暂停倒计时，移开后继续剩余时长
+ * - 关闭时先触发淡出动画（200ms）再调用 onRemove
+ *
+ * 副作用：
+ * - 通过 setTimeout 实现倒计时
+ * - 通过 useEffect 响应 isPaused 与 toast.duration 变化
+ *
+ * @param props - 见 SingleToastProps
+ */
 const SingleToast: React.FC<SingleToastProps> = ({ toast, onRemove }) => {
   const [isPaused, setIsPaused] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
   const timerRef = useRef<number | null>(null);
   const elapsedRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
+  const { t } = useLocale();
 
   const styles = getToastStyles(toast.type);
+
+  // 当 message 是 { key, vars } 对象时，调用 t() 翻译；否则直接显示 string
+  const displayMessage = typeof toast.message === 'string'
+    ? toast.message
+    : t(toast.message.key, toast.message.vars);
 
   useEffect(() => {
     if (toast.duration === 0) return;
@@ -134,7 +168,7 @@ const SingleToast: React.FC<SingleToastProps> = ({ toast, onRemove }) => {
     >
       <span style={{ fontSize: 18, lineHeight: 1.4, flexShrink: 0 }}>{getIcon(toast.type)}</span>
       <span style={{ flex: 1, lineHeight: 1.5, wordBreak: 'break-word', fontSize: 14 }}>
-        {toast.message}
+        {displayMessage}
       </span>
       <button
         onClick={() => {
@@ -158,6 +192,16 @@ const SingleToast: React.FC<SingleToastProps> = ({ toast, onRemove }) => {
   );
 };
 
+/**
+ * Toast 容器组件
+ *
+ * 职责：
+ * - 固定在屏幕右上角（top: 72px, right: 24px）
+ * - 从 useToastStore 读取所有 toasts 并渲染为 SingleToast 列表
+ * - 容器本身 pointerEvents: 'none'，单条 Toast 重新启用 'auto' 以支持悬停
+ *
+ * 用法：在应用根节点挂载一次即可，配合 useToastStore.addToast 使用
+ */
 export const Toast: React.FC = () => {
   const { toasts, removeToast } = useToastStore();
 

@@ -285,6 +285,8 @@ impl AuditLogService {
 mod tests {
     use super::*;
 
+    // 测试辅助函数：8 个参数构造一行审计日志，重构收益低
+    #[allow(clippy::too_many_arguments)]
     fn build_row(
         id: &str,
         ts: &str,

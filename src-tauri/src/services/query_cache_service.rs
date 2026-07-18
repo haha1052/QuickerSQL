@@ -497,7 +497,7 @@ mod tests {
         cache.configure(100, 300, false, None);
         cache.set("k1".to_string(), dummy_result(5));
         assert!(cache.get("k1").is_none(), "禁用后应不返回任何内容");
-        assert_eq!(cache.stats().enabled, false);
+        assert!(!cache.stats().enabled);
     }
 
     #[test]

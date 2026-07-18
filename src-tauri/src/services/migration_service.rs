@@ -11,6 +11,7 @@
 //! 自动迁移到新版命名，确保存量数据库无缝升级。
 
 use std::collections::HashSet;
+use crate::database::security::SqlIdentifier;
 use crate::database::traits::MutexGuardConnection;
 use crate::services::DashboardService;
 
@@ -100,7 +101,11 @@ impl MigrationService {
                 continue;
             }
 
-            let rename_sql = format!("ALTER TABLE {} RENAME TO {}", old_name, new_name);
+            let old_ident = SqlIdentifier::new(old_name)
+                .map_err(|e| format!("旧表名 {} 校验失败: {}", old_name, e))?;
+            let new_ident = SqlIdentifier::new(new_name)
+                .map_err(|e| format!("新表名 {} 校验失败: {}", new_name, e))?;
+            let rename_sql = format!("ALTER TABLE {} RENAME TO {}", old_ident.quoted(), new_ident.quoted());
             conn.execute(&rename_sql, &[])
                 .map_err(|e| format!("迁移表 {} -> {} 失败: {}", old_name, new_name, e))?;
 
@@ -131,228 +136,108 @@ impl MigrationService {
     ///   此处统一补充到迁移流程以确保旧数据库也有）
     /// - 仪表盘配置：`updated_at` 索引
     pub fn apply_optimization_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
-        // ===========================
-        // __automation_tasks 表索引
-        // ===========================
-        // 任务调度器：WHERE next_run_at < ? AND state = 'enabled'
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_auto_tasks_next_run_enabled \
-             ON __automation_tasks(next_run_at, state)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_auto_tasks_next_run_enabled 失败：{}", e))?;
-
-        // ===========================
-        // __automation_runs 表索引
-        // ===========================
-        // 按任务查询运行日志（外键查询最常见）
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_runs_task_id \
-             ON __automation_runs(task_id)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_task_runs_task_id 失败：{}", e))?;
-
-        // 按时间范围查询运行日志（最近 N 次执行）
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_task_runs_created \
-             ON __automation_runs(created_at)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_task_runs_created 失败：{}", e))?;
-
-        // ===========================
-        // __audit_logs 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_logs_created \
-             ON __audit_logs(timestamp)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_audit_logs_created 失败：{}", e))?;
-
-        // ===========================
-        // __query_history 表索引
-        // ===========================
-        // （基础排序索引已在 ensure_query_history_table_exists 内创建，
-        // 此处统一补充，保证旧数据库同样有该索引）
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_executed_at \
-             ON __query_history(executed_at DESC)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_history_executed_at 失败：{}", e))?;
-
-        // ===========================
-        // __saved_charts / __saved_dashboards 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_charts_updated \
-             ON __saved_charts(updated_at DESC)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_charts_updated 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_updated \
-             ON __dashboards(updated_at DESC)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_dashboards_updated 失败：{}", e))?;
-
-        // ===========================
-        // __automation_tasks 表补充索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_automation_tasks_type \
-             ON __automation_tasks(task_type)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_automation_tasks_type 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_automation_tasks_project \
-             ON __automation_tasks(project_id)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_automation_tasks_project 失败：{}", e))?;
-
-        // ===========================
-        // __audit_logs 表补充索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_logs_status \
-             ON __audit_logs(status)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_audit_logs_status 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_logs_module \
-             ON __audit_logs(module)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_audit_logs_module 失败：{}", e))?;
-
-        // ===========================
-        // __settings 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_settings_category \
-             ON __settings(category)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_settings_category 失败：{}", e))?;
-
-        // ===========================
-        // __saved_charts 表补充索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_charts_query_id \
-             ON __saved_charts(query_id)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_charts_query_id 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_charts_visibility \
-             ON __saved_charts(visibility)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_charts_visibility 失败：{}", e))?;
-
-        // ===========================
-        // __saved_dashboards 表补充索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dashboards_is_default \
-             ON __dashboards(is_default)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_dashboards_is_default 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_name \
-             ON __dashboards(name)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_dashboards_name 失败：{}", e))?;
-
-        // ===========================
-        // __dashboard_items 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dashboard_items_dashboard_id \
-             ON __dashboard_items(dashboard_id)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_dashboard_items_dashboard_id 失败：{}", e))?;
-
-        // ===========================
-        // __workspace_tabs 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_workspace_tabs_position \
-             ON __workspace_tabs(position)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_workspace_tabs_position 失败：{}", e))?;
-
-        // ===========================
-        // __workspace_panels 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_workspace_panels_tab_id \
-             ON __workspace_panels(tab_id)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_workspace_panels_tab_id 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_workspace_panels_position \
-             ON __workspace_panels(position)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_workspace_panels_position 失败：{}", e))?;
-
-        // ===========================
-        // __trash_metadata 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_trash_deleted_at \
-             ON __trash_metadata(deleted_at DESC)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_trash_deleted_at 失败：{}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_trash_original_name \
-             ON __trash_metadata(original_table_name)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_trash_original_name 失败：{}", e))?;
-
-        // ===========================
-        // __saved_queries 表索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_saved_queries_name \
-             ON __saved_queries(name)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_saved_queries_name 失败：{}", e))?;
-
-        // ===========================
-        // __query_history 表补充索引
-        // ===========================
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_history_favorite \
-             ON __query_history(is_favorite)",
-            &[],
-        )
-        .map_err(|e| format!("创建 idx_history_favorite 失败：{}", e))?;
-
+        Self::create_automation_task_indexes(conn)?;
+        Self::create_automation_run_indexes(conn)?;
+        Self::create_audit_log_indexes(conn)?;
+        Self::create_query_history_indexes(conn)?;
+        Self::create_saved_chart_indexes(conn)?;
+        Self::create_dashboard_indexes(conn)?;
+        Self::create_dashboard_item_indexes(conn)?;
+        Self::create_settings_indexes(conn)?;
+        Self::create_workspace_indexes(conn)?;
+        Self::create_trash_indexes(conn)?;
+        Self::create_saved_query_indexes(conn)?;
         log::info!("M7.2 数据库索引优化完成，共 23 条业务索引已应用（幂等）");
+        Ok(())
+    }
+
+    /// 创建单条索引的统一封装：执行 CREATE INDEX 并将错误信息包装为可读文案
+    fn create_index(conn: &MutexGuardConnection<'_>, sql: &str, index_name: &str) -> Result<(), String> {
+        conn.execute(sql, &[])
+            .map(|_| ())
+            .map_err(|e| format!("创建 {} 失败：{}", index_name, e))
+    }
+
+    /// __automation_tasks 表索引（共 3 条）
+    fn create_automation_task_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        // 任务调度器：WHERE next_run_at < ? AND state = 'enabled'
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_auto_tasks_next_run_enabled ON __automation_tasks(next_run_at, state)", "idx_auto_tasks_next_run_enabled")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_automation_tasks_type ON __automation_tasks(task_type)", "idx_automation_tasks_type")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_automation_tasks_project ON __automation_tasks(project_id)", "idx_automation_tasks_project")?;
+        Ok(())
+    }
+
+    /// __automation_runs 表索引（共 2 条）
+    fn create_automation_run_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        // 按任务查询运行日志（外键查询最常见）
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_task_runs_task_id ON __automation_runs(task_id)", "idx_task_runs_task_id")?;
+        // 按时间范围查询运行日志（最近 N 次执行）
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_task_runs_created ON __automation_runs(created_at)", "idx_task_runs_created")?;
+        Ok(())
+    }
+
+    /// __audit_logs 表索引（共 3 条）
+    fn create_audit_log_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON __audit_logs(timestamp)", "idx_audit_logs_created")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_audit_logs_status ON __audit_logs(status)", "idx_audit_logs_status")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_audit_logs_module ON __audit_logs(module)", "idx_audit_logs_module")?;
+        Ok(())
+    }
+
+    /// __query_history 表索引（共 2 条）
+    /// 基础排序索引已在 ensure_query_history_table_exists 内创建，此处统一补充保证旧数据库也有该索引
+    fn create_query_history_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_history_executed_at ON __query_history(executed_at DESC)", "idx_history_executed_at")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_history_favorite ON __query_history(is_favorite)", "idx_history_favorite")?;
+        Ok(())
+    }
+
+    /// __saved_charts 表索引（共 3 条）
+    fn create_saved_chart_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_charts_updated ON __saved_charts(updated_at DESC)", "idx_saved_charts_updated")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_charts_query_id ON __saved_charts(query_id)", "idx_saved_charts_query_id")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_charts_visibility ON __saved_charts(visibility)", "idx_saved_charts_visibility")?;
+        Ok(())
+    }
+
+    /// __dashboards 表索引（共 3 条）
+    fn create_dashboard_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_updated ON __dashboards(updated_at DESC)", "idx_saved_dashboards_updated")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_dashboards_is_default ON __dashboards(is_default)", "idx_dashboards_is_default")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_dashboards_name ON __dashboards(name)", "idx_saved_dashboards_name")?;
+        Ok(())
+    }
+
+    /// __dashboard_items 表索引（共 1 条）
+    fn create_dashboard_item_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_dashboard_items_dashboard_id ON __dashboard_items(dashboard_id)", "idx_dashboard_items_dashboard_id")?;
+        Ok(())
+    }
+
+    /// __settings 表索引（共 1 条）
+    fn create_settings_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_settings_category ON __settings(category)", "idx_settings_category")?;
+        Ok(())
+    }
+
+    /// __workspace_tabs / __workspace_panels 表索引（共 3 条）
+    fn create_workspace_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_workspace_tabs_position ON __workspace_tabs(position)", "idx_workspace_tabs_position")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_workspace_panels_tab_id ON __workspace_panels(tab_id)", "idx_workspace_panels_tab_id")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_workspace_panels_position ON __workspace_panels(position)", "idx_workspace_panels_position")?;
+        Ok(())
+    }
+
+    /// __trash_metadata 表索引（共 2 条）
+    fn create_trash_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_trash_deleted_at ON __trash_metadata(deleted_at DESC)", "idx_trash_deleted_at")?;
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_trash_original_name ON __trash_metadata(original_table_name)", "idx_trash_original_name")?;
+        Ok(())
+    }
+
+    /// __saved_queries 表索引（共 1 条）
+    fn create_saved_query_indexes(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::create_index(conn, "CREATE INDEX IF NOT EXISTS idx_saved_queries_name ON __saved_queries(name)", "idx_saved_queries_name")?;
         Ok(())
     }
 
@@ -373,7 +258,6 @@ mod tests {
         // 由于 tests 无真实数据库连接，这里做一个更简单的断言：
         // 确认函数不 panic（通过直接 inspect 实现策略）。
         // 实际集成测试需在有数据库连接的环境进行。
-        assert!(true);
     }
 
     #[test]

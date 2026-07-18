@@ -10,7 +10,7 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 
 [[package]]
 name = "QuickerSQL"
-version = "2.0.0"
+version = "2.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

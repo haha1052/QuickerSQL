@@ -15,11 +15,32 @@ import TrashPanel from '../trash';
 import { SnippetsPanel } from './SnippetsPanel';
 import type { SqlStatementResult } from '../../types';
 
+/**
+ * 应用左侧导航栏组件
+ *
+ * 职责：
+ * - 提供四个导航项：数据浏览器、查询历史、代码片段、回收站
+ * - 折叠状态下仅显示图标列，点击图标展开并切换到对应面板
+ * - 展开状态下显示图标 + 文字，并通过 setSidebarActiveTab 切换内容区
+ * - 内容区根据 activeTab 渲染 DatabaseExplorer / QueryHistory / SnippetsPanel / TrashPanel
+ *
+ * 副作用：
+ * - handleExecuteSqlFromHistory 会创建新 SQL Tab 并立即执行 SQL
+ * - handleInsertSql 将 SQL 片段追加到当前激活的查询编辑器
+ *
+ * @param props - 无 props（仅作为容器组件）
+ */
 export const Sidebar: React.FC = () => {
   const { sidebar, toggleSidebar, setSidebarActiveTab } = useWorkspaceStore();
   const { setActiveTab, setMessage } = useAppStore();
   const { t } = useLocale();
 
+  /**
+   * 从查询历史中执行 SQL：创建新 SQL Tab、写入 SQL 文本、立即调用 executeSql
+   * 成功时把批量结果写回 queryStore 并 addToHistory；失败时通过 setMessage 报错
+   *
+   * @param sql - 要执行的 SQL 语句
+   */
   const handleExecuteSqlFromHistory = async (sql: string) => {
     try {
       setActiveTab('sql');
@@ -85,6 +106,11 @@ export const Sidebar: React.FC = () => {
     }
   };
 
+  /**
+   * 将 SQL 片段追加到当前激活查询编辑器的末尾（用换行符分隔）
+   *
+   * @param sql - 要追加的 SQL 片段
+   */
   const handleInsertSql = (sql: string) => {
     try {
       setActiveTab('sql');

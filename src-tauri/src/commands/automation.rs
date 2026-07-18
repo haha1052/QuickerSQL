@@ -13,7 +13,10 @@ pub fn list_automation_tasks(
     filter_type: Option<String>,
     keyword: Option<String>,
 ) -> Result<TaskListResponse, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::list_tasks(&conn, filter_state, filter_type, keyword)
 }
 
@@ -22,7 +25,10 @@ pub fn get_automation_task(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<Task, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::get_task(&conn, &id)
 }
 
@@ -31,7 +37,10 @@ pub fn create_automation_task(
     state: State<'_, TauriAppState>,
     req: CreateTaskRequest,
 ) -> Result<Task, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::create_task(&conn, req)
 }
 
@@ -41,7 +50,10 @@ pub fn update_automation_task(
     id: String,
     patch: UpdateTaskRequest,
 ) -> Result<Task, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::update_task(&conn, &id, patch)
 }
 
@@ -50,7 +62,10 @@ pub fn delete_automation_task(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<(), String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::delete_task(&conn, &id)
 }
 
@@ -59,7 +74,10 @@ pub fn enable_automation_task(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<Task, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::enable_task(&conn, &id)
 }
 
@@ -68,7 +86,10 @@ pub fn disable_automation_task(
     state: State<'_, TauriAppState>,
     id: String,
 ) -> Result<Task, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::disable_task(&conn, &id)
 }
 
@@ -79,12 +100,16 @@ pub async fn run_automation_task_now(
 ) -> Result<TaskRun, String> {
     // Phase 16: 获取信号量许可（任务并发控制）
     let _permit = state.task_semaphore.acquire().await.map_err(|e| {
-        format!("获取任务信号量失败: {}", e)
+        log::error!("[run_automation_task_now] 获取任务信号量失败: error={}", e);
+        "系统繁忙，请稍后重试".to_string()
     })?;
 
     // 读取 notifyOnFailure 设置
     let notify_on_failure = {
-        let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+        let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
         crate::services::SettingsService::get_setting(&conn, "automation", "notifyOnFailure")
             .ok()
             .flatten()
@@ -100,7 +125,10 @@ pub async fn run_automation_task_now(
         if notify_on_failure {
             // 获取任务名称用于日志
             let task_name = {
-                match TaskService::get_task(&state.db_manager.get_connection().map_err(|e| e.to_string())?, &id) {
+                match TaskService::get_task(&state.db_manager.get_connection().map_err(|e| {
+                    log::error!("[run_automation_task_now] 获取任务信息时数据库连接失败: error={}", e);
+                    "数据库连接异常，请重新打开数据库".to_string()
+                })?, &id) {
                     Ok(task) => task.name,
                     Err(_) => id.clone(),
                 }
@@ -123,7 +151,10 @@ pub fn get_automation_task_runs(
     task_id: String,
     limit: Option<i64>,
 ) -> Result<Vec<TaskRun>, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::get_task_runs(&conn, &task_id, limit)
 }
 
@@ -131,7 +162,10 @@ pub fn get_automation_task_runs(
 pub fn ensure_automation_tables(
     state: State<'_, TauriAppState>,
 ) -> Result<bool, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::ensure_tables_exists(&conn).map(|_| true)
 }
 
@@ -140,7 +174,10 @@ pub fn list_task_dependencies(
     state: State<'_, TauriAppState>,
     task_id: String,
 ) -> Result<Vec<TaskDependency>, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::list_dependencies(&conn, &task_id)
 }
 
@@ -151,7 +188,10 @@ pub fn add_task_dependency(
     dep_type: String,
     dep_config: String,
 ) -> Result<TaskDependency, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::add_dependency(&conn, &task_id, &dep_type, &dep_config)
 }
 
@@ -161,7 +201,10 @@ pub fn update_task_dependency(
     dep_id: String,
     dep_config: String,
 ) -> Result<TaskDependency, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::update_dependency(&conn, &dep_id, &dep_config)
 }
 
@@ -170,7 +213,10 @@ pub fn delete_task_dependency(
     state: State<'_, TauriAppState>,
     dep_id: String,
 ) -> Result<bool, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::delete_dependency(&conn, &dep_id)
 }
 
@@ -180,6 +226,9 @@ pub fn replace_task_dependencies(
     task_id: String,
     deps: Vec<(String, String)>,
 ) -> Result<Vec<TaskDependency>, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| format!("{}", e))?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[automation] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     TaskService::replace_dependencies(&conn, &task_id, deps)
 }

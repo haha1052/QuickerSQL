@@ -1,0 +1,56 @@
+name: Quality Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri'
+      
+      - name: Install frontend dependencies
+        run: npm ci
+      
+      - name: Rust compile check
+        working-directory: src-tauri
+        run: cargo check --quiet
+      
+      - name: Rust clippy gate
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --quiet
+      
+      - name: TypeScript type check
+        run: npx tsc --noEmit --pretty
+      
+      - name: Frontend tests
+        run: npx vitest run

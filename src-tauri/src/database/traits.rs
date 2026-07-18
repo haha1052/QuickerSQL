@@ -4,6 +4,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+use super::security::SqlIdentifier;
+
 #[derive(Error, Debug)]
 pub enum DatabaseError {
     #[error("连接失败: {0}")]
@@ -75,11 +77,11 @@ pub trait DatabaseConnection: Send + Sync + 'static {
     fn close(&self);
     
     /// 批量插入数据
-    /// table: 表名
+    /// table: 已通过安全校验的表名（SqlIdentifier）
     /// columns: 列名列表
     /// rows: 数据行列表
     /// batch_size: 每批行数（默认1000）
-    fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64>;
+    fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64>;
 }
 
 pub trait ToSql {
@@ -341,7 +343,7 @@ impl<'a> MutexGuardConnection<'a> {
         conn.rollback_transaction()
     }
 
-    pub fn batch_insert(&self, table: &str, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
+    pub fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {
         let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
         conn.batch_insert(table, columns, rows, batch_size)
     }

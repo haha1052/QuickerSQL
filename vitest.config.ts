@@ -19,6 +19,20 @@ export default defineConfig({
     ],
     // 与 Tauri 前端保持一致的 tsconfig 基础路径
     css: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "html"],
+      reportsDirectory: "./coverage/web",
+      exclude: [
+        "node_modules/",
+        "src/**/*.d.ts",
+        "src/**/*.test.{ts,tsx}",
+        "src/**/types/**",
+        "src/vite-env.d.ts",
+        "vitest.config.ts",
+        "vite.config.ts",
+      ],
+    },
   },
   resolve: {
     alias: {

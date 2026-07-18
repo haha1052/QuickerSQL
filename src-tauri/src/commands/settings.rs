@@ -17,7 +17,10 @@ pub fn get_all_settings_cmd(state: State<'_, TauriAppState>) -> Result<SettingsL
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SettingsService::get_all_settings(&conn)
 }
 
@@ -28,7 +31,10 @@ pub fn get_setting_cmd(state: State<'_, TauriAppState>, category: String, key: S
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SettingsService::get_setting(&conn, &category, &key)
 }
 
@@ -39,7 +45,10 @@ pub fn update_setting_cmd(state: State<'_, TauriAppState>, category: String, key
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let result = SettingsService::update_setting(&conn, &category, &key, &value);
 
     if result.is_ok() {
@@ -59,7 +68,10 @@ pub fn update_setting_cmd(state: State<'_, TauriAppState>, category: String, key
 /// 批量更新设置
 #[tauri::command]
 pub fn batch_update_settings_cmd(state: State<'_, TauriAppState>, settings: Vec<UpdateSettingRequest>) -> Result<Vec<SettingItem>, String> {
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     let count = settings.len();
     let result = SettingsService::batch_update_settings(&conn, &settings);
 
@@ -85,7 +97,10 @@ pub fn reset_settings_cmd(state: State<'_, TauriAppState>, category: Option<Stri
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SettingsService::reset_settings(&conn, category.as_deref())
 }
 
@@ -96,7 +111,10 @@ pub fn export_settings_cmd(state: State<'_, TauriAppState>) -> Result<ExportSett
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SettingsService::export_settings(&conn)
 }
 
@@ -107,6 +125,9 @@ pub fn import_settings_cmd(state: State<'_, TauriAppState>, import_data: ImportS
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[settings] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     SettingsService::import_settings(&conn, &import_data)
 }

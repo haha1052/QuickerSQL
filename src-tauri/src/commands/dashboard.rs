@@ -18,14 +18,20 @@ pub async fn get_saved_charts(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::get_saved_charts(&conn, query_id, tags)
 }
 
 /// 创建保存的图表
 /// visibility: "all" = 授权给所有仪表盘; "restricted" = 仅授权给 authorized_dashboard_ids 中列出的
+// TODO(2026-07-17): Tauri command 参数 13 个，参数由前端 invoke 反序列化，
+// 重构成 struct 会改变前端调用契约，留待 v24.0 统一引入 CreateSavedChartParams
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_saved_chart(
     state: State<'_, TauriAppState>,
     name: String,
@@ -50,7 +56,10 @@ pub async fn create_saved_chart(
         name, query_id, query_sql.len(), chart_type, x_axis, y_axis, visibility, authorized_dashboard_ids
     );
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
 
     let y_axis_vec: Vec<String> = serde_json::from_str(&y_axis).unwrap_or_else(|_| Vec::new());
@@ -84,13 +93,19 @@ pub async fn delete_saved_chart(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::delete_saved_chart(&conn, &id)
 }
 
 /// 更新保存的图表（允许编辑图表配置、类型、坐标轴、SQL 等，以及授权范围）
+// TODO(2026-07-17): Tauri command 参数 13 个，参数由前端 invoke 反序列化，
+// 重构成 struct 会改变前端调用契约，留待 v24.0 统一引入 UpdateSavedChartParams
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_saved_chart(
     state: State<'_, TauriAppState>,
     id: String,
@@ -110,7 +125,10 @@ pub async fn update_saved_chart(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
 
     let y_axis_vec = y_axis.and_then(|y| serde_json::from_str(&y).ok());
@@ -143,7 +161,10 @@ pub async fn get_saved_query(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::get_saved_query(&conn, &id)
 }
@@ -159,7 +180,10 @@ pub async fn get_dashboards(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::get_dashboards(&conn)
 }
@@ -174,7 +198,10 @@ pub async fn get_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::get_dashboard(&conn, &id)
 }
@@ -190,13 +217,19 @@ pub async fn create_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::create_dashboard(&conn, name, description)
 }
 
 /// 更新仪表盘
+// TODO(2026-07-17): Tauri command 参数 15 个，参数由前端 invoke 反序列化，
+// 重构成 struct 会改变前端调用契约，留待 v24.0 统一引入 UpdateDashboardParams
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_dashboard(
     state: State<'_, TauriAppState>,
     id: String,
@@ -218,7 +251,10 @@ pub async fn update_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
 
     let layout_vec: Option<Vec<DashboardItem>> = layout.and_then(|l| serde_json::from_str(&l).ok());
@@ -253,7 +289,10 @@ pub async fn delete_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::delete_dashboard(&conn, &id)
 }
@@ -275,7 +314,10 @@ pub async fn add_chart_to_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::add_chart_to_dashboard(&conn, dashboard_id, chart_id, x, y, width, height)
 }
@@ -295,7 +337,10 @@ pub async fn update_dashboard_item(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
 
     let config_value: Option<serde_json::Value> = config_overrides
@@ -314,7 +359,10 @@ pub async fn remove_chart_from_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     DashboardService::remove_chart_from_dashboard(&conn, &item_id)
 }
@@ -330,10 +378,16 @@ pub async fn save_dashboard_layout(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[dashboard] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     let layout_updates_vec: Vec<DashboardItemLayoutUpdate> = serde_json::from_str(&layout_updates)
-        .map_err(|e| format!("解析布局更新参数失败：{}", e))?;
+        .map_err(|e| {
+            log::error!("[save_dashboard_layout] 解析布局更新参数失败: error={}", e);
+            "布局参数解析失败，请刷新页面后重试".to_string()
+        })?;
 
     DashboardService::save_dashboard_layout(&conn, &dashboard_id, layout_updates_vec)
 }

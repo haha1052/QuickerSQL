@@ -10,16 +10,34 @@ import type { DashboardItem as DashboardItemType, SavedChart, DashboardFilter } 
 import type { ChartConfig } from '../../types/chart';
 
 interface DashboardItemProps {
+  /** 仪表盘项配置，包含图表 ID、所属仪表盘 ID 及网格坐标 (x, y, width, height) */
   item: DashboardItemType;
+  /** 是否处于编辑模式，启用拖拽、缩放与删除按钮 */
   isEditing: boolean;
+  /** 移除当前项的回调函数；编辑模式下点击 × 按钮时触发 */
   onRemove?: () => void;
+  /** 布局变更回调，参数为新的网格坐标 { x, y, width, height } */
   onLayoutChange?: (layout: { x: number; y: number; width: number; height: number }) => void;
+  /** 布局设置：gap 间距、rowHeight 行高、snapToGrid 是否吸附网格 */
   layoutSettings?: { gap: number; rowHeight: number; snapToGrid: boolean };
+  /** 双击回调；通过 300ms 内两次点击判定触发 */
   onDoubleClick?: () => void;
 }
 
 /**
  * 使用 SQL 和 savedChart 配置渲染图表（三层降级策略）
+ *
+ * 执行流程：
+ * 1. 通过 tauriService.executeSql 执行 SQL，获取 columns 与 rows
+ * 2. 校验 savedChart.xAxis 与 yAxis 列是否在结果列中存在
+ * 3. 调用 tauriService.generateChartConfig 生成 ECharts 配置并写入 state
+ *
+ * @param sql - 要执行的 SQL 查询语句
+ * @param savedChart - 已保存的图表配置（含 chartType、xAxis、yAxis 等）
+ * @param setChartConfig - 写入生成结果的 ChartConfig setter
+ * @param setError - 写入错误信息的 setter
+ * @param setLoading - 写入 loading 状态的 setter；finally 中始终置为 false
+ * @throws 当 SQL 执行失败、结果为空或列校验失败时抛出异常，调用方需自行捕获
  */
 async function renderWithSql(
   sql: string,
@@ -103,7 +121,7 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode; 
           padding: '12px',
         }}>
           <div>
-            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{this.props.t ? this.props.t('chart.renderFailed') : '图表渲染失败'}</div>
+            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{this.props.t ? this.props.t('chart.renderFailed') : ''}</div>
             <div style={{ fontSize: '10px', opacity: 0.8 }}>{this.state.error}</div>
           </div>
         </div>
@@ -118,6 +136,14 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode; 
  *
  * P0-1 修复：移除了此组件中重复的 gridStyle / item 样式 / toolbar，
  *           避免与父组件 DashboardItem 的 Grid 布局产生嵌套冲突。
+ *
+ * 副作用：
+ * - 动态 import('echarts') 模块并缓存到 ref
+ * - 创建 ResizeObserver 监听容器尺寸变化，触发防抖 resize 与配置重新优化
+ * - 卸载时清理 observer、定时器与 echarts 实例
+ *
+ * @param props.chartConfig - ECharts 配置对象；为 null 时不渲染
+ * @param props.interactive - 是否启用鼠标交互；编辑模式下置为 false 让拖拽事件穿透
  */
 const ChartCanvas: React.FC<{
   chartConfig: ChartConfig | null;
@@ -353,6 +379,26 @@ const ChartCanvas: React.FC<{
 // 拖拽阈值：鼠标移动超过此距离才认为是拖拽（而非点击）
 const DRAG_THRESHOLD_PX = 5;
 
+/**
+ * 仪表盘单个图表项组件
+ *
+ * 职责：
+ * - 在 12 列网格中渲染单个图表卡片（标题、内容、工具栏）
+ * - 编辑模式下支持拖拽（带 5px 阈值）与右侧/底部/角落缩放
+ * - 通过四层降级策略加载图表配置：
+ *   1. 使用 savedChart.lastResult 缓存的查询结果
+ *   2. 直接使用 savedChart.config 已保存的 ECharts 配置
+ *   3. 通过 savedChart.sql + xAxis/yAxis 重新执行 SQL 并生成配置
+ *   4. 回退到 savedChart.queryId 关联的 saved_query
+ * - 支持 P2-1 筛选器联动：根据 filterValues 动态改写 SQL
+ * - 包裹 DashboardItemErrorBoundary 防止单个图表崩溃影响整体
+ *
+ * 副作用：
+ * - useEffect 中根据 savedChart/filterValues/refreshChartsVersion 触发渲染
+ * - 拖拽过程中临时修改 document.body 的 userSelect 与 cursor
+ *
+ * @param props - 见 DashboardItemProps
+ */
 export const DashboardItem: React.FC<DashboardItemProps> = ({
   item,
   isEditing,
@@ -368,6 +414,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   const [retryKey, setRetryKey] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const clickTimeRef = useRef<number>(0);
+  const lastExecutedRefreshVersionRef = useRef<number>(0);
   const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards, refreshChartsVersion } = useDashboardStore();
   const isSelected = selectedChartId === item.chartId;
 
@@ -383,8 +430,15 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   const filtersActive = hasActiveFilters(JSON.parse(filterValuesKey));
 
   useEffect(() => {
+    let cancelled = false;
+    const isManualRefresh = lastExecutedRefreshVersionRef.current !== refreshChartsVersion;
+    lastExecutedRefreshVersionRef.current = refreshChartsVersion;
+
     const renderChart = async () => {
-      if (savedCharts.length === 0) {
+      if (cancelled) return;
+
+      const hasLiteData = savedCharts.length > 0 && savedCharts.every(c => !c.sql || c.sql.trim().length === 0);
+      if (savedCharts.length === 0 || hasLiteData) {
         try {
           await loadSavedCharts();
         } catch (e) {
@@ -393,20 +447,23 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         await new Promise(resolve => setTimeout(resolve, 200));
       }
 
+      if (cancelled) return;
+
       if (!savedChart) {
         const currentSavedCharts = useDashboardStore.getState().savedCharts;
         const latestChart = currentSavedCharts.find(c => c.id === item.chartId);
         if (!latestChart) {
+          if (cancelled) return;
           setLoading(false);
-          setError('图表不存在（该图表可能已被删除，或图表库尚未加载完成）');
+          setError(t('dashboard.item.chart_not_found_detailed'));
           return;
         }
         return;
       }
 
-      // 策略 0（第三轮新增）：使用自动化任务刷新缓存的查询结果（跳过 SQL 查询）
-      // 当筛选器未激活、且图表的 lastResult 有有效 rows/columns 时，直接调用 generateChartConfig
-      if (!filtersActive && savedChart.lastResult && savedChart.lastResult.rows && savedChart.lastResult.rows.length > 0
+      // 策略 0：使用自动化任务刷新缓存的查询结果（跳过 SQL 查询）
+      // 手动刷新时跳过此策略，强制重新执行 SQL
+      if (!isManualRefresh && !filtersActive && savedChart.lastResult && savedChart.lastResult.rows && savedChart.lastResult.rows.length > 0
           && savedChart.lastResult.columns && savedChart.lastResult.columns.length > 0) {
         const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
         const hasValidYAxis = savedChart.yAxis && savedChart.yAxis.length > 0;
@@ -421,6 +478,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               y_axis_columns: savedChart.yAxis,
             });
             if (chartResponse.success && chartResponse.data) {
+              if (cancelled) return;
               setChartConfig(chartResponse.data);
               setLoading(false);
               return;
@@ -433,13 +491,14 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
       }
 
       // 策略 1：直接使用已保存的 ECharts config
-      // P2-1 修复：当筛选器激活时，跳过 config 直渲，强制走 SQL 路径以应用筛选条件
-      if (!filtersActive && savedChart.config && Object.keys(savedChart.config).length > 0) {
+      // 手动刷新或筛选器激活时跳过，强制走 SQL 路径
+      if (!isManualRefresh && !filtersActive && savedChart.config && Object.keys(savedChart.config).length > 0) {
         const cfg = savedChart.config as Record<string, unknown>;
         const hasSeries = Array.isArray(cfg.series) && cfg.series.length > 0;
         const hasAxis = 'xAxis' in cfg || 'x_axis' in cfg;
 
         if (hasSeries || hasAxis) {
+          if (cancelled) return;
           setChartConfig(savedChart.config);
           setLoading(false);
           return;
@@ -448,18 +507,22 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
       }
 
       // 策略 2：通过 SQL + 已保存的图表参数重新生成配置
-      // P2-1 修复：将筛选条件注入 SQL
       const hasSql = savedChart.sql && savedChart.sql.trim().length > 0;
       const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
       const hasValidYAxis = savedChart.yAxis && savedChart.yAxis.length > 0;
 
       if (hasSql && hasValidXAxis && hasValidYAxis) {
-        // P2-1：注入筛选条件
         const effectiveSql = filtersActive
           ? applyFiltersToSql(savedChart.sql, JSON.parse(filterValuesKey), dashboardFilters)
           : savedChart.sql;
         try {
-          await renderWithSql(effectiveSql, savedChart, setChartConfig, setError, setLoading);
+          await renderWithSql(
+            effectiveSql,
+            savedChart,
+            (cfg) => { if (!cancelled) setChartConfig(cfg); },
+            (err) => { if (!cancelled) setError(err); },
+            (loading) => { if (!cancelled) setLoading(loading); },
+          );
           return;
         } catch (e) {
           console.error('[DashboardItem] SQL 渲染失败，继续尝试回退:', e);
@@ -473,12 +536,17 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
           const queryResponse = await tauriService.getSavedQuery(savedChart.queryId);
 
           if (queryResponse.success && queryResponse.data?.sql) {
-            // P2-1：回退路径也注入筛选条件
             const fallbackSql = filtersActive
               ? applyFiltersToSql(queryResponse.data.sql, JSON.parse(filterValuesKey), dashboardFilters)
               : queryResponse.data.sql;
             if (savedChart.xAxis && savedChart.yAxis?.length > 0) {
-              await renderWithSql(fallbackSql, savedChart, setChartConfig, setError, setLoading);
+              await renderWithSql(
+                fallbackSql,
+                savedChart,
+                (cfg) => { if (!cancelled) setChartConfig(cfg); },
+                (err) => { if (!cancelled) setError(err); },
+                (loading) => { if (!cancelled) setLoading(loading); },
+              );
               return;
             }
           }
@@ -488,22 +556,25 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
       }
 
       // 所有策略都失败
+      if (cancelled) return;
       setLoading(false);
       const missing: string[] = [];
-      if (!hasSql || !(savedChart.sql && savedChart.sql.trim().length > 0)) missing.push('SQL');
-      if (!hasValidXAxis) missing.push('X 轴配置');
-      if (!hasValidYAxis) missing.push('Y 轴配置');
-      if (!(savedChart.config && Object.keys(savedChart.config).length > 0)) missing.push('图表配置');
+      if (!hasSql || !(savedChart.sql && savedChart.sql.trim().length > 0)) missing.push(t('dashboard.item.missing_sql'));
+      if (!hasValidXAxis) missing.push(t('dashboard.item.missing_x_axis'));
+      if (!hasValidYAxis) missing.push(t('dashboard.item.missing_y_axis'));
+      if (!(savedChart.config && Object.keys(savedChart.config).length > 0)) missing.push(t('dashboard.item.missing_chart_config'));
 
       setError(
-        `此图表数据不完整（缺少：${missing.join(' / ')}）。\n` +
-        `请：1) 点击右上角 🗘 按钮刷新仪表盘 或 2) 回到 SQL 查询页面重新生成并保存该图表。`
+        `${t('dashboard.item.incomplete_missing', { missing: missing.join(' / ') })}\n` +
+        t('dashboard.item.incomplete_hint')
       );
     };
 
     renderChart();
-    // P2-1：filterValuesKey 变化时触发重新渲染（筛选器联动）
-    // refreshChartsVersion 变化时（用户点击刷新）也重新拉取数据
+
+    return () => {
+      cancelled = true;
+    };
   }, [savedChart, item.chartId, retryKey, filterValuesKey, filtersActive, refreshChartsVersion]);
 
   /**
@@ -687,7 +758,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               {isEditing && (
                 <div style={styles.editHintBar}>
                   <span style={styles.editHintIcon}>✋</span>
-                  <span style={styles.editHintText}>拖拽移动</span>
+                  <span style={styles.editHintText}>{t('dashboard.item.drag_hint')}</span>
                 </div>
               )}
             </div>
@@ -725,7 +796,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
                   <div style={styles.loading}>{t('common.loading')}</div>
                 ) : error ? (
                   <div style={styles.error}>
-                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>❌ 图表加载失败</div>
+                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{t('dashboard.item.load_failed')}</div>
                     <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'pre-wrap' }}>{error}</div>
                     <div style={{ marginTop: '10px' }}>
                       <button
@@ -747,12 +818,12 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
                           cursor: 'pointer',
                         }}
                       >
-                        🗘 刷新重试
+                        {t('dashboard.item.refresh_retry')}
                       </button>
                     </div>
                     {error.includes('查询不存在') && (
                       <div style={{ fontSize: '10px', marginTop: '6px', color: 'var(--warning)' }}>
-                        💡 提示：此图表是在旧版本保存的，请重新保存图表
+                        {t('dashboard.item.old_chart_hint')}
                       </div>
                     )}
                   </div>
@@ -769,7 +840,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               </>
             ) : (
               <div style={styles.placeholder}>
-                图表未找到
+                {t('dashboard.item.not_found')}
               </div>
             )}
           </div>

@@ -11,10 +11,17 @@ const CHART_ITEM_HEIGHT = 96;
 const CHART_ITEM_EXPANDED_HEIGHT = 280;
 
 interface ChartLibraryPanelProps {
+  /** 是否显示面板；为 false 时直接返回 null */
   open: boolean;
+  /** 关闭面板的回调；点击遮罩或右上角 × 按钮时触发 */
   onClose: () => void;
 }
 
+/**
+ * 根据图表类型返回对应的 emoji 图标
+ * @param chartType - 图表类型字符串（bar/line/pie/scatter/area/stackedBar/table）
+ * @returns 对应的 emoji 字符串，未知类型默认返回 📊
+ */
 const getChartIcon = (chartType: string) => {
   switch (chartType) {
     case 'bar': return '📊';
@@ -28,6 +35,23 @@ const getChartIcon = (chartType: string) => {
   }
 };
 
+/**
+ * 图表库面板组件
+ *
+ * 职责：
+ * - 以左侧抽屉形式展示所有已保存的图表
+ * - 支持搜索（按名称/描述/标签）、类型筛选、授权范围筛选与排序
+ * - 虚拟滚动优化：通过 computeVisibleRange 只渲染可见区域内的图表项
+ * - 选中图表后展开预览（ChartPreview），并提供「添加到当前仪表盘」入口
+ * - 提供「定时刷新」入口（打开 TaskEditorModal 创建 refresh_chart 任务）
+ *
+ * 副作用：
+ * - open 变为 true 且 savedCharts 为空时触发 loadSavedCharts
+ * - 滚动事件更新 scrollTop / viewportHeight 用于虚拟滚动计算
+ *
+ * @param props.open - 是否显示面板
+ * @param props.onClose - 关闭回调
+ */
 export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onClose }) => {
   const {
     savedCharts,
@@ -115,11 +139,11 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
 
   const handleDeleteChart = async (chart: SavedChart, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`确认删除图表 "${chart.name}"？\n此操作无法撤销，且该图表将从所有仪表盘中移除。`)) {
+    if (!confirm(t('chart.library.delete_confirm', { name: chart.name }))) {
       return;
     }
     await deleteSavedChart(chart.id);
-    addToast(`已删除图表 "${chart.name}"`, 'success');
+    addToast({ key: 'chart.library.deleted', vars: { name: chart.name } }, 'success');
     if (selectedChartId === chart.id) {
       setSelectedChartId(null);
     }
@@ -128,7 +152,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
   const handleAddToDashboard = async (chart: SavedChart, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!activeDashboardId) {
-      addToast('请先选择一个仪表盘', 'warning');
+      addToast({ key: 'chart.library.select_dashboard_first' }, 'warning');
       return;
     }
     if (!isChartAvailableTo(chart)) {
@@ -139,9 +163,9 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     const position = calculateNextPosition(dashboard?.layout || []);
     const ok = await addChartToDashboard(activeDashboardId, chart.id, position);
     if (ok) {
-      addToast(`已将图表 "${chart.name}" 添加到仪表盘`, 'success');
+      addToast({ key: 'chart.library.added_to_dashboard', vars: { name: chart.name } }, 'success');
     } else {
-      addToast('添加到仪表盘失败', 'error');
+      addToast({ key: 'chart.library.add_failed' }, 'error');
     }
   };
 
@@ -158,7 +182,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
       <div style={styles.overlay} onClick={onClose} />
       <div style={styles.panel}>
         <div style={styles.header}>
-          <h3 style={styles.title}>📚 图表库</h3>
+          <h3 style={styles.title}>{t('chart.library.title')}</h3>
           <button style={styles.closeBtn} onClick={onClose}>×</button>
         </div>
 
@@ -174,14 +198,14 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
           >
-            <option value="all">全部类型</option>
-            <option value="bar">柱状图</option>
-            <option value="line">折线图</option>
-            <option value="pie">饼图</option>
-            <option value="scatter">散点图</option>
-            <option value="area">面积图</option>
-            <option value="stackedBar">堆叠图</option>
-            <option value="table">表格</option>
+            <option value="all">{t('chart.library.all_types')}</option>
+            <option value="bar">{t('chart.library.type_bar')}</option>
+            <option value="line">{t('chart.library.type_line')}</option>
+            <option value="pie">{t('chart.library.type_pie')}</option>
+            <option value="scatter">{t('chart.library.type_scatter')}</option>
+            <option value="area">{t('chart.library.type_area')}</option>
+            <option value="stackedBar">{t('chart.library.type_stacked_bar')}</option>
+            <option value="table">{t('chart.library.type_table')}</option>
           </select>
           <select
             style={styles.select}
@@ -189,8 +213,8 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             onChange={(e) => setScopeFilter(e.target.value as 'all' | 'available' | 'unavailable')}
             title={t('chart.authFilterHint')}
           >
-            <option value="all">全部授权</option>
-            <option value="available">仅对当前仪表盘可用</option>
+            <option value="all">{t('chart.library.all_scopes')}</option>
+            <option value="available">{t('chart.library.available_only')}</option>
             <option value="unavailable">{t('dashboard.unauthorized')}</option>
           </select>
           <select
@@ -198,16 +222,16 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'updatedAt' | 'name')}
           >
-            <option value="updatedAt">按更新时间</option>
-            <option value="name">按名称</option>
+            <option value="updatedAt">{t('chart.library.sort_updated')}</option>
+            <option value="name">{t('chart.library.sort_name')}</option>
           </select>
         </div>
 
         <div style={styles.statBar}>
-          共 <span style={styles.statNum}>{filteredCharts.length}</span> 个图表
+          {t('chart.library.stat_total', { count: filteredCharts.length })}
           {activeDashboardId && (
             <span style={{ marginLeft: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-              当前仪表盘：{dashboards.find((d) => d.id === activeDashboardId)?.name || '-'}
+              {t('chart.library.current_dashboard', { name: dashboards.find((d) => d.id === activeDashboardId)?.name || '-' })}
             </span>
           )}
         </div>
@@ -221,10 +245,10 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             <div style={styles.empty}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>📊</div>
               <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-                {search || filterType !== 'all' ? '没有匹配的图表' : '暂无保存的图表'}
+                {search || filterType !== 'all' ? t('chart.library.no_match') : t('chart.library.no_saved')}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
-                在 SQL 查询页面中生成图表并保存
+                {t('chart.library.hint')}
               </div>
             </div>
           ) : (
@@ -254,7 +278,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                       <div style={styles.chartInfo}>
                         <div style={styles.chartName}>{chart.name}</div>
                         <div style={styles.chartMeta}>
-                          {chart.chartType} · 最后更新{' '}
+                          {chart.chartType} · {t('chart.library.last_update')}{' '}
                           {new Date(chart.updatedAt * 1000).toLocaleString('zh-CN', {
                             month: '2-digit',
                             day: '2-digit',
@@ -264,12 +288,12 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                         </div>
                         <div style={styles.chartMeta}>
                           {available
-                            ? '🌐 可添加到当前仪表盘'
+                            ? t('chart.library.can_add')
                             : `🔒 ${t('dashboard.unauthorized')}`}
                           {chart.visibility === 'restricted' && chart.authorizedDashboardIds?.length > 0 && (
                             <span style={{ marginLeft: '6px', color: 'var(--text-tertiary)' }}>
-                              （授权给：{chart.authorizedDashboardIds.slice(0, 2).map(getDashboardName).join('、')}
-                              {chart.authorizedDashboardIds.length > 2 ? '等' : ''}）
+                              {t('chart.library.authorized_for', { names: chart.authorizedDashboardIds.slice(0, 2).map(getDashboardName).join('、') })}
+                              {chart.authorizedDashboardIds.length > 2 ? t('chart.library.and_more') : ''}
                             </span>
                           )}
                         </div>
@@ -286,8 +310,8 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                           style={styles.addBtn}
                           onClick={(e) => handleAddToDashboard(chart, e)}
                           disabled={!available || !activeDashboardId}
-                          title={available ? '添加到当前仪表盘' : '未授权，无法添加'}
-                        >➕ 添加</button>
+                          title={available ? t('chart.library.add_btn_title') : t('chart.library.unauthorized_add_title')}
+                        >{t('chart.library.add_btn')}</button>
                         <button
                           style={styles.scheduleBtn}
                           onClick={(e) => {
@@ -296,7 +320,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                             setShowScheduleModal(true);
                           }}
                           title={t('chart.scheduleRefresh')}
-                        >⚡ 定时刷新</button>
+                        >⚡ {t('chart.scheduleRefresh')}</button>
                         <button
                           style={styles.deleteBtn}
                           onClick={(e) => handleDeleteChart(chart, e)}
@@ -318,7 +342,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
 
         <div style={styles.footer}>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            💡 点击图表查看预览，并在右侧编辑面板修改属性
+            {t('chart.library.footer_hint')}
           </div>
         </div>
       </div>
@@ -327,7 +351,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
         onClose={() => setShowScheduleModal(false)}
         initialTaskType="refresh_chart"
         initialPayload={{ chartId: scheduleChart?.id || '' }}
-        initialName={'定时刷新图表: ' + (scheduleChart?.name || '')}
+        initialName={t('chart.library.schedule_chart_name', { name: scheduleChart?.name || '' })}
       />
     </>
   );

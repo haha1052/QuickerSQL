@@ -26,7 +26,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
   onClose,
 }) => {
   const { t } = useLocale();
-  const { dashboards, loadDashboards, createSavedChart, addChartToDashboard, createDashboard, activeDashboardId, error: dashboardError } = useDashboardStore();
+  const { dashboards, loadDashboards, createSavedChart, addChartToDashboard, createDashboard, activeDashboardId, error: dashboardError, errorKey: dashboardErrorKey } = useDashboardStore();
   const { addToast } = useToastStore();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -100,10 +100,17 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
       });
 
       if (!chart) {
-        const err = dashboardError || '保存图表失败，请重试';
+        // SubTask 4.12：消费 store error 时优先使用 errorKey + t() 翻译
+        // - dashboardErrorKey 存在表示使用前端兜底文案，应通过 t() 翻译
+        // - dashboardErrorKey 为 null 表示 error 来自后端原始字符串，直接显示
+        const err = dashboardErrorKey ? t(dashboardErrorKey) : (dashboardError || t('error.saved_chart.create_failed'));
         console.error('[SaveChartModal] 图表保存失败:', err);
         setErrorMsg(err);
-        addToast(err, 'error');
+        if (dashboardErrorKey) {
+          addToast({ key: dashboardErrorKey }, 'error');
+        } else {
+          addToast(err, 'error');
+        }
         return;
       }
 

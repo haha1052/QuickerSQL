@@ -28,7 +28,10 @@ pub fn get_database_status(state: State<'_, TauriAppState>) -> Result<DatabaseSt
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     let tables_list = DatabaseService::list_tables_with_meta(&conn)?;
     let tables: Vec<String> = tables_list.iter().map(|t| t.name.clone()).collect();
@@ -66,7 +69,10 @@ pub fn list_tables(state: State<'_, TauriAppState>) -> Result<Vec<TableInfo>, St
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     DatabaseService::list_tables_with_meta(&conn)
 }
 
@@ -80,7 +86,10 @@ pub fn get_table_columns(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     DatabaseService::get_table_columns(&conn, &table_name)
 }
 
@@ -94,7 +103,10 @@ pub fn delete_table(state: State<'_, TauriAppState>, table_name: String) -> Resu
     // 标识符校验
     let _ = SqlIdentifier::new(&table_name)?;
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     // 获取表的行数（用于写审计日志与回收站条目）
     let row_count = crate::services::TrashService::get_table_row_count(&conn, &table_name)?;
@@ -105,7 +117,7 @@ pub fn delete_table(state: State<'_, TauriAppState>, table_name: String) -> Resu
     // 删除对应的 DuckDB VIEW（仅在可用时）
     if let Ok(duckdb_conn) = state.get_duckdb_connection() {
         if let Ok(guard) = duckdb_conn.lock() {
-            let _ = crate::services::ViewService::drop_single_view(&*guard, &table_name);
+            let _ = crate::services::ViewService::drop_single_view(&**guard, &table_name);
         }
     }
 
@@ -134,7 +146,10 @@ pub fn rename_table(
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
     // 核心逻辑下沉到 DatabaseService（系统表检查、存在性校验、执行重命名）
     DatabaseService::rename_table_safe(&conn, &old_table_name, &new_table_name)?;
@@ -142,7 +157,7 @@ pub fn rename_table(
     // 同步 DuckDB VIEW（删除旧 VIEW，由 ViewService 负责安全封装）
     if let Ok(duckdb_conn) = state.get_duckdb_connection() {
         if let Ok(guard) = duckdb_conn.lock() {
-            let _ = crate::services::ViewService::drop_single_view(&*guard, &old_table_name);
+            let _ = crate::services::ViewService::drop_single_view(&**guard, &old_table_name);
         }
     }
 
@@ -166,7 +181,10 @@ pub fn get_table_meta(state: State<'_, TauriAppState>, table_name: String) -> Re
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     DatabaseService::get_table_performance_info(&conn, &table_name)
 }
 
@@ -177,7 +195,10 @@ pub fn get_table_row_count(state: State<'_, TauriAppState>, table_name: String) 
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| e.to_string())?;
+    let conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[database] 获取数据库连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
     DatabaseService::get_row_count(&conn, &table_name)
 }
 
