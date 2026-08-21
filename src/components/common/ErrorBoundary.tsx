@@ -3,32 +3,35 @@ import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-sy
 import { useLocale } from '../../context/LocaleContext';
 
 interface ErrorBoundaryInnerProps {
-  /** 子组件树；发生错误时被替换为错误兜底 UI */
   children: React.ReactNode;
-  /** 重置回调；点击「重试」时调用，由外层包装层传入 */
   onReset?: () => void;
-  /** i18n 翻译函数（避免类组件无法使用 useLocale hook） */
   t: (key: string, vars?: Record<string, string | number>) => string;
 }
 
 interface ErrorBoundaryState {
-  /** 是否已捕获错误 */
   hasError: boolean;
-  /** 捕获到的错误对象；无错误时为 null */
   error: Error | null;
+  /** P2-18：重试次数，作为 children 的 key 强制重置子树，避免错误状态残留 */
+  retryCount: number;
 }
 
 /**
- * ErrorBoundary 内部类组件（接收 t 作为 prop，避免类组件无法使用 hooks 的限制）
+ * 错误边界类组件（内部实现）
+ *
+ * 类组件无法直接使用 hooks，因此通过外层 `ErrorBoundary` 函数组件包装，
+ * 由外层调用 `useLocale()` 获取 `t()` 并通过 prop 注入。
+ *
+ * P2-18：handleRetry 时通过递增 retryCount 并将其作为 children 的 key，
+ * 强制 React 卸载旧子树并重新挂载新子树，避免错误状态下子组件内部状态残留。
  */
 class ErrorBoundaryInner extends React.Component<ErrorBoundaryInnerProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryInnerProps) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, retryCount: 0 };
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+    return { hasError: true, error, retryCount: 0 };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
@@ -40,7 +43,8 @@ class ErrorBoundaryInner extends React.Component<ErrorBoundaryInnerProps, ErrorB
     if (this.props.onReset) {
       this.props.onReset();
     }
-    this.setState({ hasError: false, error: null });
+    // P2-18：递增 retryCount 触发子树重置（见 render 中的 key={retryCount}）
+    this.setState((prev) => ({ hasError: false, error: null, retryCount: prev.retryCount + 1 }));
   };
 
   handleGoHome = (): void => {
@@ -80,22 +84,20 @@ class ErrorBoundaryInner extends React.Component<ErrorBoundaryInnerProps, ErrorB
       );
     }
 
-    return this.props.children;
+    // P2-18：用 retryCount 作为 Fragment key，retryCount 变化时 React 会卸载旧子树并重新挂载，
+    // 确保子组件内部错误状态（如表单脏数据、loading 残留）被完全重置
+    return (
+      <React.Fragment key={this.state.retryCount}>
+        {this.props.children}
+      </React.Fragment>
+    );
   }
 }
 
 /**
- * ErrorBoundary 公开导出（函数组件包装层，注入 t()）
+ * 错误边界公开导出（函数组件包装层）
  *
- * 用法：
- * ```tsx
- * <ErrorBoundary onReset={handleReset}>
- *   <App />
- * </ErrorBoundary>
- * ```
- *
- * @param props.children - 受保护的子组件树
- * @param props.onReset - 可选的重置回调，点击「重试」时与内部 state 一并触发
+ * 负责通过 `useLocale()` 获取 `t()`，再传给内部类组件用于 i18n 翻译。
  */
 export const ErrorBoundary: React.FC<{
   children: React.ReactNode;

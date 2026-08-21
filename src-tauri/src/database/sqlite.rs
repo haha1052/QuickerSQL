@@ -46,7 +46,8 @@ impl DatabaseDriver for SqliteDriver {
              PRAGMA synchronous=NORMAL;
              PRAGMA cache_size=-20000;
              PRAGMA temp_store=MEMORY;
-             PRAGMA busy_timeout=30000;"
+             PRAGMA busy_timeout=30000;
+             PRAGMA foreign_keys = ON;"
         ).map_err(|e| DatabaseError::ConfigurationFailed(e.to_string()))?;
 
         Ok(Box::new(SqliteConnection {
@@ -74,7 +75,8 @@ impl DatabaseDriver for SqliteDriver {
              PRAGMA synchronous=NORMAL;
              PRAGMA cache_size=-20000;
              PRAGMA temp_store=MEMORY;
-             PRAGMA busy_timeout=30000;"
+             PRAGMA busy_timeout=30000;
+             PRAGMA foreign_keys = ON;"
         ).map_err(|e| DatabaseError::ConfigurationFailed(e.to_string()))?;
 
         Ok(Box::new(SqliteConnection {
@@ -170,6 +172,11 @@ impl DatabaseConnection for SqliteConnection {
     }
 
     fn close(&self) {
+        // P1-3: 显式记录关闭事件。
+        // rusqlite::Connection::close(self) 会消费连接，而此处连接存储在 Arc<Mutex<>> 内，
+        // 无法通过 &self 取出。实际连接释放发生在 Arc 引用计数归零时（Drop 会自动关闭）。
+        // 此日志用于诊断连接生命周期，确认 close() 被调用。
+        log::info!("[SQLite] close() called — 连接将在 Arc<Mutex> 释放时自动关闭");
     }
     
     fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], _batch_size: usize) -> Result<u64> {
@@ -215,5 +222,200 @@ impl DatabaseConnection for SqliteConnection {
             .map_err(|e| DatabaseError::TransactionFailed(e.to_string()))?;
 
         Ok(total_count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::traits::{DatabaseConnection, DatabaseDriver};
+
+    /// 创建基于临时文件的测试连接，返回 (连接, 临时目录)
+    /// 保留临时目录以防止数据库文件被提前删除
+    /// 注：使用临时文件而非 :memory: 以避免 Windows 上 :memory: 路径解析问题，
+    /// 并与 dashboard_service.rs 既有测试风格保持一致
+    fn create_test_connection() -> (Box<dyn DatabaseConnection>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("创建临时目录失败");
+        let db_path = temp_dir.path().join("test_fk.db");
+        let driver = SqliteDriver::new();
+        let conn = driver.create_database(&db_path).expect("创建测试数据库失败");
+        (conn, temp_dir)
+    }
+
+    /// 辅助：查询标量值（COUNT / PRAGMA 等单列单行结果）
+    fn query_scalar(conn: &Box<dyn DatabaseConnection>, sql: &str) -> String {
+        let result = conn.query(sql, &[]).expect("查询失败");
+        assert!(!result.rows.is_empty(), "查询应至少返回一行: {}", sql);
+        assert!(!result.rows[0].is_empty(), "查询应至少返回一列: {}", sql);
+        result.rows[0][0].clone()
+    }
+
+    // ============================================================
+    // PRAGMA foreign_keys 默认开启验证
+    // ============================================================
+
+    #[test]
+    fn test_pragma_foreign_keys_enabled_by_default() {
+        let (conn, _temp_dir) = create_test_connection();
+        // PRAGMA foreign_keys; 返回 1 表示 ON，0 表示 OFF
+        let value = query_scalar(&conn, "PRAGMA foreign_keys;");
+        assert_eq!(
+            value, "1",
+            "SqliteDriver 应在 connect/create_database 初始化时开启 foreign_keys = ON"
+        );
+    }
+
+    // ============================================================
+    // foreign_keys 启用后级联删除生效
+    // 插入 dashboard + dashboard_item，删除 dashboard，验证 dashboard_items 自动被删
+    // ============================================================
+
+    #[test]
+    fn test_foreign_keys_cascade_delete() {
+        let (conn, _temp_dir) = create_test_connection();
+
+        // 创建父表 __dashboards
+        conn.execute(
+            r#"CREATE TABLE __dashboards (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )"#,
+            &[],
+        )
+        .expect("创建 __dashboards 表失败");
+
+        // 创建父表 __saved_charts（dashboard_items 的 chart_id 外键依赖此表）
+        conn.execute(
+            r#"CREATE TABLE __saved_charts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )"#,
+            &[],
+        )
+        .expect("创建 __saved_charts 表失败");
+
+        // 创建子表 __dashboard_items，带 ON DELETE CASCADE 外键（与 dashboard_service 一致）
+        conn.execute(
+            r#"CREATE TABLE __dashboard_items (
+                id TEXT PRIMARY KEY,
+                dashboard_id TEXT NOT NULL,
+                chart_id TEXT NOT NULL,
+                FOREIGN KEY (dashboard_id) REFERENCES __dashboards(id) ON DELETE CASCADE,
+                FOREIGN KEY (chart_id) REFERENCES __saved_charts(id) ON DELETE CASCADE
+            )"#,
+            &[],
+        )
+        .expect("创建 __dashboard_items 表失败");
+
+        // 插入父记录：dashboard + chart
+        conn.execute(
+            "INSERT INTO __dashboards (id, name) VALUES ('d1', 'test_dashboard');",
+            &[],
+        )
+        .expect("插入 dashboard 失败");
+        conn.execute(
+            "INSERT INTO __saved_charts (id, name) VALUES ('c1', 'test_chart');",
+            &[],
+        )
+        .expect("插入 chart 失败");
+
+        // 插入子记录（引用已存在的父记录，FK 约束通过）
+        conn.execute(
+            "INSERT INTO __dashboard_items (id, dashboard_id, chart_id) VALUES ('i1', 'd1', 'c1');",
+            &[],
+        )
+        .expect("插入 dashboard_item 失败");
+
+        // 验证子记录存在
+        assert_eq!(
+            query_scalar(&conn, "SELECT COUNT(*) FROM __dashboard_items;"),
+            "1"
+        );
+
+        // 删除父记录 dashboard，应触发级联删除
+        conn.execute("DELETE FROM __dashboards WHERE id = 'd1';", &[])
+            .expect("删除 dashboard 失败");
+
+        // 验证子记录被级联删除
+        let count = query_scalar(&conn, "SELECT COUNT(*) FROM __dashboard_items;");
+        assert_eq!(
+            count, "0",
+            "foreign_keys = ON 应使 __dashboard_items 随父记录级联删除"
+        );
+    }
+
+    // ============================================================
+    // 孤儿记录清理逻辑
+    // 先关闭 foreign_keys 插入孤儿，开启后调用清理 SQL，验证孤儿被删除
+    // ============================================================
+
+    #[test]
+    fn test_orphan_cleanup_sql() {
+        let (conn, _temp_dir) = create_test_connection();
+
+        // 创建与 dashboard_service::ensure_tables_exist 相同结构的三张表
+        conn.execute(
+            r#"CREATE TABLE __dashboards (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )"#,
+            &[],
+        )
+        .expect("创建 __dashboards 表失败");
+        conn.execute(
+            r#"CREATE TABLE __saved_charts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )"#,
+            &[],
+        )
+        .expect("创建 __saved_charts 表失败");
+        conn.execute(
+            r#"CREATE TABLE __dashboard_items (
+                id TEXT PRIMARY KEY,
+                dashboard_id TEXT NOT NULL,
+                chart_id TEXT NOT NULL,
+                FOREIGN KEY (dashboard_id) REFERENCES __dashboards(id) ON DELETE CASCADE,
+                FOREIGN KEY (chart_id) REFERENCES __saved_charts(id) ON DELETE CASCADE
+            )"#,
+            &[],
+        )
+        .expect("创建 __dashboard_items 表失败");
+
+        // 关闭 foreign_keys 以插入孤儿记录（模拟开启 FK 前的历史数据）
+        conn.execute("PRAGMA foreign_keys = OFF;", &[])
+            .expect("关闭 foreign_keys 失败");
+
+        // 插入孤儿记录：dashboard_id 和 chart_id 均不存在于父表
+        conn.execute(
+            "INSERT INTO __dashboard_items (id, dashboard_id, chart_id) \
+             VALUES ('orphan1', 'nonexistent_dash', 'nonexistent_chart');",
+            &[],
+        )
+        .expect("插入孤儿记录失败");
+
+        // 重新开启 foreign_keys（SQLite 不会回溯校验已有数据，孤儿记录仍留存）
+        conn.execute("PRAGMA foreign_keys = ON;", &[])
+            .expect("开启 foreign_keys 失败");
+
+        // 验证清理前孤儿记录存在
+        assert_eq!(
+            query_scalar(&conn, "SELECT COUNT(*) FROM __dashboard_items;"),
+            "1",
+            "清理前应有 1 条孤儿记录"
+        );
+
+        // 执行与 dashboard_service::ensure_tables_exist 相同的清理 SQL
+        let orphan_cleanup_sql = r#"
+            DELETE FROM __dashboard_items
+            WHERE dashboard_id NOT IN (SELECT id FROM __dashboards)
+               OR chart_id NOT IN (SELECT id FROM __saved_charts);
+        "#;
+        conn.execute(orphan_cleanup_sql, &[])
+            .expect("执行孤儿清理 SQL 失败");
+
+        // 验证孤儿记录已被删除
+        let count = query_scalar(&conn, "SELECT COUNT(*) FROM __dashboard_items;");
+        assert_eq!(count, "0", "清理后应无孤儿记录");
     }
 }

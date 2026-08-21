@@ -85,8 +85,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({
         // 更新标签页的 queryId
         updateTab(activeTabId, { queryId: targetQueryId });
       } else {
-        // 已经有 queryId，确保查询存储中的 activeQueryId 是对的
-        if (useQueryStore.getState().activeQueryId !== activeTabData.queryId) {
+        // 已经有 queryId，先校验该查询是否真实存在（修复启动布局映射产生的无效 ID）
+        const queryExists = sqlQueries.some(q => q.id === activeTabData.queryId);
+        if (!queryExists) {
+          const { updateTab } = useWorkspaceStore.getState();
+          addSqlQuery();
+          const { sqlQueries: newQueries } = useQueryStore.getState();
+          const targetQueryId = newQueries[newQueries.length - 1].id;
+          updateTab(activeTabId, { queryId: targetQueryId });
+          setActiveQueryId(targetQueryId);
+        } else if (useQueryStore.getState().activeQueryId !== activeTabData.queryId) {
           setActiveQueryId(activeTabData.queryId);
         }
       }

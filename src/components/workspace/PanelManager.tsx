@@ -7,6 +7,7 @@ import { ChartPanel } from '../chart/ChartPanel';
 import { useQueryExecution } from '../sql/hooks';
 import { tauriService } from '../../services';
 import { useSetting } from '../../context/SettingsContext';
+import { useLocale } from '../../context/LocaleContext';
 import { applyDefaultSelectLimit } from '../../utils/sqlStatementParser';
 
 interface PanelManagerProps {
@@ -25,6 +26,7 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
   const addToHistory = useQueryStore(s => s.addToHistory);
   const { setMessage } = useAppStore();
   const { executeQuery } = useQueryExecution();
+  const { t } = useLocale();
   const [defaultSelectLimitStr] = useSetting('sql', 'defaultSelectLimit');
   const defaultSelectLimit = parseInt(defaultSelectLimitStr || '0', 10) || 0;
   
@@ -37,12 +39,12 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
   const tabData = tabs.find(t => t.id === tabId);
   const tabQueryId = tabData?.queryId || activeQueryId;
   
-  // 确保全局 activeQueryId 与当前 tab.queryId 同步
+  // 确保全局 activeQueryId 与当前 tab.queryId 同步（仅当 queryId 真实存在时才同步）
   React.useEffect(() => {
-    if (tabQueryId && activeQueryId !== tabQueryId) {
+    if (tabQueryId && activeQueryId !== tabQueryId && sqlQueries.some(q => q.id === tabQueryId)) {
       setActiveQueryId(tabQueryId);
     }
-  }, [tabQueryId, activeQueryId, setActiveQueryId]);
+  }, [tabQueryId, activeQueryId, setActiveQueryId, sqlQueries]);
 
   const activeQuery = sqlQueries.find(q => q.id === tabQueryId);
 
@@ -60,7 +62,7 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
         
         if (!batchResults || !Array.isArray(batchResults)) {
           console.error('[PanelManager] Invalid batchResults format:', response.data);
-          setMessage('查询结果解析失败，请稍后重试', 'error');
+          setMessage('error.query.parse_failed', 'error');
           return;
         }
 
@@ -80,18 +82,18 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
         addToHistory(sql, hasSuccess, totalRows, 100);
         
         if (hasSuccess) {
-          setMessage(`执行成功（${successResults.length} 条语句）`, 'success');
+          setMessage({ key: 'query.execute.success', vars: { count: successResults.length } }, 'success');
         } else {
-          setMessage('执行失败', 'error');
+          setMessage('query.execute.failed', 'error');
         }
       } else {
         console.error('[PanelManager] SQL execution error:', response.error);
-        setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+        setMessage('error.query.check_syntax', 'error');
         addToHistory(sql, false, null, 100);
       }
     } catch (error) {
       console.error('[PanelManager] SQL execution exception:', error);
-      setMessage('SQL 执行失败，请检查 SQL 语法是否正确，或查看控制台了解详情', 'error');
+      setMessage('error.query.check_syntax', 'error');
       addToHistory(sql, false, null, 100);
     } finally {
       setQueryLoading(null);
@@ -105,7 +107,7 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
       'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LAG', 'LEAD',
       'ARRAY_AGG', 'STRING_AGG',
       'COUNT(DISTINCT', 'AVG(', 'SUM(', 'MIN(', 'MAX(',
-      'SELECT DISTINCT', ' JOIN ',
+      'SELECT DISTINCT', ' JOIN ', // safe_sql: SQL 关键字检测逻辑（用于判断是否为分析型查询）
     ];
     return analyticalKeywords.some(kw => upper.includes(kw));
   };
@@ -221,7 +223,7 @@ export const PanelManager: React.FC<PanelManagerProps> = ({ tabId, panels }) => 
       case 'query_plan':
         return (
           <div style={styles.placeholderPanel}>
-            查询计划（即将推出）
+            {t('queryPlan.comingSoon')}
           </div>
         );
       default:

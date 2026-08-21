@@ -18,13 +18,16 @@
     "e2e:report": "npx playwright show-report",
     "coverage:web": "vitest run --coverage",
     "coverage:rust": "cd src-tauri && cargo tarpaulin --out Html --output-dir ../coverage/rust --workspace",
-    "coverage:rust:help": "echo 需先运行: cargo install cargo-tarpaulin"
+    "coverage:rust:help": "echo 需先运行: cargo install cargo-tarpaulin",
+    "check:doc-sync": "powershell -NoProfile -File scripts/check-doc-sync.ps1",
+    "check:i18n": "node scripts/check-hardcoded-i18n.mjs --baseline 50",
+    "check:i18n:strict": "node scripts/check-hardcoded-i18n.mjs --strict"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-opener": "^2",
+
     "ag-grid-community": "^35.2.1",
     "ag-grid-react": "^35.2.1",
     "dayjs": "^1.11.13",
@@ -35,15 +38,13 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-resizable-panels": "^2.0.0",
-    "zustand": "^5.0.0",
-    "zustand-persist": "^0.4.0"
+    "zustand": "^5.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
-    "@types/jsdom": "^28.0.3",
     "@types/lodash-es": "^4.17.12",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

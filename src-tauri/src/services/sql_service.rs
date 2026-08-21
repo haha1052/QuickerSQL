@@ -950,8 +950,11 @@ impl SqlExecutionService {
         }
     }
 
-    /// 刷新所有 VIEW 后重试 DuckDB 查询。
+    /// 刷新缺失的 VIEW 后重试 DuckDB 查询。
     /// 成功则推入结果 + 写回缓存 + 返回 metadata；失败则返回 None 供调用方回退。
+    ///
+    /// P2-4 优化：不再全量刷新所有 VIEW，而是先查询 DuckDB 中已存在的 VIEW 列表，
+    /// 仅为缺失的表创建 VIEW。避免不必要的 `CREATE OR REPLACE VIEW` 开销。
     fn try_duckdb_view_refresh_retry(
         ctx: &mut SqlExecContext<'_>,
         duckdb_conn_guard: &std::sync::MutexGuard<'_, Box<dyn DatabaseConnection>>,
@@ -961,18 +964,18 @@ impl SqlExecutionService {
         err_msg: &str,
     ) -> Option<ExecutionMetadata> {
         log::warn!(
-            "DuckDB 检测到表/VIEW 不存在错误，尝试刷新所有 VIEW 后重试。错误: {}",
+            "DuckDB 检测到表/VIEW 不存在错误，尝试增量创建缺失 VIEW 后重试。错误: {}",
             err_msg
         );
 
-        match crate::services::ViewService::refresh_all_views_with_type_casts(
+        match Self::refresh_missing_views(
             &***duckdb_conn_guard,
             ctx.sqlite_conn,
             ctx.table_names,
         ) {
             Ok(refresh_count) => {
                 log::info!(
-                    "VIEW 刷新成功，共刷新 {} 个 VIEW，正在重试查询...",
+                    "VIEW 增量刷新完成，新建 {} 个 VIEW，正在重试查询...",
                     refresh_count
                 );
 
@@ -1012,14 +1015,14 @@ impl SqlExecutionService {
                     }
                     Ok(Err(retry_e)) => {
                         log::warn!(
-                            "DuckDB VIEW 刷新后重试仍然失败，回退到 SQLite: {}",
+                            "DuckDB VIEW 增量刷新后重试仍然失败，回退到 SQLite: {}",
                             retry_e
                         );
                         None
                     }
                     Err(retry_panic) => {
                         log::error!(
-                            "DuckDB VIEW 刷新后重试发生 panic，回退到 SQLite: {:?}",
+                            "DuckDB VIEW 增量刷新后重试发生 panic，回退到 SQLite: {:?}",
                             retry_panic
                         );
                         None
@@ -1028,12 +1031,84 @@ impl SqlExecutionService {
             }
             Err(refresh_e) => {
                 log::warn!(
-                    "VIEW 刷新失败，直接回退到 SQLite: {}",
+                    "VIEW 增量刷新失败，直接回退到 SQLite: {}",
                     refresh_e
                 );
                 None
             }
         }
+    }
+
+    /// P2-4: 增量创建缺失的 VIEW
+    ///
+    /// 查询 DuckDB 中已存在的 VIEW 列表，仅为尚未创建 VIEW 的表创建 VIEW。
+    /// 相比 `refresh_all_views_with_type_casts`，避免了不必要的 VIEW 重建开销。
+    ///
+    /// # Arguments
+    /// * `duckdb_conn` - DuckDB 数据库连接
+    /// * `sqlite_conn` - SQLite 数据库连接（用于获取列类型信息）
+    /// * `table_names` - 需要创建 VIEW 的表名列表
+    ///
+    /// # Returns
+    /// * `Ok(usize)` - 成功创建的 VIEW 数量
+    /// * `Err(String)` - 查询已存在 VIEW 列表失败
+    fn refresh_missing_views(
+        duckdb_conn: &dyn DatabaseConnection,
+        sqlite_conn: &MutexGuardConnection,
+        table_names: &[String],
+    ) -> Result<usize, String> {
+        // 查询 DuckDB 中已存在的 VIEW 名称
+        let existing_views = Self::list_existing_duckdb_views(duckdb_conn)?;
+
+        let mut success_count = 0;
+        for table_name in table_names {
+            // VIEW 已存在，跳过
+            if existing_views.contains(table_name) {
+                continue;
+            }
+            // 仅为缺失的表创建 VIEW
+            if crate::services::ViewService::refresh_single_view_with_type_casts(
+                duckdb_conn,
+                sqlite_conn,
+                table_name,
+            )
+            .is_ok()
+            {
+                success_count += 1;
+            }
+        }
+
+        log::info!(
+            "VIEW 增量刷新完成，新建 {}/{} 个 VIEW（已存在 {} 个）",
+            success_count,
+            table_names.len(),
+            existing_views.len()
+        );
+        Ok(success_count)
+    }
+
+    /// 查询 DuckDB 中已存在的 VIEW 名称集合
+    ///
+    /// 通过 `information_schema.views` 查询 main schema 下的所有 VIEW 名称。
+    /// 用于 P2-4 增量 VIEW 创建：只创建缺失的 VIEW，避免全量刷新。
+    fn list_existing_duckdb_views(
+        duckdb_conn: &dyn DatabaseConnection,
+    ) -> Result<std::collections::HashSet<String>, String> {
+        let result = duckdb_conn
+            .query(
+                "SELECT table_name FROM information_schema.views WHERE table_schema = 'main'",
+                &[],
+            )
+            .map_err(|e| format!("查询已存在 VIEW 列表失败: {}", e))?;
+
+        let views: std::collections::HashSet<String> = result
+            .rows
+            .into_iter()
+            .filter(|row| !row.is_empty())
+            .map(|row| row[0].clone())
+            .collect();
+
+        Ok(views)
     }
 
     /// DuckDB 发生 panic：记录审计日志后回退到 SQLite 执行。

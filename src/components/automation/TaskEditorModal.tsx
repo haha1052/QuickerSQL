@@ -1,280 +1,46 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-system';
-import { useTaskStore, useToastStore, useSettingsStore } from '../../store';
+import { useTaskStore, useToastStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
 import type {
   Task,
   TaskType,
-  ScheduleMode,
   TaskState,
   CreateTaskPayload,
   UpdateTaskPayload,
-  SqlTaskPayload,
-  RefreshChartPayload,
-  RefreshDashboardPayload,
-  ExportCsvPayload,
   DependencyType,
+  DependencyConfig,
   TimeIntervalConfig,
   CronConfig,
   TaskSuccessConfig,
-  TaskCompletedConfig,
-  DependencyConfig,
 } from '../../types/automation';
 import { parseDependencyConfig, serializeDependencyConfig } from '../../types/automation';
-
-const readAutomationDefaults = (): { retryOnFail: number; timeoutSecs: number } => {
-  try {
-    const getSetting = useSettingsStore.getState().getSetting;
-    const retryItem = getSetting('automation', 'defaultRetryOnFail');
-    const timeoutItem = getSetting('automation', 'defaultTimeoutSecs');
-    const retry = retryItem?.value ? parseInt(retryItem.value, 10) : 0;
-    const timeout = timeoutItem?.value ? parseInt(timeoutItem.value, 10) : 300;
-    return {
-      retryOnFail: Number.isFinite(retry) ? retry : 0,
-      timeoutSecs: Number.isFinite(timeout) && timeout > 0 ? timeout : 300,
-    };
-  } catch {
-    return { retryOnFail: 0, timeoutSecs: 300 };
-  }
-};
+import {
+  type DraftState,
+  type DraftDependency,
+  type InitialPayload,
+  TASK_TYPE_OPTIONS,
+  DEPENDENCY_TYPE_LABELS,
+  formStyles,
+  getInitialDraft,
+  migrateScheduleToDeps,
+  getDependencyDescription,
+  getScheduleFromDeps,
+  buildPayloadString,
+} from './forms/shared';
+import { SqlTaskForm } from './forms/SqlTaskForm';
+import { RefreshChartTaskForm } from './forms/RefreshChartTaskForm';
+import { RefreshDashboardTaskForm } from './forms/RefreshDashboardTaskForm';
+import { ExportCsvTaskForm } from './forms/ExportCsvTaskForm';
+import { DependencyEditorModal } from './forms/DependencyEditorModal';
 
 interface TaskEditorModalProps {
   open: boolean;
   task?: Task | null;
   onClose: () => void;
   initialTaskType?: TaskType;
-  initialPayload?: {
-    sql?: string;
-    chartId?: string;
-    dashboardId?: string;
-    csvSql?: string;
-    csvOutputPath?: string;
-  };
+  initialPayload?: InitialPayload;
   initialName?: string;
 }
-
-interface DraftState {
-  name: string;
-  description: string;
-  taskType: TaskType;
-  scheduleMode: ScheduleMode;
-  scheduleValue: string;
-  retryOnFail: number;
-  timeoutSecs: number;
-  state: TaskState;
-  sql: string;
-  chartId: string;
-  dashboardId: string;
-  csvOutputPath: string;
-  csvSql: string;
-}
-
-interface DraftDependency {
-  id?: string;
-  dependencyType: DependencyType;
-  dependencyConfig: string;
-}
-
-const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
-  { value: 'sql', label: 'SQL 执行' },
-  { value: 'refresh_chart', label: '刷新图表' },
-  { value: 'refresh_dashboard', label: '刷新仪表盘' },
-  { value: 'export_csv', label: '导出 CSV' },
-];
-
-const CRON_PRESETS: { label: string; value: string }[] = [
-  { label: '每分钟', value: '* * * * *' },
-  { label: '每 5 分钟', value: '*/5 * * * *' },
-  { label: '每小时', value: '0 * * * *' },
-  { label: '每天 0 点', value: '0 0 * * *' },
-  { label: '每天 9 点', value: '0 9 * * *' },
-  { label: '工作日 9 点', value: '0 9 * * 1-5' },
-  { label: '每周一 9 点', value: '0 9 * * 1' },
-  { label: '每月 1 号 0 点', value: '0 0 1 * *' },
-];
-
-const DEPENDENCY_TYPE_LABELS: Record<DependencyType, string> = {
-  time_interval: '时间间隔',
-  cron: 'Cron 表达式',
-  task_success: '前置任务成功',
-  task_completed: '前置任务完成',
-};
-
-const parseCron = (expr: string): string[] => {
-  const parts = expr.trim().split(/\s+/);
-  const result = ['*', '*', '*', '*', '*'];
-  for (let i = 0; i < Math.min(5, parts.length); i++) result[i] = parts[i];
-  return result;
-};
-
-const parseInnerPayload = (task: Task | null | undefined): Partial<DraftState> => {
-  if (!task || !task.payload) return {};
-  try {
-    const data = JSON.parse(task.payload);
-    switch (task.taskType) {
-      case 'sql': {
-        const inner = data as SqlTaskPayload;
-        return { sql: inner.sql || '' };
-      }
-      case 'refresh_chart': {
-        const inner = data as RefreshChartPayload;
-        return { chartId: inner.chartId || '' };
-      }
-      case 'refresh_dashboard': {
-        const inner = data as RefreshDashboardPayload;
-        return { dashboardId: inner.dashboardId || '' };
-      }
-      case 'export_csv': {
-        const inner = data as ExportCsvPayload;
-        return { csvSql: inner.sql || '', csvOutputPath: inner.outputPath || '' };
-      }
-    }
-    return {};
-  } catch {
-    return {};
-  }
-};
-
-const buildPayloadString = (taskType: TaskType, draft: DraftState): string => {
-  switch (taskType) {
-    case 'sql': {
-      const inner: SqlTaskPayload = { sql: draft.sql || '' };
-      return JSON.stringify(inner);
-    }
-    case 'refresh_chart': {
-      const inner: RefreshChartPayload = { chartId: draft.chartId || '' };
-      return JSON.stringify(inner);
-    }
-    case 'refresh_dashboard': {
-      const inner: RefreshDashboardPayload = { dashboardId: draft.dashboardId || '' };
-      return JSON.stringify(inner);
-    }
-    case 'export_csv': {
-      const inner: ExportCsvPayload = { sql: draft.csvSql || '', outputPath: draft.csvOutputPath || '' };
-      return JSON.stringify(inner);
-    }
-  }
-};
-
-const getInitialDraft = (
-  task?: Task | null,
-  initialTaskType?: TaskType,
-  initialPayload?: TaskEditorModalProps['initialPayload'],
-  initialName?: string,
-): DraftState => {
-  const defaults = readAutomationDefaults();
-  const base: DraftState = {
-    name: '',
-    description: '',
-    taskType: 'sql',
-    scheduleMode: 'interval',
-    scheduleValue: '3600',
-    retryOnFail: defaults.retryOnFail,
-    timeoutSecs: defaults.timeoutSecs,
-    state: 'enabled',
-    sql: '',
-    chartId: '',
-    dashboardId: '',
-    csvOutputPath: '',
-    csvSql: '',
-  };
-  const inner = task ? parseInnerPayload(task) : {};
-  const fromTask = task
-    ? {
-        name: task.name,
-        description: task.description,
-        taskType: task.taskType,
-        scheduleMode: task.scheduleMode,
-        scheduleValue: task.scheduleValue,
-        retryOnFail: task.retryOnFail,
-        timeoutSecs: task.timeoutSecs,
-        state: task.state,
-        ...inner,
-      }
-    : {};
-  const merged: DraftState = {
-    ...base,
-    ...fromTask,
-  };
-  if (initialName !== undefined) {
-    merged.name = initialName;
-  }
-  if (initialTaskType !== undefined) {
-    merged.taskType = initialTaskType;
-  }
-  if (initialPayload) {
-    if (initialPayload.sql !== undefined) merged.sql = initialPayload.sql;
-    if (initialPayload.chartId !== undefined) merged.chartId = initialPayload.chartId;
-    if (initialPayload.dashboardId !== undefined) merged.dashboardId = initialPayload.dashboardId;
-    if (initialPayload.csvSql !== undefined) merged.csvSql = initialPayload.csvSql;
-    if (initialPayload.csvOutputPath !== undefined) merged.csvOutputPath = initialPayload.csvOutputPath;
-  }
-  return merged;
-};
-
-const migrateScheduleToDeps = (scheduleMode: ScheduleMode, scheduleValue: string): DraftDependency[] => {
-  if (scheduleMode === 'manual' || !scheduleValue) {
-    return [];
-  }
-  if (scheduleMode === 'interval') {
-    const config: TimeIntervalConfig = { intervalSeconds: parseInt(scheduleValue, 10) || 3600 };
-    return [{ dependencyType: 'time_interval', dependencyConfig: serializeDependencyConfig(config) }];
-  }
-  if (scheduleMode === 'cron') {
-    const config: CronConfig = { expression: scheduleValue || '0 * * * *', timezone: 'local' };
-    return [{ dependencyType: 'cron', dependencyConfig: serializeDependencyConfig(config) }];
-  }
-  return [];
-};
-
-const getDependencyDescription = (dep: DraftDependency, allTasks: Task[]): string => {
-  const config = parseDependencyConfig(dep.dependencyConfig);
-  if (!config) return '无效配置';
-  switch (dep.dependencyType) {
-    case 'time_interval': {
-      const c = config as TimeIntervalConfig;
-      return `每 ${c.intervalSeconds} 秒`;
-    }
-    case 'cron': {
-      const c = config as CronConfig;
-      return c.expression;
-    }
-    case 'task_success': {
-      const c = config as TaskSuccessConfig;
-      const task = allTasks.find((t) => t.id === c.upstreamTaskId);
-      const taskName = task ? task.name : c.upstreamTaskId;
-      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : '';
-      return `${taskName} 成功后${delay}`;
-    }
-    case 'task_completed': {
-      const c = config as TaskCompletedConfig;
-      const task = allTasks.find((t) => t.id === c.upstreamTaskId);
-      const taskName = task ? task.name : c.upstreamTaskId;
-      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : '';
-      return `${taskName} 完成后${delay}`;
-    }
-  }
-};
-
-const getScheduleFromDeps = (
-  deps: DraftDependency[],
-): { scheduleMode: ScheduleMode; scheduleValue: string } => {
-  const timeDep = deps.find((d) => d.dependencyType === 'time_interval');
-  if (timeDep) {
-    const config = parseDependencyConfig(timeDep.dependencyConfig) as TimeIntervalConfig | null;
-    if (config) {
-      return { scheduleMode: 'interval', scheduleValue: String(config.intervalSeconds) };
-    }
-  }
-  const cronDep = deps.find((d) => d.dependencyType === 'cron');
-  if (cronDep) {
-    const config = parseDependencyConfig(cronDep.dependencyConfig) as CronConfig | null;
-    if (config) {
-      return { scheduleMode: 'cron', scheduleValue: config.expression };
-    }
-  }
-  return { scheduleMode: 'manual', scheduleValue: '' };
-};
 
 export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
   open,
@@ -352,6 +118,11 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
     setDraft((prev) => ({ ...prev, [key]: value }));
   };
 
+  /** 子表单使用的 patch 合并更新函数 */
+  const updateForm = (patch: Partial<DraftState>) => {
+    setDraft((prev) => ({ ...prev, ...patch }));
+  };
+
   const openAddDepForm = (type: DependencyType) => {
     setDepFormType(type);
     setEditingDepIndex(null);
@@ -411,38 +182,38 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
   };
 
   const validate = (): string | null => {
-    if (!draft.name.trim()) return '请输入任务名称';
+    if (!draft.name.trim()) return t('task.error.nameRequired');
     if (!['sql', 'refresh_chart', 'refresh_dashboard', 'export_csv'].includes(draft.taskType)) {
-      return '请选择任务类型';
+      return t('task.error.typeRequired');
     }
     for (let i = 0; i < deps.length; i++) {
       const dep = deps[i];
       const config = parseDependencyConfig(dep.dependencyConfig);
-      if (!config) return `第 ${i + 1} 个触发条件配置无效`;
+      if (!config) return t('task.error.depConfigInvalid', { index: i + 1 });
       if (dep.dependencyType === 'time_interval') {
         const c = config as TimeIntervalConfig;
         if (!c.intervalSeconds || c.intervalSeconds <= 0) {
-          return `第 ${i + 1} 个触发条件：间隔秒数必须大于 0`;
+          return t('task.error.intervalPositive', { index: i + 1 });
         }
       }
       if (dep.dependencyType === 'cron') {
         const c = config as CronConfig;
         if (!c.expression || !c.expression.trim()) {
-          return `第 ${i + 1} 个触发条件：Cron 表达式不能为空`;
+          return t('task.error.cronEmpty', { index: i + 1 });
         }
       }
       if (dep.dependencyType === 'task_success' || dep.dependencyType === 'task_completed') {
         const c = config as TaskSuccessConfig;
         if (!c.upstreamTaskId) {
-          return `第 ${i + 1} 个触发条件：请选择前置任务`;
+          return t('task.error.predecessorEmpty', { index: i + 1 });
         }
       }
     }
-    if (draft.taskType === 'sql' && !draft.sql.trim()) return '请输入 SQL';
-    if (draft.taskType === 'refresh_chart' && !draft.chartId.trim()) return '请输入 chartId';
-    if (draft.taskType === 'refresh_dashboard' && !draft.dashboardId.trim()) return '请输入 dashboardId';
+    if (draft.taskType === 'sql' && !draft.sql.trim()) return t('task.error.sqlRequired');
+    if (draft.taskType === 'refresh_chart' && !draft.chartId.trim()) return t('task.error.chartIdRequired');
+    if (draft.taskType === 'refresh_dashboard' && !draft.dashboardId.trim()) return t('task.error.dashboardIdRequired');
     if (draft.taskType === 'export_csv' && (!draft.csvSql.trim() || !draft.csvOutputPath.trim())) {
-      return '请输入 SQL 和输出路径';
+      return t('task.error.sqlAndOutputRequired');
     }
     return null;
   };
@@ -475,7 +246,7 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
             dependencyConfig: d.dependencyConfig,
           })),
         );
-        addToast('任务已更新', 'success');
+        addToast(t('task.updated'), 'success');
       } else {
         const create: CreateTaskPayload = {
           name: draft.name.trim(),
@@ -503,49 +274,49 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
       onClose();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(`保存失败：${msg}`);
-      addToast('保存失败', 'error');
+      setError(t('task.error.saveFailedMsg', { msg }));
+      addToast(t('task.error.saveFailed'), 'error');
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.header}>
-          <h3 style={styles.title}>{isEdit ? '编辑任务' : '新建任务'}</h3>
-          <button style={styles.closeBtn} onClick={onClose}>
+    <div style={formStyles.overlay} onClick={onClose}>
+      <div style={formStyles.modal} onClick={(e) => e.stopPropagation()}>
+        <div style={formStyles.header}>
+          <h3 style={formStyles.title}>{isEdit ? t('task.editTitle') : t('task.newTitle')}</h3>
+          <button style={formStyles.closeBtn} onClick={onClose}>
             ×
           </button>
         </div>
 
-        <div style={styles.body}>
-          <div style={styles.field}>
-            <label style={styles.label}>任务名称 *</label>
+        <div style={formStyles.body}>
+          <div style={formStyles.field}>
+            <label style={formStyles.label}>{t('task.fieldName')} *</label>
             <input
-              style={styles.input}
+              style={formStyles.input}
               value={draft.name}
               onChange={(e) => set('name', e.target.value)}
               placeholder={t('task.namePlaceholder')}
             />
           </div>
 
-          <div style={styles.field}>
-            <label style={styles.label}>描述</label>
+          <div style={formStyles.field}>
+            <label style={formStyles.label}>{t('task.fieldDescription')}</label>
             <textarea
-              style={{ ...styles.textarea, minHeight: '56px' }}
+              style={{ ...formStyles.textarea, minHeight: '56px' }}
               value={draft.description}
               onChange={(e) => set('description', e.target.value)}
-              placeholder="可选描述..."
+              placeholder={t('task.descriptionPlaceholder')}
             />
           </div>
 
-          <div style={styles.twoCol}>
-            <div style={styles.field}>
-              <label style={styles.label}>任务类型 *</label>
+          <div style={formStyles.twoCol}>
+            <div style={formStyles.field}>
+              <label style={formStyles.label}>{t('task.fieldType')} *</label>
               <select
-                style={styles.select}
+                style={formStyles.select}
                 value={draft.taskType}
                 onChange={(e) => set('taskType', e.target.value as TaskType)}
               >
@@ -556,50 +327,50 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
                 ))}
               </select>
             </div>
-            <div style={styles.field}>
-              <label style={styles.label}>任务状态</label>
+            <div style={formStyles.field}>
+              <label style={formStyles.label}>{t('task.fieldStatus')}</label>
               <select
-                style={styles.select}
+                style={formStyles.select}
                 value={draft.state}
                 onChange={(e) => set('state', e.target.value as TaskState)}
               >
-                <option value="enabled">启用</option>
-                <option value="disabled">禁用</option>
-                <option value="paused">暂停</option>
+                <option value="enabled">{t('task.enabled')}</option>
+                <option value="disabled">{t('task.disabled')}</option>
+                <option value="paused">{t('task.paused')}</option>
               </select>
             </div>
           </div>
 
-          <div style={styles.dependencySection}>
-            <div style={styles.dependencyHeader}>
-              <label style={styles.label}>触发条件</label>
+          <div style={formStyles.dependencySection}>
+            <div style={formStyles.dependencyHeader}>
+              <label style={formStyles.label}>{t('task.fieldTrigger')}</label>
             </div>
-            <div style={styles.dependencyList}>
+            <div style={formStyles.dependencyList}>
               {deps.length === 0 ? (
-                <div style={styles.emptyDeps}>暂无触发条件（任务仅手动触发）</div>
+                <div style={formStyles.emptyDeps}>{t('task.emptyDeps')}</div>
               ) : (
                 deps.map((dep, index) => (
-                  <div key={index} style={styles.depItem}>
-                    <div style={styles.depItemLeft}>
-                      <span style={styles.depTypeTag}>
+                  <div key={index} style={formStyles.depItem}>
+                    <div style={formStyles.depItemLeft}>
+                      <span style={formStyles.depTypeTag}>
                         {DEPENDENCY_TYPE_LABELS[dep.dependencyType]}
                       </span>
-                      <span style={styles.depDesc}>
+                      <span style={formStyles.depDesc}>
                         {getDependencyDescription(dep, allTasks)}
                       </span>
                     </div>
-                    <div style={styles.depItemActions}>
+                    <div style={formStyles.depItemActions}>
                       <button
-                        style={styles.iconBtn}
+                        style={formStyles.iconBtn}
                         onClick={() => openEditDepForm(index)}
-                        title="编辑"
+                        title={t('common.edit')}
                       >
                         ✎
                       </button>
                       <button
-                        style={styles.iconBtn}
+                        style={formStyles.iconBtn}
                         onClick={() => deleteDep(index)}
-                        title="删除"
+                        title={t('common.delete')}
                       >
                         ×
                       </button>
@@ -608,106 +379,50 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
                 ))
               )}
             </div>
-            <div style={styles.addDepBtnRow}>
-              <div style={styles.addDepBtnGroup}>
-                <button style={styles.addDepBtn} onClick={() => openAddDepForm('time_interval')}>
-                  + 时间间隔
+            <div style={formStyles.addDepBtnRow}>
+              <div style={formStyles.addDepBtnGroup}>
+                <button style={formStyles.addDepBtn} onClick={() => openAddDepForm('time_interval')}>
+                  + {t('task.addInterval')}
                 </button>
-                <button style={styles.addDepBtn} onClick={() => openAddDepForm('cron')}>
-                  + Cron 表达式
+                <button style={formStyles.addDepBtn} onClick={() => openAddDepForm('cron')}>
+                  + {t('task.addCron')}
                 </button>
-                <button style={styles.addDepBtn} onClick={() => openAddDepForm('task_success')}>
-                  + 前置任务成功
+                <button style={formStyles.addDepBtn} onClick={() => openAddDepForm('task_success')}>
+                  + {t('task.addSuccess')}
                 </button>
-                <button style={styles.addDepBtn} onClick={() => openAddDepForm('task_completed')}>
-                  + 前置任务完成
+                <button style={formStyles.addDepBtn} onClick={() => openAddDepForm('task_completed')}>
+                  + {t('task.addComplete')}
                 </button>
               </div>
             </div>
           </div>
 
-          {draft.taskType === 'sql' && (
-            <div style={styles.field}>
-              <label style={styles.label}>SQL *</label>
-              <textarea
-                style={{
-                  ...styles.textarea,
-                  minHeight: '120px',
-                  fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-                }}
-                value={draft.sql}
-                onChange={(e) => set('sql', e.target.value)}
-                placeholder="SELECT * FROM my_table WHERE ..."
-              />
-            </div>
-          )}
-
+          {draft.taskType === 'sql' && <SqlTaskForm form={draft} updateForm={updateForm} />}
           {draft.taskType === 'refresh_chart' && (
-            <div style={styles.field}>
-              <label style={styles.label}>chartId *</label>
-              <input
-                style={styles.input}
-                value={draft.chartId}
-                onChange={(e) => set('chartId', e.target.value)}
-                placeholder={t('task.chartId')}
-              />
-            </div>
+            <RefreshChartTaskForm form={draft} updateForm={updateForm} />
           )}
-
           {draft.taskType === 'refresh_dashboard' && (
-            <div style={styles.field}>
-              <label style={styles.label}>dashboardId *</label>
-              <input
-                style={styles.input}
-                value={draft.dashboardId}
-                onChange={(e) => set('dashboardId', e.target.value)}
-                placeholder="仪表盘 ID"
-              />
-            </div>
+            <RefreshDashboardTaskForm form={draft} updateForm={updateForm} />
           )}
-
           {draft.taskType === 'export_csv' && (
-            <>
-              <div style={styles.field}>
-                <label style={styles.label}>SQL *</label>
-                <textarea
-                  style={{
-                    ...styles.textarea,
-                    minHeight: '90px',
-                    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-                  }}
-                  value={draft.csvSql}
-                  onChange={(e) => set('csvSql', e.target.value)}
-                  placeholder="SELECT * FROM ..."
-                />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>输出路径 *</label>
-                <input
-                  style={styles.input}
-                  value={draft.csvOutputPath}
-                  onChange={(e) => set('csvOutputPath', e.target.value)}
-                  placeholder="/path/to/export.csv"
-                />
-              </div>
-            </>
+            <ExportCsvTaskForm form={draft} updateForm={updateForm} />
           )}
 
-          <div style={styles.twoCol}>
-            <div style={styles.field}>
-              <label style={styles.label}>失败重试次数</label>
+          <div style={formStyles.twoCol}>
+            <div style={formStyles.field}>
+              <label style={formStyles.label}>{t('task.fieldRetryCount')}</label>
               <input
-                style={styles.input}
+                style={formStyles.input}
                 type="number"
                 min={0}
                 value={draft.retryOnFail}
                 onChange={(e) => set('retryOnFail', parseInt(e.target.value || '0', 10))}
               />
             </div>
-            <div style={styles.field}>
-              <label style={styles.label}>超时（秒）</label>
+            <div style={formStyles.field}>
+              <label style={formStyles.label}>{t('task.fieldTimeout')}</label>
               <input
-                style={styles.input}
+                style={formStyles.input}
                 type="number"
                 min={1}
                 value={draft.timeoutSecs}
@@ -716,523 +431,34 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
             </div>
           </div>
 
-          {error && <div style={styles.errorBox}>⚠️ {error}</div>}
+          {error && <div style={formStyles.errorBox}>⚠️ {error}</div>}
         </div>
 
-        <div style={styles.footer}>
-          <button style={styles.cancelBtn} onClick={onClose} disabled={saving}>
+        <div style={formStyles.footer}>
+          <button style={formStyles.cancelBtn} onClick={onClose} disabled={saving}>
             {t('common.cancel')}
           </button>
           <button
-            style={styles.saveBtn}
+            style={formStyles.saveBtn}
             onClick={handleSave}
             disabled={saving || !draft.name.trim()}
           >
-            {saving ? '保存中...' : '保存'}
+            {saving ? t('task.saving') : t('common.save')}
           </button>
         </div>
 
-        {showDepForm && (
-          <div style={styles.overlay} onClick={closeDepForm}>
-            <div style={styles.depFormModal} onClick={(e) => e.stopPropagation()}>
-              <div style={styles.header}>
-                <h3 style={styles.title}>
-                  {editingDepIndex !== null ? '编辑触发条件' : '添加触发条件'}
-                </h3>
-                <button style={styles.closeBtn} onClick={closeDepForm}>
-                  ×
-                </button>
-              </div>
-              <div style={styles.body}>
-                <div style={styles.field}>
-                  <label style={styles.label}>类型</label>
-                  <select
-                    style={styles.select}
-                    value={depFormType}
-                    onChange={(e) => {
-                      const type = e.target.value as DependencyType;
-                      openAddDepForm(type);
-                    }}
-                    disabled={editingDepIndex !== null}
-                  >
-                    {(Object.keys(DEPENDENCY_TYPE_LABELS) as DependencyType[]).map((key) => (
-                      <option key={key} value={key}>
-                        {DEPENDENCY_TYPE_LABELS[key]}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {depFormType === 'time_interval' && depFormConfig && (
-                  <div style={styles.field}>
-                    <label style={styles.label}>间隔时间</label>
-                    <div style={{ display: 'flex', gap: Spacing.sm }}>
-                      <input
-                        style={{ ...styles.input, flex: 1 }}
-                        type="number"
-                        min={1}
-                        value={
-                          (depFormConfig as TimeIntervalConfig).intervalSeconds
-                        }
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value || '0', 10);
-                          setDepFormConfig({
-                            intervalSeconds: Math.max(1, val || 1),
-                          } as TimeIntervalConfig);
-                        }}
-                      />
-                      <select
-                        style={styles.select}
-                        value="秒"
-                        disabled
-                      >
-                        <option value="秒">秒</option>
-                      </select>
-                    </div>
-                    <div style={styles.quickIntervalRow}>
-                      {[
-                        { label: '1 分钟', secs: 60 },
-                        { label: '5 分钟', secs: 300 },
-                        { label: '1 小时', secs: 3600 },
-                        { label: '1 天', secs: 86400 },
-                      ].map((p) => (
-                        <button
-                          key={p.label}
-                          style={styles.quickBtn}
-                          onClick={() => {
-                            setDepFormConfig({
-                              intervalSeconds: p.secs,
-                            } as TimeIntervalConfig);
-                          }}
-                        >
-                          {p.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {depFormType === 'cron' && depFormConfig && (
-                  <>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Cron 表达式（分 时 日 月 周）</label>
-                      <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                        {['分', '时', '日', '月', '周'].map((label, idx) => (
-                          <div key={idx} style={{ flex: 1, minWidth: 0 }}>
-                            <label
-                              style={{
-                                fontSize: FontSizes.caption,
-                                color: Colors.textSecondary,
-                                display: 'block',
-                                marginBottom: '4px',
-                              }}
-                            >
-                              {label}
-                            </label>
-                            <input
-                              style={{
-                                ...styles.input,
-                                padding: '6px 8px',
-                                fontSize: FontSizes.small,
-                              }}
-                              value={
-                                parseCron((depFormConfig as CronConfig).expression)[
-                                  idx
-                                ]
-                              }
-                              onChange={(e) => {
-                                const parts = parseCron(
-                                  (depFormConfig as CronConfig).expression,
-                                );
-                                parts[idx] = e.target.value.trim() || '*';
-                                setDepFormConfig({
-                                  ...(depFormConfig as CronConfig),
-                                  expression: parts.join(' '),
-                                });
-                              }}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                      <select
-                        style={{
-                          ...styles.select,
-                          fontSize: FontSizes.small,
-                          padding: '4px 8px',
-                        }}
-                        value=""
-                        onChange={(e) => {
-                          if (e.target.value) {
-                            setDepFormConfig({
-                              ...(depFormConfig as CronConfig),
-                              expression: e.target.value,
-                            });
-                          }
-                        }}
-                      >
-                        <option value="">选择预设...</option>
-                        {CRON_PRESETS.map((p) => (
-                          <option key={p.value} value={p.value}>
-                            {p.label}（{p.value}）
-                          </option>
-                        ))}
-                      </select>
-                      <div
-                        style={{
-                          fontSize: FontSizes.small,
-                          color: Colors.textSecondary,
-                          marginTop: '6px',
-                        }}
-                      >
-                        当前表达式：
-                        <span
-                          style={{
-                            fontFamily: 'Consolas, monospace',
-                            color: Colors.textPrimary,
-                          }}
-                        >
-                          {parseCron((depFormConfig as CronConfig).expression).join(' ')}
-                        </span>
-                      </div>
-                    </div>
-                    <div style={styles.field}>
-                      <label style={styles.label}>时区</label>
-                      <select
-                        style={styles.select}
-                        value={(depFormConfig as CronConfig).timezone || 'local'}
-                        onChange={(e) => {
-                          setDepFormConfig({
-                            ...(depFormConfig as CronConfig),
-                            timezone: e.target.value,
-                          });
-                        }}
-                      >
-                        <option value="local">本地时区</option>
-                        <option value="UTC">UTC</option>
-                        <option value="Asia/Shanghai">Asia/Shanghai</option>
-                        <option value="America/New_York">America/New_York</option>
-                        <option value="Europe/London">Europe/London</option>
-                      </select>
-                    </div>
-                  </>
-                )}
-
-                {(depFormType === 'task_success' || depFormType === 'task_completed') &&
-                  depFormConfig && (
-                    <>
-                      <div style={styles.field}>
-                        <label style={styles.label}>前置任务</label>
-                        <select
-                          style={styles.select}
-                          value={
-                            (depFormConfig as TaskSuccessConfig | TaskCompletedConfig)
-                              .upstreamTaskId
-                          }
-                          onChange={(e) => {
-                            setDepFormConfig({
-                              ...(depFormConfig as
-                                | TaskSuccessConfig
-                                | TaskCompletedConfig),
-                              upstreamTaskId: e.target.value,
-                            });
-                          }}
-                        >
-                          {availableTasks.length === 0 && (
-                            <option value="">暂无可用任务</option>
-                          )}
-                          {availableTasks.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div style={styles.field}>
-                        <label style={styles.label}>延迟秒数（可选）</label>
-                        <input
-                          style={styles.input}
-                          type="number"
-                          min={0}
-                          value={
-                            (depFormConfig as TaskSuccessConfig | TaskCompletedConfig)
-                              .delaySeconds || 0
-                          }
-                          onChange={(e) => {
-                            const val = parseInt(e.target.value || '0', 10);
-                            setDepFormConfig({
-                              ...(depFormConfig as
-                                | TaskSuccessConfig
-                                | TaskCompletedConfig),
-                              delaySeconds: Math.max(0, val || 0),
-                            });
-                          }}
-                        />
-                      </div>
-                    </>
-                  )}
-              </div>
-              <div style={styles.footer}>
-                <button style={styles.cancelBtn} onClick={closeDepForm}>
-                  取消
-                </button>
-                <button style={styles.saveBtn} onClick={saveDepForm}>
-                  确定
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+        <DependencyEditorModal
+          open={showDepForm}
+          editingDepIndex={editingDepIndex}
+          depFormType={depFormType}
+          depFormConfig={depFormConfig}
+          availableTasks={availableTasks}
+          onTypeChange={openAddDepForm}
+          onConfigChange={setDepFormConfig}
+          onClose={closeDepForm}
+          onSave={saveDepForm}
+        />
       </div>
     </div>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  modal: {
-    background: Colors.background,
-    borderRadius: BorderRadius.lg,
-    width: '640px',
-    maxHeight: '85vh',
-    display: 'flex',
-    flexDirection: 'column',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-    border: `1px solid ${Colors.border}`,
-  },
-  depFormModal: {
-    background: Colors.background,
-    borderRadius: BorderRadius.lg,
-    width: '480px',
-    maxHeight: '80vh',
-    display: 'flex',
-    flexDirection: 'column',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-    border: `1px solid ${Colors.border}`,
-    zIndex: 1100,
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: `${Spacing.md} ${Spacing.lg}`,
-    borderBottom: `1px solid ${Colors.border}`,
-  },
-  title: {
-    margin: 0,
-    fontSize: FontSizes.h1,
-    fontWeight: 600,
-    color: Colors.textPrimary,
-  },
-  closeBtn: {
-    background: 'none',
-    border: 'none',
-    fontSize: '22px',
-    cursor: 'pointer',
-    color: Colors.textSecondary,
-    padding: 0,
-    width: '32px',
-    height: '32px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  body: {
-    flex: 1,
-    overflowY: 'auto',
-    padding: Spacing.lg,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: Spacing.md,
-  },
-  field: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: Spacing.xs,
-    flex: 1,
-  },
-  twoCol: {
-    display: 'flex',
-    gap: Spacing.md,
-  },
-  label: {
-    fontSize: FontSizes.small,
-    fontWeight: 500,
-    color: Colors.textPrimary,
-  },
-  input: {
-    padding: `${Spacing.xs} ${Spacing.sm}`,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    fontSize: FontSizes.small,
-    background: Colors.backgroundLight,
-    color: Colors.textPrimary,
-  },
-  textarea: {
-    padding: `${Spacing.xs} ${Spacing.sm}`,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    fontSize: FontSizes.small,
-    background: Colors.backgroundLight,
-    color: Colors.textPrimary,
-    resize: 'vertical',
-  },
-  select: {
-    padding: `${Spacing.xs} ${Spacing.sm}`,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    fontSize: FontSizes.small,
-    background: Colors.backgroundLight,
-    color: Colors.textPrimary,
-  },
-  errorBox: {
-    padding: `${Spacing.sm} ${Spacing.md}`,
-    backgroundColor: 'rgba(220,53,69,0.1)',
-    border: `1px solid rgba(220,53,69,0.3)`,
-    borderRadius: BorderRadius.md,
-    color: Colors.danger,
-    fontSize: FontSizes.small,
-    fontWeight: 500,
-  },
-  footer: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: Spacing.sm,
-    padding: `${Spacing.md} ${Spacing.lg}`,
-    borderTop: `1px solid ${Colors.border}`,
-  },
-  cancelBtn: {
-    padding: `${Spacing.xs} ${Spacing.lg}`,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    background: Colors.backgroundLight,
-    cursor: 'pointer',
-    fontSize: FontSizes.small,
-    color: Colors.textPrimary,
-  },
-  saveBtn: {
-    padding: `${Spacing.xs} ${Spacing.lg}`,
-    border: 'none',
-    borderRadius: BorderRadius.md,
-    background: Colors.primary,
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: FontSizes.small,
-  },
-  dependencySection: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: Spacing.sm,
-    padding: Spacing.md,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    background: Colors.backgroundLight,
-  },
-  dependencyHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  dependencyList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: Spacing.sm,
-  },
-  emptyDeps: {
-    padding: Spacing.md,
-    textAlign: 'center',
-    color: Colors.textSecondary,
-    fontSize: FontSizes.small,
-    border: `1px dashed ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-  },
-  depItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: `${Spacing.sm} ${Spacing.md}`,
-    background: Colors.background,
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-  },
-  depItemLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    flex: 1,
-    minWidth: 0,
-  },
-  depTypeTag: {
-    padding: '2px 8px',
-    background: Colors.primaryLight,
-    color: Colors.primary,
-    borderRadius: BorderRadius.sm,
-    fontSize: FontSizes.caption,
-    fontWeight: 500,
-    flexShrink: 0,
-  },
-  depDesc: {
-    fontSize: FontSizes.small,
-    color: Colors.textPrimary,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  depItemActions: {
-    display: 'flex',
-    gap: Spacing.xs,
-    flexShrink: 0,
-  },
-  iconBtn: {
-    width: '28px',
-    height: '28px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.sm,
-    background: Colors.backgroundLight,
-    cursor: 'pointer',
-    fontSize: FontSizes.small,
-    color: Colors.textSecondary,
-  },
-  addDepBtnRow: {
-    marginTop: Spacing.xs,
-  },
-  addDepBtnGroup: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-  },
-  addDepBtn: {
-    padding: `${Spacing.xs} ${Spacing.sm}`,
-    border: `1px dashed ${Colors.border}`,
-    borderRadius: BorderRadius.md,
-    background: 'transparent',
-    cursor: 'pointer',
-    fontSize: FontSizes.small,
-    color: Colors.textSecondary,
-  },
-  quickIntervalRow: {
-    display: 'flex',
-    gap: Spacing.xs,
-    marginTop: Spacing.xs,
-    flexWrap: 'wrap',
-  },
-  quickBtn: {
-    padding: '2px 8px',
-    border: `1px solid ${Colors.border}`,
-    borderRadius: BorderRadius.sm,
-    background: Colors.background,
-    cursor: 'pointer',
-    fontSize: FontSizes.caption,
-    color: Colors.textSecondary,
-  },
 };

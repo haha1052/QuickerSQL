@@ -122,6 +122,12 @@ impl MigrationService {
             log::warn!("Dashboard migrations failed: {}", e);
         }
 
+        // P3-Task5: 为 __automation_runs / __task_dependencies 补齐 FOREIGN KEY (ON DELETE CASCADE)
+        // 必须在表名迁移（旧表 → __ 前缀）之后、ensure_tables_exists 之前执行
+        if let Err(e) = Self::migrate_task_tables_add_foreign_keys(conn) {
+            log::warn!("P3-Task5 任务表外键迁移失败（不影响启动）: {}", e);
+        }
+
         Ok(migrated_count)
     }
 
@@ -244,6 +250,230 @@ impl MigrationService {
     /// Dashboard 相关表迁移
     fn dashboard_migrations(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
         DashboardService::ensure_tables_exist(conn)
+    }
+
+    // ============================================================
+    // P3-Task5: __automation_runs / __task_dependencies 补齐 FOREIGN KEY
+    // ============================================================
+
+    /// P3-Task5: 为 `__automation_runs` 与 `__task_dependencies` 添加
+    /// `FOREIGN KEY (task_id) REFERENCES __automation_tasks(id) ON DELETE CASCADE`。
+    ///
+    /// SQLite 的 `CREATE TABLE IF NOT EXISTS` 不会修改已存在表的结构，旧数据库
+    /// （在未带 FK 的版本创建的表）必须通过 CREATE+INSERT+DROP+RENAME 重建表来补齐 FK。
+    ///
+    /// **幂等性**：通过 `PRAGMA foreign_key_list` 检测目标表是否已有指向
+    /// `__automation_tasks` 的 FK；已存在或表不存在（交由 `ensure_tables_exists` 创建带 FK 的新表）则跳过。
+    ///
+    /// **安全性**：表名为系统表常量（非用户输入），DDL 直接写在 SQL 字面量中；
+    /// `PRAGMA` 中的表名经 `SqlIdentifier::quoted()` 封装（合规：security.md §1.2 情形 C）。
+    pub fn migrate_task_tables_add_foreign_keys(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        Self::rebuild_automation_runs_with_fk(conn)?;
+        Self::rebuild_task_dependencies_with_fk(conn)?;
+        Ok(())
+    }
+
+    /// 检测目标表是否已有指向 `__automation_tasks` 的外键。
+    ///
+    /// 返回值语义：
+    /// - `Ok(true)`：已有 FK，或表不存在（无需迁移，交由 ensure_tables_exists 创建带 FK 的新表）
+    /// - `Ok(false)`：表存在但无 FK，需要迁移
+    fn has_fk_to_automation_tasks(conn: &MutexGuardConnection<'_>, table: &str) -> Result<bool, String> {
+        // 1) 表名作为查询值（参数化），检测表是否存在
+        let exists_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = ?;";
+        let exists_result = conn
+            .query(exists_sql, &[&table])
+            .map_err(|e| format!("查询表 {} 是否存在失败: {}", table, e))?;
+        if exists_result.rows.is_empty() {
+            return Ok(true); // 表不存在，视为无需迁移
+        }
+
+        // 2) PRAGMA foreign_key_list(table) 查询已有外键
+        //    PRAGMA 的表名为系统表常量，经 SqlIdentifier 封装（情形 C 合法用法）
+        let ident = SqlIdentifier::new(table)
+            .map_err(|e| format!("表名 {} 校验失败: {}", table, e))?;
+        let fk_sql = format!("PRAGMA foreign_key_list({})", ident.quoted());
+        let result = conn
+            .query(&fk_sql, &[])
+            .map_err(|e| format!("查询 {} 外键列表失败: {}", table, e))?;
+
+        // PRAGMA foreign_key_list 返回列: id, seq, table, from, to, on_update, on_delete, match, unique
+        // 第 3 列（索引 2）为被引用的父表名
+        for row in &result.rows {
+            if row.len() >= 3 && row[2] == "__automation_tasks" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// 重建 `__automation_runs` 表以补齐 FK（仅在表存在且无 FK 时执行）。
+    ///
+    /// 流程：清理孤儿记录 → 事务内 CREATE+INSERT+DROP+RENAME → 重建索引。
+    fn rebuild_automation_runs_with_fk(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        if Self::has_fk_to_automation_tasks(conn, "__automation_runs")? {
+            return Ok(());
+        }
+        log::info!("P3-Task5: __automation_runs 缺少 FK，开始重建表以补齐外键约束");
+
+        // 清理孤儿记录：task_id 不存在于 __automation_tasks 的运行记录
+        // 避免 INSERT SELECT 时 FK 约束失败（foreign_keys = ON）
+        conn.execute(
+            "DELETE FROM __automation_runs WHERE task_id NOT IN (SELECT id FROM __automation_tasks);",
+            &[],
+        )
+        .map_err(|e| format!("清理 __automation_runs 孤儿记录失败: {}", e))?;
+
+        // 事务包裹 CREATE+INSERT+DROP+RENAME
+        conn.begin_transaction()
+            .map_err(|e| format!("开启 __automation_runs 迁移事务失败: {}", e))?;
+
+        match Self::do_rebuild_automation_runs(conn) {
+            Ok(_) => {
+                conn.commit_transaction().map_err(|e| {
+                    let _ = conn.rollback_transaction();
+                    format!("提交 __automation_runs 迁移事务失败: {}", e)
+                })
+            }
+            Err(e) => {
+                let _ = conn.rollback_transaction();
+                Err(format!("__automation_runs 迁移失败: {}", e))
+            }
+        }
+    }
+
+    /// `__automation_runs` 重建的实际 DDL 执行（CREATE+INSERT+DROP+RENAME+重建索引）。
+    fn do_rebuild_automation_runs(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        // 新表 DDL（与 ensure_tables_exists 保持一致，含 FK）
+        conn.execute(
+            r#"CREATE TABLE __automation_runs_new (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                started_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                finished_at INTEGER,
+                duration_ms INTEGER,
+                affected_rows INTEGER,
+                output TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                trigger_type TEXT NOT NULL DEFAULT 'schedule',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                FOREIGN KEY (task_id) REFERENCES __automation_tasks(id) ON DELETE CASCADE
+            )"#,
+            &[],
+        )
+        .map_err(|e| format!("创建 __automation_runs_new 失败: {}", e))?;
+
+        // 显式列名迁移数据（避免 SELECT * 列序依赖）
+        conn.execute(
+            "INSERT INTO __automation_runs_new \
+             (id, task_id, status, started_at, finished_at, duration_ms, affected_rows, output, retry_count, trigger_type, created_at) \
+             SELECT id, task_id, status, started_at, finished_at, duration_ms, affected_rows, output, retry_count, trigger_type, created_at \
+             FROM __automation_runs;",
+            &[],
+        )
+        .map_err(|e| format!("迁移 __automation_runs 数据失败: {}", e))?;
+
+        conn.execute("DROP TABLE __automation_runs;", &[])
+            .map_err(|e| format!("DROP __automation_runs 失败: {}", e))?; // safe_sql: error message, not SQL execution
+        conn.execute(
+            "ALTER TABLE __automation_runs_new RENAME TO __automation_runs;",
+            &[],
+        )
+        .map_err(|e| format!("RENAME __automation_runs_new 失败: {}", e))?;
+
+        // 重建索引（DROP TABLE 会删除关联索引）
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_automation_runs_task_created ON __automation_runs(task_id, created_at DESC);",
+            &[],
+        )
+        .map_err(|e| format!("重建 idx_automation_runs_task_created 失败: {}", e))?; // safe_sql: error message, not SQL execution
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_automation_runs_status ON __automation_runs(status);",
+            &[],
+        )
+        .map_err(|e| format!("重建 idx_automation_runs_status 失败: {}", e))?;
+        Ok(())
+    }
+
+    /// 重建 `__task_dependencies` 表以补齐 FK（仅在表存在且无 FK 时执行）。
+    ///
+    /// 流程：清理孤儿记录 → 事务内 CREATE+INSERT+DROP+RENAME → 重建索引。
+    fn rebuild_task_dependencies_with_fk(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        if Self::has_fk_to_automation_tasks(conn, "__task_dependencies")? {
+            return Ok(());
+        }
+        log::info!("P3-Task5: __task_dependencies 缺少 FK，开始重建表以补齐外键约束");
+
+        // 清理孤儿记录
+        conn.execute(
+            "DELETE FROM __task_dependencies WHERE task_id NOT IN (SELECT id FROM __automation_tasks);",
+            &[],
+        )
+        .map_err(|e| format!("清理 __task_dependencies 孤儿记录失败: {}", e))?;
+
+        conn.begin_transaction()
+            .map_err(|e| format!("开启 __task_dependencies 迁移事务失败: {}", e))?;
+
+        match Self::do_rebuild_task_dependencies(conn) {
+            Ok(_) => {
+                conn.commit_transaction().map_err(|e| {
+                    let _ = conn.rollback_transaction();
+                    format!("提交 __task_dependencies 迁移事务失败: {}", e)
+                })
+            }
+            Err(e) => {
+                let _ = conn.rollback_transaction();
+                Err(format!("__task_dependencies 迁移失败: {}", e))
+            }
+        }
+    }
+
+    /// `__task_dependencies` 重建的实际 DDL 执行（CREATE+INSERT+DROP+RENAME+重建索引）。
+    fn do_rebuild_task_dependencies(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        conn.execute(
+            r#"CREATE TABLE __task_dependencies_new (
+                id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+                task_id TEXT NOT NULL,
+                dependency_type TEXT NOT NULL DEFAULT 'time_interval',
+                dependency_config TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                FOREIGN KEY (task_id) REFERENCES __automation_tasks(id) ON DELETE CASCADE
+            )"#,
+            &[],
+        )
+        .map_err(|e| format!("创建 __task_dependencies_new 失败: {}", e))?;
+
+        conn.execute(
+            "INSERT INTO __task_dependencies_new \
+             (id, task_id, dependency_type, dependency_config, created_at, updated_at) \
+             SELECT id, task_id, dependency_type, dependency_config, created_at, updated_at \
+             FROM __task_dependencies;",
+            &[],
+        )
+        .map_err(|e| format!("迁移 __task_dependencies 数据失败: {}", e))?;
+
+        conn.execute("DROP TABLE __task_dependencies;", &[])
+            .map_err(|e| format!("DROP __task_dependencies 失败: {}", e))?; // safe_sql: error message, not SQL execution
+        conn.execute(
+            "ALTER TABLE __task_dependencies_new RENAME TO __task_dependencies;",
+            &[],
+        )
+        .map_err(|e| format!("RENAME __task_dependencies_new 失败: {}", e))?;
+
+        // 重建索引
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON __task_dependencies(task_id);",
+            &[],
+        )
+        .map_err(|e| format!("重建 idx_task_deps_task_id 失败: {}", e))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_task_deps_upstream ON __task_dependencies(dependency_type, dependency_config);",
+            &[],
+        )
+        .map_err(|e| format!("重建 idx_task_deps_upstream 失败: {}", e))?;
+        Ok(())
     }
 }
 

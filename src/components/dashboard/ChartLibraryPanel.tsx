@@ -1,14 +1,17 @@
 import React, { useState, useMemo, useRef, useCallback } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDashboardStore, useToastStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
 import { ChartPreview } from '../chart/ChartPreview';
 import { calculateNextPosition } from '../../utils/gridLayout';
-import { computeVisibleRange, indexToOffset } from '../../utils/virtual';
 import type { SavedChart } from '../../types/dashboard';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
+import './ChartLibraryPanel.css';
 
 const CHART_ITEM_HEIGHT = 96;
 const CHART_ITEM_EXPANDED_HEIGHT = 280;
+/** P2-8：虚拟滚动上下过度扫描行数 */
+const VIRTUAL_OVERSCAN = 5;
 
 interface ChartLibraryPanelProps {
   /** 是否显示面板；为 false 时直接返回 null */
@@ -53,6 +56,7 @@ const getChartIcon = (chartType: string) => {
  * @param props.onClose - 关闭回调
  */
 export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onClose }) => {
+  // P1-13：useShallow 仅订阅必要字段
   const {
     savedCharts,
     selectedChartId,
@@ -62,7 +66,18 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     loadSavedCharts,
     activeDashboardId,
     addChartToDashboard,
-  } = useDashboardStore();
+  } = useDashboardStore(
+    useShallow((s) => ({
+      savedCharts: s.savedCharts,
+      selectedChartId: s.selectedChartId,
+      setSelectedChartId: s.setSelectedChartId,
+      deleteSavedChart: s.deleteSavedChart,
+      dashboards: s.dashboards,
+      loadSavedCharts: s.loadSavedCharts,
+      activeDashboardId: s.activeDashboardId,
+      addChartToDashboard: s.addChartToDashboard,
+    }))
+  );
   const { addToast } = useToastStore();
   const { t } = useLocale();
   const [search, setSearch] = useState('');
@@ -71,6 +86,8 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
   const [scopeFilter, setScopeFilter] = useState<'all' | 'available' | 'unavailable'>('all');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduleChart, setScheduleChart] = useState<SavedChart | null>(null);
+  // P2-13: 删除图表确认弹窗状态（替代原生 confirm）
+  const [chartToDelete, setChartToDelete] = useState<SavedChart | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(400);
@@ -82,8 +99,12 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     }
   }, [viewportHeight]);
 
+  // P1-12：基于 Lite 数据判断（sql 为空字符串）而非仅看 length
+  // 启动时可能已注入 Lite 数据（savedCharts.length > 0 但 sql === ''），需重新加载完整数据
   React.useEffect(() => {
-    if (open && savedCharts.length === 0) {
+    if (!open) return;
+    const hasLiteData = savedCharts.length > 0 && savedCharts.every(c => !c.sql || c.sql.trim().length === 0);
+    if (savedCharts.length === 0 || hasLiteData) {
       loadSavedCharts();
     }
   }, [open]);
@@ -129,23 +150,76 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
     return list;
   }, [savedCharts, search, filterType, sortBy, scopeFilter, activeDashboardId]);
 
-  const visibleRange = computeVisibleRange(
-    scrollTop,
-    viewportHeight,
-    CHART_ITEM_HEIGHT,
-    filteredCharts.length,
-    5,
+  // P2-8：虚拟滚动支持展开项的可变高度。
+  // 旧实现假定所有项等高（CHART_ITEM_HEIGHT），选中项展开为 CHART_ITEM_EXPANDED_HEIGHT 时，
+  // 后续项的 top offset 计算错误，导致列表项重叠或留白。
+  // 新实现：维护每项高度数组 + 前缀偏移数组，正确计算可见窗口与绝对定位 top。
+  const itemHeights = useMemo(
+    () => filteredCharts.map((c) => (c.id === selectedChartId ? CHART_ITEM_EXPANDED_HEIGHT : CHART_ITEM_HEIGHT)),
+    [filteredCharts, selectedChartId]
   );
 
-  const handleDeleteChart = async (chart: SavedChart, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(t('chart.library.delete_confirm', { name: chart.name }))) {
-      return;
+  // 前缀偏移：offsets[i] = 第 i 项的 top（offsets[0] = 0，offsets[length] = 总高度）
+  const offsets = useMemo(() => {
+    const result = new Array<number>(itemHeights.length + 1);
+    result[0] = 0;
+    for (let i = 0; i < itemHeights.length; i++) {
+      result[i + 1] = result[i] + itemHeights[i];
     }
-    await deleteSavedChart(chart.id);
-    addToast({ key: 'chart.library.deleted', vars: { name: chart.name } }, 'success');
-    if (selectedChartId === chart.id) {
-      setSelectedChartId(null);
+    return result;
+  }, [itemHeights]);
+
+  const totalHeight = offsets.length > 0 ? offsets[offsets.length - 1] : 0;
+
+  // 计算 visibleRange（基于可变高度）
+  const visibleRange = useMemo(() => {
+    if (itemHeights.length === 0) {
+      return { start: 0, end: 0 };
+    }
+    // 二分查找第一个 end >= scrollTop 的索引（即首个可见项）
+    let start = 0;
+    let lo = 0, hi = itemHeights.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid + 1] < scrollTop) lo = mid + 1;
+      else hi = mid;
+    }
+    start = lo;
+    // 找到第一个 start > scrollTop + viewportHeight 的索引（首个不可见项）
+    const viewportEnd = scrollTop + viewportHeight;
+    lo = start; hi = itemHeights.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid] <= viewportEnd) lo = mid + 1;
+      else hi = mid;
+    }
+    let end = lo;
+    // 应用 overscan
+    start = Math.max(0, start - VIRTUAL_OVERSCAN);
+    end = Math.min(itemHeights.length, end + VIRTUAL_OVERSCAN);
+    return { start, end };
+  }, [offsets, scrollTop, viewportHeight, itemHeights.length]);
+
+  // P2-13: 删除图表改为弹窗确认（替代原生 confirm）
+  const handleDeleteChart = (chart: SavedChart, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setChartToDelete(chart);
+  };
+
+  // P2-13: 用户确认删除后实际执行
+  const handleConfirmDeleteChart = async () => {
+    if (!chartToDelete) return;
+    const chart = chartToDelete;
+    setChartToDelete(null);
+    try {
+      await deleteSavedChart(chart.id);
+      addToast({ key: 'chart.library.deleted', vars: { name: chart.name } }, 'success');
+      if (selectedChartId === chart.id) {
+        setSelectedChartId(null);
+      }
+    } catch (e) {
+      console.error('[ChartLibraryPanel] 删除图表失败:', e);
+      addToast(`${t('chart.library.delete_failed')}: ${(e as Error).message}`, 'error');
     }
   };
 
@@ -179,22 +253,22 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
 
   return (
     <>
-      <div style={styles.overlay} onClick={onClose} />
-      <div style={styles.panel}>
-        <div style={styles.header}>
-          <h3 style={styles.title}>{t('chart.library.title')}</h3>
-          <button style={styles.closeBtn} onClick={onClose}>×</button>
+      <div className="clp-overlay" onClick={onClose} />
+      <div className="clp-panel">
+        <div className="clp-header">
+          <h3 className="clp-title">{t('chart.library.title')}</h3>
+          <button className="clp-close-btn" onClick={onClose}>×</button>
         </div>
 
-        <div style={styles.searchRow}>
+        <div className="clp-search-row">
           <input
-            style={styles.searchInput}
+            className="clp-search-input"
             placeholder={`🔍 ${t('chart.searchPlaceholder')}`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <select
-            style={styles.select}
+            className="clp-select"
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
           >
@@ -208,7 +282,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             <option value="table">{t('chart.library.type_table')}</option>
           </select>
           <select
-            style={styles.select}
+            className="clp-select"
             value={scopeFilter}
             onChange={(e) => setScopeFilter(e.target.value as 'all' | 'available' | 'unavailable')}
             title={t('chart.authFilterHint')}
@@ -218,7 +292,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
             <option value="unavailable">{t('dashboard.unauthorized')}</option>
           </select>
           <select
-            style={styles.select}
+            className="clp-select"
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'updatedAt' | 'name')}
           >
@@ -227,32 +301,32 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
           </select>
         </div>
 
-        <div style={styles.statBar}>
+        <div className="clp-stat-bar">
           {t('chart.library.stat_total', { count: filteredCharts.length })}
           {activeDashboardId && (
-            <span style={{ marginLeft: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            <span className="clp-stat-extra">
               {t('chart.library.current_dashboard', { name: dashboards.find((d) => d.id === activeDashboardId)?.name || '-' })}
             </span>
           )}
         </div>
 
         <div
-          style={styles.listContainer}
+          className="clp-list-container"
           ref={scrollContainerRef}
           onScroll={handleScroll}
         >
           {filteredCharts.length === 0 ? (
-            <div style={styles.empty}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>📊</div>
-              <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
+            <div className="clp-empty">
+              <div className="clp-empty-icon">📊</div>
+              <div className="clp-empty-text">
                 {search || filterType !== 'all' ? t('chart.library.no_match') : t('chart.library.no_saved')}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
+              <div className="clp-empty-hint">
                 {t('chart.library.hint')}
               </div>
             </div>
           ) : (
-            <div style={{ position: 'relative', height: visibleRange.totalHeight }}>
+            <div style={{ position: 'relative', height: totalHeight }}>
               {filteredCharts.slice(visibleRange.start, visibleRange.end).map((chart, idx) => {
                 const actualIndex = visibleRange.start + idx;
                 const isSelected = selectedChartId === chart.id;
@@ -261,23 +335,22 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                 return (
                   <div
                     key={chart.id}
+                    className={`clp-chart-item ${isSelected ? 'clp-chart-item-selected' : ''} ${!available ? 'clp-chart-item-unavailable' : ''}`}
                     style={{
-                      ...styles.chartItem,
-                      ...(isSelected ? styles.chartItemSelected : {}),
-                      ...(available ? {} : { opacity: 0.55 }),
                       position: 'absolute',
-                      top: indexToOffset(actualIndex, CHART_ITEM_HEIGHT),
+                      // P2-8：使用基于可变高度的前缀偏移，正确反映展开项的高度变化
+                      top: offsets[actualIndex] ?? 0,
                       height: itemHeight,
                       left: 0,
                       right: 0,
                     }}
                     onClick={() => handleChartClick(chart)}
                   >
-                    <div style={styles.chartItemRow}>
-                      <div style={styles.chartIcon}>{getChartIcon(chart.chartType)}</div>
-                      <div style={styles.chartInfo}>
-                        <div style={styles.chartName}>{chart.name}</div>
-                        <div style={styles.chartMeta}>
+                    <div className="clp-chart-item-row">
+                      <div className="clp-chart-icon">{getChartIcon(chart.chartType)}</div>
+                      <div className="clp-chart-info">
+                        <div className="clp-chart-name">{chart.name}</div>
+                        <div className="clp-chart-meta">
                           {chart.chartType} · {t('chart.library.last_update')}{' '}
                           {new Date(chart.updatedAt * 1000).toLocaleString('zh-CN', {
                             month: '2-digit',
@@ -286,34 +359,34 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                             minute: '2-digit',
                           })}
                         </div>
-                        <div style={styles.chartMeta}>
+                        <div className="clp-chart-meta">
                           {available
                             ? t('chart.library.can_add')
                             : `🔒 ${t('dashboard.unauthorized')}`}
                           {chart.visibility === 'restricted' && chart.authorizedDashboardIds?.length > 0 && (
-                            <span style={{ marginLeft: '6px', color: 'var(--text-tertiary)' }}>
+                            <span className="clp-auth-extra">
                               {t('chart.library.authorized_for', { names: chart.authorizedDashboardIds.slice(0, 2).map(getDashboardName).join('、') })}
                               {chart.authorizedDashboardIds.length > 2 ? t('chart.library.and_more') : ''}
                             </span>
                           )}
                         </div>
                         {chart.tags?.length > 0 && (
-                          <div style={styles.tagRow}>
+                          <div className="clp-tag-row">
                             {chart.tags.slice(0, 3).map((t) => (
-                              <span key={t} style={styles.tag}>{t}</span>
+                              <span key={t} className="clp-tag">{t}</span>
                             ))}
                           </div>
                         )}
                       </div>
-                      <div style={styles.chartItemActions}>
+                      <div className="clp-chart-item-actions">
                         <button
-                          style={styles.addBtn}
+                          className="clp-add-btn"
                           onClick={(e) => handleAddToDashboard(chart, e)}
                           disabled={!available || !activeDashboardId}
                           title={available ? t('chart.library.add_btn_title') : t('chart.library.unauthorized_add_title')}
                         >{t('chart.library.add_btn')}</button>
                         <button
-                          style={styles.scheduleBtn}
+                          className="clp-schedule-btn"
                           onClick={(e) => {
                             e.stopPropagation();
                             setScheduleChart(chart);
@@ -322,14 +395,14 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                           title={t('chart.scheduleRefresh')}
                         >⚡ {t('chart.scheduleRefresh')}</button>
                         <button
-                          style={styles.deleteBtn}
+                          className="clp-delete-btn"
                           onClick={(e) => handleDeleteChart(chart, e)}
                           title={t('chart.deleteChart')}
                         >🗑️</button>
                       </div>
                     </div>
                     {isSelected && (
-                      <div style={styles.previewWrapper}>
+                      <div className="clp-preview-wrapper">
                         <ChartPreview config={chart.config} height={180} />
                       </div>
                     )}
@@ -340,7 +413,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
           )}
         </div>
 
-        <div style={styles.footer}>
+        <div className="clp-footer">
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {t('chart.library.footer_hint')}
           </div>
@@ -353,194 +426,40 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
         initialPayload={{ chartId: scheduleChart?.id || '' }}
         initialName={t('chart.library.schedule_chart_name', { name: scheduleChart?.name || '' })}
       />
+
+      {/* P2-13: 删除图表确认弹窗（替代原生 confirm） */}
+      {chartToDelete && (
+        <div
+          className="clp-confirm-overlay"
+          onClick={() => setChartToDelete(null)}
+        >
+          <div
+            className="clp-confirm-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="clp-confirm-header">
+              <h3 className="clp-confirm-title">{t('chart.library.delete_title')}</h3>
+              <button className="clp-confirm-close-btn" onClick={() => setChartToDelete(null)}>×</button>
+            </div>
+            <div className="clp-confirm-body">
+              <p style={{ margin: 0, lineHeight: 1.6, color: 'var(--text-primary)' }}>
+                {t('chart.library.delete_confirm', { name: chartToDelete.name })}
+              </p>
+            </div>
+            <div className="clp-confirm-footer">
+              <button className="clp-confirm-cancel-btn" onClick={() => setChartToDelete(null)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                className="clp-confirm-delete-btn"
+                onClick={handleConfirmDeleteChart}
+              >
+                {t('common.confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0, 0, 0, 0.3)',
-    zIndex: 800,
-  },
-  panel: {
-    position: 'fixed',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 400,
-    background: 'var(--bg-primary)',
-    borderRight: '1px solid var(--border-primary)',
-    boxShadow: '2px 0 12px rgba(0,0,0,0.1)',
-    zIndex: 900,
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '16px 20px',
-    borderBottom: '1px solid var(--border-primary)',
-  },
-  title: { fontSize: 16, fontWeight: 600, margin: 0, color: 'var(--text-primary)' },
-  closeBtn: {
-    background: 'none',
-    border: 'none',
-    fontSize: 24,
-    cursor: 'pointer',
-    color: 'var(--text-secondary)',
-    padding: '0 8px',
-  },
-  searchRow: {
-    display: 'flex',
-    gap: 8,
-    padding: '12px 20px',
-    borderBottom: '1px solid var(--border-primary)',
-    alignItems: 'center',
-  },
-  searchInput: {
-    flex: 1,
-    padding: '8px 12px',
-    border: '1px solid var(--border-primary)',
-    borderRadius: 6,
-    fontSize: 13,
-    background: 'var(--bg-secondary)',
-    color: 'var(--text-primary)',
-  },
-  select: {
-    padding: '8px 10px',
-    border: '1px solid var(--border-primary)',
-    borderRadius: 6,
-    fontSize: 12,
-    background: 'var(--bg-secondary)',
-    color: 'var(--text-primary)',
-  },
-  statBar: {
-    padding: '8px 20px',
-    fontSize: 12,
-    color: 'var(--text-secondary)',
-    background: 'var(--bg-secondary)',
-  },
-  statNum: { color: 'var(--primary)', fontWeight: 600, fontSize: 14 },
-  listContainer: {
-    flex: 1,
-    overflowY: 'auto',
-  },
-  list: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    padding: 12,
-  },
-  chartItem: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    padding: 12,
-    borderRadius: 8,
-    border: '1px solid var(--border-primary)',
-    cursor: 'pointer',
-    transition: 'all 0.15s',
-    background: 'var(--bg-primary)',
-  },
-  chartItemRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    width: '100%',
-  },
-  chartItemSelected: {
-    borderColor: 'var(--primary)',
-    background: 'var(--primary-bg)',
-  },
-  previewWrapper: {
-    width: '100%',
-    paddingTop: 4,
-  },
-  chartIcon: {
-    fontSize: 28,
-    width: 40,
-    textAlign: 'center',
-  },
-  chartInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  chartName: {
-    fontSize: 14,
-    fontWeight: 600,
-    color: 'var(--text-primary)',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  chartMeta: {
-    fontSize: 11,
-    color: 'var(--text-tertiary)',
-    marginTop: 2,
-  },
-  tagRow: {
-    display: 'flex',
-    gap: 4,
-    flexWrap: 'wrap',
-    marginTop: 4,
-  },
-  tag: {
-    fontSize: 10,
-    padding: '2px 6px',
-    background: 'var(--primary-bg)',
-    color: 'var(--primary)',
-    borderRadius: 4,
-  },
-  deleteBtn: {
-    background: 'none',
-    border: '1px solid var(--border-primary)',
-    borderRadius: 6,
-    fontSize: 14,
-    padding: '6px 10px',
-    cursor: 'pointer',
-    opacity: 0.7,
-    color: 'var(--text-secondary)',
-  },
-  addBtn: {
-    background: 'var(--primary)',
-    border: 'none',
-    borderRadius: 6,
-    fontSize: 12,
-    padding: '6px 10px',
-    cursor: 'pointer',
-    color: 'white',
-    fontWeight: 500,
-  },
-  scheduleBtn: {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border-primary)',
-    borderRadius: 6,
-    fontSize: 12,
-    padding: '6px 10px',
-    cursor: 'pointer',
-    color: 'var(--text-primary)',
-    fontWeight: 500,
-  },
-  chartItemActions: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 6,
-    alignItems: 'flex-end',
-  },
-  empty: {
-    textAlign: 'center',
-    padding: 48,
-    color: 'var(--text-tertiary)',
-  },
-  footer: {
-    padding: 12,
-    borderTop: '1px solid var(--border-primary)',
-    textAlign: 'center',
-  },
 };

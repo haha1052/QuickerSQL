@@ -104,7 +104,7 @@ mod tests {
             let request = CreateSavedChartRequest {
                 name: format!("Chart {}", i),
                 query_id: format!("query_{}", i),
-                sql: format!("SELECT * FROM table_{}", i),
+                sql: format!("SELECT * FROM table_{}", i), // safe_sql: test data
                 chart_type: chart_type.to_string(),
                 x_axis: "x".to_string(),
                 y_axis: vec!["y".to_string()],
@@ -255,7 +255,7 @@ mod tests {
             let chart_request = CreateSavedChartRequest {
                 name: format!("Chart {}", i),
                 query_id: format!("query_{}", i),
-                sql: format!("SELECT * FROM data_{}", i),
+                sql: format!("SELECT * FROM data_{}", i), // safe_sql: test data
                 chart_type: if i % 2 == 0 { "bar".to_string() } else { "line".to_string() },
                 x_axis: "x".to_string(),
                 y_axis: vec!["y".to_string()],

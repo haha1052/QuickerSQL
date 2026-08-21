@@ -1,18 +1,13 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
-// P0-2 启动优化：ag-grid 懒加载
-import { AgGridLazy } from '../common/AgGridLazy';
-import { Button, DropdownMenu } from '../common';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Button } from '../common';
 import { ChartPanel } from '../chart/ChartPanel';
-import { useQueryCopy } from './hooks/useQueryCopy';
-import { useQueryExport } from './hooks/useQueryExport';
+import { ResultGrid } from './result-grid/ResultGrid';
 import { useSetting } from '../../context/SettingsContext';
 import { useLocale } from '../../context/LocaleContext';
 import { useQueryStore } from '../../store';
 import type { SqlStatementResult } from '../../types';
 import { parseSqlError, calculateErrorLineOffset } from '../../utils/sqlErrorParser';
 import { QueryPlanTree, isExplainResult } from './QueryPlanTree';
-
-// ModuleRegistry.registerModules([AllCommunityModule]);  // ← 已在 AgGridLazy 中动态处理
 
 interface QueryResultItemProps {
   result: SqlStatementResult;
@@ -55,58 +50,12 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
     }
     return `耗时 ${(ms / 1000).toFixed(2)} s`;
   }, []);
-  
-  const {
-    contextMenu,
-    handleCopyCell,
-    handleCopyRow,
-    handleCopySelected,
-    handleCopyAll,
-    handleGridContextMenu,
-    closeContextMenu,
-  } = useQueryCopy();
 
-  const { handleExport } = useQueryExport();
-
-  const displayStatement = result.statement.length > 50 
-    ? result.statement.substring(0, 47) + '...' 
+  const displayStatement = result.statement.length > 50
+    ? result.statement.substring(0, 47) + '...'
     : result.statement;
 
   const fontSizeNum = useMemo(() => parseInt(fontSize || '14', 10), [fontSize]);
-  const gridStyle = useMemo(() => ({
-    '--ag-font-size': `${fontSizeNum}px`,
-    '--ag-font-family': fontFamily || 'Monaco, Menlo, "Ubuntu Mono", monospace',
-  } as React.CSSProperties), [fontSizeNum, fontFamily]);
-
-  // 点击外部关闭右键菜单
-  useEffect(() => {
-    const handleClickOutside = () => {
-      closeContextMenu();
-    };
-
-    if (contextMenu) {
-      document.addEventListener('click', handleClickOutside);
-      return () => {
-        document.removeEventListener('click', handleClickOutside);
-      };
-    }
-  }, [contextMenu, closeContextMenu]);
-
-  // 按ESC键关闭右键菜单
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        closeContextMenu();
-      }
-    };
-
-    if (contextMenu) {
-      document.addEventListener('keydown', handleEscape);
-      return () => {
-        document.removeEventListener('keydown', handleEscape);
-      };
-    }
-  }, [contextMenu, closeContextMenu]);
 
   // 结果相关计算，用 useMemo 避免每次渲染重复计算
   const {
@@ -164,32 +113,6 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
     };
   }, [resultLimitStr, result.rows, maxResultRowsStr, resultPageSizeStr, resultMinHeightStr, resultMaxHeightStr, fontSizeNum]);
 
-  // ag-grid rowData 和 columnDefs 用 useMemo 避免每次渲染重建导致全量diff
-  const rowData = useMemo(() => {
-    return displayRows.map((row, rowIndex) => {
-      const rowObj: Record<string, string | number | boolean | null> = { id: rowIndex };
-      row.forEach((cell, colIndex) => {
-        rowObj[`col${colIndex}`] = cell;
-      });
-      return rowObj;
-    });
-  }, [displayRows]);
-
-  const columnDefs = useMemo(() => {
-    return (result.columns || []).map((col, colIndex) => ({
-      field: `col${colIndex}`,
-      headerName: col,
-    }));
-  }, [result.columns]);
-
-  // defaultColDef 用 useMemo 避免每次渲染重建
-  const defaultColDef = useMemo(() => ({
-    filter: true,
-    sortable: true,
-    resizable: true,
-    minWidth: 120,
-  }), []);
-
   return (
     <div style={{ 
       ...styles.container, 
@@ -243,13 +166,6 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
                   {t('query.chart')}
                 </Button>
               </div>
-              <DropdownMenu
-                trigger={<Button variant="outline" size="sm">{t('query.exportMenu')} ▼</Button>}
-                items={[
-                  { label: t('query.exportCSV'), onClick: () => handleExport(result, 'csv') },
-                  { label: t('query.exportJSON'), onClick: () => handleExport(result, 'json') },
-                ]}
-              />
             </>
           )}
         </div>
@@ -287,43 +203,24 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
               />
             </div>
           ) : (
-            <div style={styles.tableWrapper} onContextMenu={(e) => e.preventDefault()}>
-              <div style={{ ...styles.tableContainer, ...gridStyle }} className="ag-theme-alpine">
-                <AgGridLazy
-                  key={`query-item-${index}-${result.columns.length}-${totalPages}`}
-                  domLayout="normal"
-                  rowData={rowData}
-                  columnDefs={columnDefs}
-                  localeText={localeText}
-                  defaultColDef={defaultColDef}
-                  onCellContextMenu={handleGridContextMenu}
-                  rowSelection="multiple"
-                  enableCellTextSelection={true}
-                  pagination={totalPages > 1}
-                  paginationPageSize={totalPages > 1 ? pageSize : displayRowCount}
-                  suppressPaginationPanel={totalPages <= 1}
-                  animateRows={false}
-                  style={{ width: '100%', height: '100%', minHeight: 0 }}
-                />
-              </div>
-              {/* 分页信息 */}
-              <div style={styles.paginationInfo}>
-                <span style={styles.pageText}>
-                  {isTruncated
-                    ? `已显示 ${displayRowCount} / 共 ${totalRows} 行（结果已截断）`
-                    : `${t('query.totalRows')}: ${totalRows} | ${t('query.page')} 1/${totalPages}`
-                  }
-                </span>
-              </div>
-              {/* database.maxResultRows 警告 */}
-              {isOverMaxResultRows && (
-                <div style={styles.warningInfo}>
-                  <span style={styles.warningText}>
-                    警告：结果集行数（{totalRows}）已超过设置的最大行数限制（{maxResultRows}），请考虑添加 LIMIT 条件
-                  </span>
-                </div>
-              )}
-            </div>
+            <ResultGrid
+              columns={result.columns || []}
+              displayRows={displayRows}
+              fullRows={result.rows || []}
+              totalRows={totalRows}
+              statement={result.statement}
+              displayRowCount={displayRowCount}
+              isTruncated={isTruncated}
+              isOverMaxResultRows={isOverMaxResultRows}
+              maxResultRows={maxResultRows}
+              pageSize={pageSize}
+              paginated={totalPages > 1}
+              totalPages={totalPages}
+              tableHeight={tableHeight}
+              fontSizeNum={fontSizeNum}
+              fontFamily={fontFamily || ''}
+              localeText={localeText}
+            />
           )}
         </>
       ) : result.success && result.affected_rows !== null ? (
@@ -338,43 +235,6 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
         </div>
       ) : null}
       </div>
-
-      {contextMenu && (
-        <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
-          {contextMenu.cellValue !== undefined && (
-            <button 
-              style={styles.contextMenuItem} 
-              onClick={(e) => { e.stopPropagation(); handleCopyCell(contextMenu.cellValue); }}
-            >
-              {t('query.copyCell')}
-            </button>
-          )}
-          {contextMenu.rowData && (
-            <button 
-              style={styles.contextMenuItem} 
-              onClick={(e) => { e.stopPropagation(); handleCopyRow(contextMenu.rowData); }}
-            >
-              {t('query.copyRow')}
-            </button>
-          )}
-          {contextMenu.api && (
-            <>
-              <button 
-                style={styles.contextMenuItem} 
-                onClick={(e) => { e.stopPropagation(); handleCopySelected(contextMenu.api!); }}
-              >
-                {t('query.copySelectedRows')}
-              </button>
-              <button 
-                style={styles.contextMenuItem} 
-                onClick={(e) => { e.stopPropagation(); handleCopyAll(contextMenu.api!); }}
-              >
-                {t('query.copyAll')}
-              </button>
-            </>
-          )}
-        </div>
-      )}
     </div>
   );
 };
@@ -490,33 +350,6 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     height: 0,
   },
-  tableContainer: {
-    minWidth: '100%',
-    background: 'var(--bg-primary)',
-    overflow: 'auto',
-    flex: 1,
-    height: 0,
-  },
-  paginationInfo: {
-    padding: '8px 16px',
-    background: 'var(--bg-tertiary)',
-    borderTop: '1px solid var(--border-primary)',
-    flexShrink: 0,
-  },
-  pageText: {
-    fontSize: '12px',
-    color: 'var(--text-tertiary)',
-  },
-  warningInfo: {
-    padding: '8px 16px',
-    background: 'var(--warning-bg)',
-    borderTop: '1px solid var(--warning)',
-    flexShrink: 0,
-  },
-  warningText: {
-    fontSize: '12px',
-    color: 'var(--warning)',
-  },
   successBadge: {
     fontSize: '12px',
     fontWeight: 'bold',
@@ -588,27 +421,5 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '14px',
     color: 'var(--text-secondary)',
     textAlign: 'center',
-  },
-  contextMenu: {
-    position: 'fixed',
-    background: 'var(--bg-secondary)',
-    border: '1px solid var(--border-primary)',
-    borderRadius: '8px',
-    boxShadow: 'var(--shadow)',
-    padding: '4px',
-    zIndex: 1000,
-    minWidth: '140px',
-  },
-  contextMenuItem: {
-    width: '100%',
-    padding: '8px 16px',
-    border: 'none',
-    background: 'transparent',
-    textAlign: 'left',
-    cursor: 'pointer',
-    fontSize: '13px',
-    color: 'var(--text-primary)',
-    borderRadius: '4px',
-    transition: 'background 0.2s',
   },
 };

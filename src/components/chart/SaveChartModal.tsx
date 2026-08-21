@@ -62,11 +62,11 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
 
   const handleSave = async () => {
     if (!name.trim()) {
-      setErrorMsg('请输入图表名称');
+      setErrorMsg(t('chart.error.nameRequired'));
       return;
     }
     if (addToDashboard && !targetDashboardId) {
-      setErrorMsg('请选择一个仪表盘');
+      setErrorMsg(t('chart.error.dashboardRequired'));
       return;
     }
     setErrorMsg(null);
@@ -115,9 +115,9 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
       }
 
       const authText = visibility === 'all'
-        ? '（所有仪表盘可用）'
-        : `（仅授权给 ${effectiveAuthIds.length} 个仪表盘）`;
-      addToast(`已保存图表 "${chart.name}"${authText}`, 'success');
+        ? t('chart.allDashboardsPublic')
+        : t('chart.authorizedToCount', { count: effectiveAuthIds.length });
+      addToast(t('chart.savedChartToast', { name: chart.name, auth: authText }), 'success');
 
       if (addToDashboard && targetDashboardId) {
         // 计算新图表在目标仪表盘中的位置（避免重叠）
@@ -125,16 +125,16 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
         const position = calculateNextPosition(target?.layout || []);
         const addOk = await addChartToDashboard(targetDashboardId, chart.id, position);
         if (addOk) {
-          addToast(`已添加到仪表盘 "${target?.name || targetDashboardId}"`, 'success');
+          addToast(t('chart.addedToDashboardToast', { name: target?.name || targetDashboardId }), 'success');
         } else {
-          addToast('图表已保存，但添加到仪表盘失败（可稍后在"图表库"中手动添加）', 'warning');
+          addToast(t('chart.savedButAddFailed'), 'warning');
         }
       }
       onSave(chart);
     } catch (e) {
       console.error('[SaveChartModal] 保存异常:', e);
-      setErrorMsg('保存异常：' + String(e));
-      addToast('保存异常：' + String(e), 'error');
+      setErrorMsg(t('chart.error.saveException', { msg: String(e) }));
+      addToast(t('chart.error.saveException', { msg: String(e) }), 'error');
     } finally {
       setSaving(false);
     }
@@ -161,11 +161,11 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
       <div style={styles.overlay} onClick={onClose}>
         <div style={styles.modal} onClick={e => e.stopPropagation()}>
           <div style={styles.header}>
-            <h3 style={styles.title}>💾 保存图表</h3>
+            <h3 style={styles.title}>💾 {t('chart.saveTitle')}</h3>
             <button style={styles.closeBtn} onClick={onClose}>×</button>
           </div>
           <div style={styles.body}>
-            <label style={styles.label}>图表名称 *</label>
+            <label style={styles.label}>{t('chart.fieldName')} *</label>
             <input
               style={styles.input}
               value={name}
@@ -174,7 +174,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
               autoFocus
             />
 
-            <label style={styles.label}>描述</label>
+            <label style={styles.label}>{t('chart.description')}</label>
             <textarea
               style={styles.textarea}
               value={description}
@@ -182,7 +182,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
               placeholder={t('chart.descriptionPlaceholder')}
             />
 
-            <label style={styles.label}>标签</label>
+            <label style={styles.label}>{t('chart.fieldTags')}</label>
             <div style={styles.tagContainer}>
               {tags.map(t => (
                 <span key={t} style={styles.tag}>
@@ -226,11 +226,11 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                   }
                 }}
               >
-                <option value="">选择仪表盘...</option>
+                <option value="">{t('chart.selectDashboard')}</option>
                 {dashboards.map(d => (
                   <option key={d.id} value={d.id}>{d.name}</option>
                 ))}
-                <option value="__new_dashboard__">+ 新仪表盘</option>
+                <option value="__new_dashboard__">{t('chart.newDashboardOption')}</option>
               </select>
             )}
 
@@ -242,7 +242,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                   checked={visibility === 'all'}
                   onChange={() => setVisibility('all')}
                 />
-                <span>所有仪表盘可用（公开）</span>
+                <span>{t('chart.allDashboardsPublic')}</span>
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                 <input
@@ -250,15 +250,15 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                   checked={visibility === 'restricted'}
                   onChange={() => setVisibility('restricted')}
                 />
-                <span>仅授权给指定仪表盘</span>
+                <span>{t('chart.authSpecifiedDashboards')}</span>
               </label>
             </div>
 
             {visibility === 'restricted' && (
               <div style={{ marginLeft: '20px', marginBottom: '12px', padding: '8px', background: '#f8f9fa', borderRadius: '4px', maxHeight: '140px', overflowY: 'auto' }}>
-                <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px' }}>选择授权的仪表盘：</div>
+                <div style={{ fontSize: '12px', color: '#666', marginBottom: '8px' }}>{t('chart.selectAuthDashboards')}</div>
                 {dashboards.length === 0 ? (
-                  <div style={{ fontSize: '12px', color: '#999' }}>暂无仪表盘</div>
+                  <div style={{ fontSize: '12px', color: '#999' }}>{t('chart.noDashboards')}</div>
                 ) : (
                   dashboards.map((d) => (
                     <label key={d.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 0', cursor: 'pointer' }}>
@@ -293,7 +293,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
               onClick={handleSave}
               disabled={!name.trim() || saving}
             >
-              {saving ? '保存中...' : '保存'}
+              {saving ? t('chart.saving') : t('common.save')}
             </button>
           </div>
         </div>
@@ -304,7 +304,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
         <div style={styles.overlay} onClick={() => setShowNewDashboardModal(false)}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div style={styles.header}>
-              <h3 style={styles.title}>📊 新建仪表盘</h3>
+              <h3 style={styles.title}>📊 {t('chart.newDashboardTitle')}</h3>
               <button style={styles.closeBtn} onClick={() => setShowNewDashboardModal(false)}>×</button>
             </div>
             <div style={styles.body}>
@@ -324,7 +324,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
                 onClick={handleCreateNewDashboard}
                 disabled={!newDashboardName.trim()}
               >
-                创建
+                {t('chart.createBtn')}
               </button>
             </div>
           </div>

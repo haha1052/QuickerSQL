@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import * as Monaco from 'monaco-editor';
 import type { SqlQuery } from '../../types';
@@ -39,6 +39,8 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
   const decorationsRef = useRef<string[]>([]);
   const completionRegisteredRef = useRef<boolean>(false);
   const autoExecutePendingRef = useRef<boolean>(false);
+  // P2-13: 自动恢复确认弹窗状态（替代原生 window.confirm）
+  const [recoverConfirm, setRecoverConfirm] = useState<{ sql: string; timestamp: number; saveKey: string } | null>(null);
   const jumpToLine = useQueryStore((state) => state.jumpToLine);
   const setJumpToLine = useQueryStore((state) => state.setJumpToLine);
 
@@ -256,13 +258,13 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
         try {
           const data = JSON.parse(saved);
           if (data.sql && data.sql !== query.sql) {
-            // 发现未保存的内容，询问用户是否恢复
-            const confirm = window.confirm('发现未保存的 SQL 内容，是否恢复？\n\n（上次保存时间：' + new Date(data.timestamp).toLocaleString() + '）');
-            if (confirm) {
-              onChange(data.sql);
-            }
-            // 清除恢复点
-            localStorage.removeItem(AUTO_SAVE_KEY);
+            // P2-13: 替换原生 window.confirm 为项目内确认弹窗
+            // 将恢复决策延后到用户点击确认/取消时执行
+            setRecoverConfirm({
+              sql: data.sql,
+              timestamp: data.timestamp,
+              saveKey: AUTO_SAVE_KEY,
+            });
           }
         } catch (e) {
           console.warn('[SQLEditor] 恢复自动保存内容失败:', e);
@@ -270,6 +272,10 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
         }
       }
     };
+
+    // P2-13: 用户确认恢复后执行的回调（由 ConfirmModal 触发）
+    // 注：此处闭包内不直接调用，改用 setRecoverConfirm 触发弹窗，
+    // 实际恢复操作在 handleConfirmRecover / handleCancelRecover 中完成
 
     // 立即检查一次
     checkAndRecover();
@@ -605,6 +611,21 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
     onChange(value || '');
   };
 
+  // P2-13: 用户确认恢复未保存内容
+  const handleConfirmRecover = () => {
+    if (!recoverConfirm) return;
+    onChange(recoverConfirm.sql);
+    localStorage.removeItem(recoverConfirm.saveKey);
+    setRecoverConfirm(null);
+  };
+
+  // P2-13: 用户取消恢复，清除恢复点
+  const handleCancelRecover = () => {
+    if (!recoverConfirm) return;
+    localStorage.removeItem(recoverConfirm.saveKey);
+    setRecoverConfirm(null);
+  };
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-secondary)' }}>
       <style>{`
@@ -655,6 +676,108 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
         />
       </div>
       <ParameterPanel sql={query.sql} />
+
+      {/* P2-13: 自动恢复确认弹窗（替代原生 window.confirm） */}
+      {recoverConfirm && (
+        <div
+          style={recoverModalStyles.overlay}
+          onClick={handleCancelRecover}
+        >
+          <div
+            style={recoverModalStyles.modal}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={recoverModalStyles.header}>
+              <h3 style={recoverModalStyles.title}>{t('sqlEditor.recoverTitle')}</h3>
+              <button style={recoverModalStyles.closeBtn} onClick={handleCancelRecover}>×</button>
+            </div>
+            <div style={recoverModalStyles.body}>
+              <p style={{ margin: 0, lineHeight: 1.6, color: 'var(--text-primary)' }}>
+                {t('sqlEditor.recoverPrompt', { time: new Date(recoverConfirm.timestamp).toLocaleString() })}
+              </p>
+            </div>
+            <div style={recoverModalStyles.footer}>
+              <button style={recoverModalStyles.cancelBtn} onClick={handleCancelRecover}>
+                {t('common.cancel')}
+              </button>
+              <button
+                style={recoverModalStyles.confirmBtn}
+                onClick={handleConfirmRecover}
+              >
+                {t('common.confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+};
+
+// P2-13: 自动恢复确认弹窗样式（与项目其他模态风格一致）
+const recoverModalStyles: Record<string, React.CSSProperties> = {
+  overlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0, 0, 0, 0.4)',
+    zIndex: 1100,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modal: {
+    background: 'var(--bg-primary)',
+    borderRadius: 8,
+    width: '420px',
+    maxWidth: '90vw',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+    overflow: 'hidden',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '16px 20px',
+    borderBottom: '1px solid var(--border-primary)',
+  },
+  title: { fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--text-primary)' },
+  closeBtn: {
+    background: 'none',
+    border: 'none',
+    fontSize: 22,
+    cursor: 'pointer',
+    color: 'var(--text-secondary)',
+    padding: '0 4px',
+    lineHeight: 1,
+  },
+  body: { padding: '20px' },
+  footer: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: 8,
+    padding: '12px 20px',
+    borderTop: '1px solid var(--border-primary)',
+  },
+  cancelBtn: {
+    padding: '8px 16px',
+    borderRadius: 6,
+    border: '1px solid var(--border-primary)',
+    background: 'var(--bg-secondary)',
+    color: 'var(--text-primary)',
+    cursor: 'pointer',
+    fontSize: 13,
+  },
+  confirmBtn: {
+    padding: '8px 16px',
+    borderRadius: 6,
+    border: '1px solid var(--primary)',
+    background: 'var(--primary)',
+    color: 'white',
+    cursor: 'pointer',
+    fontSize: 13,
+    fontWeight: 500,
+  },
 };

@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, Component, Dispatch, SetStateAction } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Component, Dispatch, SetStateAction } from 'react';
 import type { ECharts } from 'echarts';
 // P0-2 启动优化：echarts 改为懒加载，避免启动时加载大型第三方库
 // import * as echarts from 'echarts'  // ← 已移至组件内部动态 import
+import { useShallow } from 'zustand/react/shallow';
 import { useLocale } from '../../context/LocaleContext';
 import { useDashboardStore } from '../../store';
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
@@ -10,34 +11,16 @@ import type { DashboardItem as DashboardItemType, SavedChart, DashboardFilter } 
 import type { ChartConfig } from '../../types/chart';
 
 interface DashboardItemProps {
-  /** 仪表盘项配置，包含图表 ID、所属仪表盘 ID 及网格坐标 (x, y, width, height) */
   item: DashboardItemType;
-  /** 是否处于编辑模式，启用拖拽、缩放与删除按钮 */
   isEditing: boolean;
-  /** 移除当前项的回调函数；编辑模式下点击 × 按钮时触发 */
   onRemove?: () => void;
-  /** 布局变更回调，参数为新的网格坐标 { x, y, width, height } */
   onLayoutChange?: (layout: { x: number; y: number; width: number; height: number }) => void;
-  /** 布局设置：gap 间距、rowHeight 行高、snapToGrid 是否吸附网格 */
   layoutSettings?: { gap: number; rowHeight: number; snapToGrid: boolean };
-  /** 双击回调；通过 300ms 内两次点击判定触发 */
   onDoubleClick?: () => void;
 }
 
 /**
  * 使用 SQL 和 savedChart 配置渲染图表（三层降级策略）
- *
- * 执行流程：
- * 1. 通过 tauriService.executeSql 执行 SQL，获取 columns 与 rows
- * 2. 校验 savedChart.xAxis 与 yAxis 列是否在结果列中存在
- * 3. 调用 tauriService.generateChartConfig 生成 ECharts 配置并写入 state
- *
- * @param sql - 要执行的 SQL 查询语句
- * @param savedChart - 已保存的图表配置（含 chartType、xAxis、yAxis 等）
- * @param setChartConfig - 写入生成结果的 ChartConfig setter
- * @param setError - 写入错误信息的 setter
- * @param setLoading - 写入 loading 状态的 setter；finally 中始终置为 false
- * @throws 当 SQL 执行失败、结果为空或列校验失败时抛出异常，调用方需自行捕获
  */
 async function renderWithSql(
   sql: string,
@@ -121,7 +104,7 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode; 
           padding: '12px',
         }}>
           <div>
-            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{this.props.t ? this.props.t('chart.renderFailed') : ''}</div>
+            <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{this.props.t ? this.props.t('chart.renderFailed') : '图表渲染失败'}</div>
             <div style={{ fontSize: '10px', opacity: 0.8 }}>{this.state.error}</div>
           </div>
         </div>
@@ -132,18 +115,164 @@ class DashboardItemErrorBoundary extends Component<{ children: React.ReactNode; 
 }
 
 /**
+ * 计算尺寸桶（P2-9：缓存键）
+ *
+ * 由于 optimizeConfigForSize 只在 4 个尺寸阈值处分支（width<240 / width<320 /
+ * height<150 / height<200），将连续的 (width, height) 离散化为 4 个桶作为缓存键，
+ * 避免相同分支结果被重复深拷贝。
+ */
+function getSizeBucket(width: number, height: number): 'zero' | 'verySmall' | 'small' | 'normal' {
+  if (width === 0 || height === 0) return 'zero';
+  if (width < 240 || height < 150) return 'verySmall';
+  if (width < 320 || height < 200) return 'small';
+  return 'normal';
+}
+
+/**
+ * 模块级 LRU 缓存（P2-9）：WeakMap<configObj, Map<sizeBucket, optimizedConfig>>
+ *
+ * - 键：传入的 config 对象引用（WeakMap 允许 config 被 GC 后自动清理对应缓存项）
+ * - 值：每个 config 对应的 4 个 sizeBucket 的优化结果
+ *
+ * 命中场景：同一 config 对象在多次 resize 之间被重复传入（如 ResizeObserver 在
+ * 同一 sizeBucket 内的多次触发），直接复用上次的优化结果，跳过深拷贝。
+ */
+const optimizeCache: WeakMap<Record<string, unknown>, Map<string, Record<string, unknown>>> = new WeakMap();
+
+/**
+ * 根据容器尺寸优化图表配置（模块级纯函数）
+ *
+ * P2-9：模块级 LRU 缓存，按 sizeBucket 复用结果，避免重复深拷贝
+ * P2-11：用 structuredClone 替代 JSON.parse(JSON.stringify())，
+ *        保留 Date/Map/Set 等非 JSON 类型，性能更优
+ *
+ * 注意：config 应为 normalized 后的对象（来自 normalizeEChartsConfig）
+ */
+function optimizeConfigForSize(
+  config: Record<string, unknown>,
+  width: number,
+  height: number
+): Record<string, unknown> {
+  if (!config || width === 0 || height === 0) return config;
+
+  const bucket = getSizeBucket(width, height);
+  let bucketMap = optimizeCache.get(config);
+  if (bucketMap) {
+    const cached = bucketMap.get(bucket);
+    if (cached) return cached;
+  } else {
+    bucketMap = new Map();
+    optimizeCache.set(config, bucketMap);
+  }
+
+  // P2-11：structuredClone 替代 JSON.parse(JSON.stringify())
+  // 优势：保留 Date/RegExp/Map/Set 等非 JSON 类型，且性能优于 JSON 往返转换
+  const optimized = structuredClone(config);
+  const isSmall = width < 320 || height < 200;
+  const isVerySmall = width < 240 || height < 150;
+
+  // 调整标题
+  // P2-9 修复：使用局部变量 + 显式类型断言，避免在 Record<string, unknown> 上链式访问触发 TS2339
+  const title = optimized.title as Record<string, unknown> | undefined;
+  if (title) {
+    if (isVerySmall) {
+      title.textStyle = {
+        ...(title.textStyle as Record<string, unknown> | undefined),
+        fontSize: 11,
+      };
+      title.top = 4;
+      title.left = 8;
+    } else if (isSmall) {
+      title.textStyle = {
+        ...(title.textStyle as Record<string, unknown> | undefined),
+        fontSize: 12,
+      };
+      title.top = 6;
+      title.left = 10;
+    }
+  }
+
+  // 调整图例
+  const legend = optimized.legend as Record<string, unknown> | undefined;
+  if (legend) {
+    if (isVerySmall) {
+      legend.show = false;
+    } else if (isSmall) {
+      legend.top = 'auto';
+      legend.bottom = 4;
+      legend.textStyle = {
+        ...(legend.textStyle as Record<string, unknown> | undefined),
+        fontSize: 10,
+      };
+      legend.itemWidth = 12;
+      legend.itemHeight = 8;
+    }
+  }
+
+  // 调整 grid（边距）
+  const grid = optimized.grid as Record<string, unknown> | undefined;
+  if (grid) {
+    if (isVerySmall) {
+      grid.left = 30;
+      grid.right = 10;
+      grid.top = 24;
+      grid.bottom = 20;
+    } else if (isSmall) {
+      grid.left = 40;
+      grid.right = 15;
+      grid.top = 32;
+      grid.bottom = 28;
+    }
+  }
+
+  // 调整 X 轴
+  if (optimized.xAxis && Array.isArray(optimized.xAxis)) {
+    optimized.xAxis.forEach((axis: Record<string, unknown>) => {
+      if (isVerySmall) {
+        if (axis.axisLabel) {
+          (axis.axisLabel as Record<string, unknown>).fontSize = 9;
+          (axis.axisLabel as Record<string, unknown>).rotate = 45;
+          (axis.axisLabel as Record<string, unknown>).interval = 'auto';
+        }
+        if (axis.axisTitle) {
+          (axis.axisTitle as Record<string, unknown>).show = false;
+        }
+      } else if (isSmall) {
+        if (axis.axisLabel) {
+          (axis.axisLabel as Record<string, unknown>).fontSize = 10;
+          (axis.axisLabel as Record<string, unknown>).rotate = 30;
+        }
+      }
+    });
+  }
+
+  // 调整 Y 轴
+  if (optimized.yAxis && Array.isArray(optimized.yAxis)) {
+    optimized.yAxis.forEach((axis: Record<string, unknown>) => {
+      if (isVerySmall) {
+        if (axis.axisLabel) {
+          (axis.axisLabel as Record<string, unknown>).fontSize = 9;
+        }
+        if (axis.axisTitle) {
+          (axis.axisTitle as Record<string, unknown>).show = false;
+        }
+      } else if (isSmall) {
+        if (axis.axisLabel) {
+          (axis.axisLabel as Record<string, unknown>).fontSize = 10;
+        }
+      }
+    });
+  }
+
+  bucketMap.set(bucket, optimized);
+  return optimized;
+}
+
+/**
  * ECharts 画布渲染组件（仅负责图表实例的初始化和渲染，不参与 Grid 布局）
  *
  * P0-1 修复：移除了此组件中重复的 gridStyle / item 样式 / toolbar，
  *           避免与父组件 DashboardItem 的 Grid 布局产生嵌套冲突。
- *
- * 副作用：
- * - 动态 import('echarts') 模块并缓存到 ref
- * - 创建 ResizeObserver 监听容器尺寸变化，触发防抖 resize 与配置重新优化
- * - 卸载时清理 observer、定时器与 echarts 实例
- *
- * @param props.chartConfig - ECharts 配置对象；为 null 时不渲染
- * @param props.interactive - 是否启用鼠标交互；编辑模式下置为 false 让拖拽事件穿透
  */
 const ChartCanvas: React.FC<{
   chartConfig: ChartConfig | null;
@@ -171,105 +300,9 @@ const ChartCanvas: React.FC<{
     }, 80);
   };
 
-  // 根据容器尺寸优化图表配置
-  const optimizeConfigForSize = (config: Record<string, unknown>, width: number, height: number): Record<string, unknown> => {
-    if (!config || width === 0 || height === 0) return config;
-
-    const optimized = JSON.parse(JSON.stringify(config));
-    const isSmall = width < 320 || height < 200;
-    const isVerySmall = width < 240 || height < 150;
-
-    // 调整标题
-    if (optimized.title) {
-      if (isVerySmall) {
-        optimized.title.textStyle = {
-          ...optimized.title.textStyle,
-          fontSize: 11,
-        };
-        optimized.title.top = 4;
-        optimized.title.left = 8;
-      } else if (isSmall) {
-        optimized.title.textStyle = {
-          ...optimized.title.textStyle,
-          fontSize: 12,
-        };
-        optimized.title.top = 6;
-        optimized.title.left = 10;
-      }
-    }
-
-    // 调整图例
-    if (optimized.legend) {
-      if (isVerySmall) {
-        optimized.legend.show = false;
-      } else if (isSmall) {
-        optimized.legend.top = 'auto';
-        optimized.legend.bottom = 4;
-        optimized.legend.textStyle = {
-          ...optimized.legend.textStyle,
-          fontSize: 10,
-        };
-        optimized.legend.itemWidth = 12;
-        optimized.legend.itemHeight = 8;
-      }
-    }
-
-    // 调整 grid（边距）
-    if (optimized.grid) {
-      if (isVerySmall) {
-        optimized.grid.left = 30;
-        optimized.grid.right = 10;
-        optimized.grid.top = 24;
-        optimized.grid.bottom = 20;
-      } else if (isSmall) {
-        optimized.grid.left = 40;
-        optimized.grid.right = 15;
-        optimized.grid.top = 32;
-        optimized.grid.bottom = 28;
-      }
-    }
-
-    // 调整 X 轴
-    if (optimized.xAxis && Array.isArray(optimized.xAxis)) {
-      optimized.xAxis.forEach((axis: Record<string, unknown>) => {
-        if (isVerySmall) {
-          if (axis.axisLabel) {
-            (axis.axisLabel as Record<string, unknown>).fontSize = 9;
-            (axis.axisLabel as Record<string, unknown>).rotate = 45;
-            (axis.axisLabel as Record<string, unknown>).interval = 'auto';
-          }
-          if (axis.axisTitle) {
-            (axis.axisTitle as Record<string, unknown>).show = false;
-          }
-        } else if (isSmall) {
-          if (axis.axisLabel) {
-            (axis.axisLabel as Record<string, unknown>).fontSize = 10;
-            (axis.axisLabel as Record<string, unknown>).rotate = 30;
-          }
-        }
-      });
-    }
-
-    // 调整 Y 轴
-    if (optimized.yAxis && Array.isArray(optimized.yAxis)) {
-      optimized.yAxis.forEach((axis: Record<string, unknown>) => {
-        if (isVerySmall) {
-          if (axis.axisLabel) {
-            (axis.axisLabel as Record<string, unknown>).fontSize = 9;
-          }
-          if (axis.axisTitle) {
-            (axis.axisTitle as Record<string, unknown>).show = false;
-          }
-        } else if (isSmall) {
-          if (axis.axisLabel) {
-            (axis.axisLabel as Record<string, unknown>).fontSize = 10;
-          }
-        }
-      });
-    }
-
-    return optimized;
-  };
+  // optimizeConfigForSize 已提取为模块级函数（见上方 P2-9/P2-11 注释）：
+  // - 使用 structuredClone 替代 JSON.parse(JSON.stringify())
+  // - WeakMap + sizeBucket 缓存避免重复深拷贝
 
   useEffect(() => {
     if (!chartConfig || !chartRef.current) return;
@@ -379,26 +412,6 @@ const ChartCanvas: React.FC<{
 // 拖拽阈值：鼠标移动超过此距离才认为是拖拽（而非点击）
 const DRAG_THRESHOLD_PX = 5;
 
-/**
- * 仪表盘单个图表项组件
- *
- * 职责：
- * - 在 12 列网格中渲染单个图表卡片（标题、内容、工具栏）
- * - 编辑模式下支持拖拽（带 5px 阈值）与右侧/底部/角落缩放
- * - 通过四层降级策略加载图表配置：
- *   1. 使用 savedChart.lastResult 缓存的查询结果
- *   2. 直接使用 savedChart.config 已保存的 ECharts 配置
- *   3. 通过 savedChart.sql + xAxis/yAxis 重新执行 SQL 并生成配置
- *   4. 回退到 savedChart.queryId 关联的 saved_query
- * - 支持 P2-1 筛选器联动：根据 filterValues 动态改写 SQL
- * - 包裹 DashboardItemErrorBoundary 防止单个图表崩溃影响整体
- *
- * 副作用：
- * - useEffect 中根据 savedChart/filterValues/refreshChartsVersion 触发渲染
- * - 拖拽过程中临时修改 document.body 的 userSelect 与 cursor
- *
- * @param props - 见 DashboardItemProps
- */
 export const DashboardItem: React.FC<DashboardItemProps> = ({
   item,
   isEditing,
@@ -415,10 +428,34 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const clickTimeRef = useRef<number>(0);
   const lastExecutedRefreshVersionRef = useRef<number>(0);
-  const { savedCharts, selectedChartId, setSelectedChartId, loadSavedCharts, filterValues, dashboards, refreshChartsVersion } = useDashboardStore();
+  // P1-13：用 useShallow 选择器仅订阅本组件关心的字段，避免 store 任意字段变更引发重渲染
+  // savedCharts 通过 reference 相等性比较（数组引用变化才会触发更新）
+  const {
+    savedCharts,
+    selectedChartId,
+    setSelectedChartId,
+    loadSavedCharts,
+    filterValues,
+    dashboards,
+    refreshChartsVersion,
+  } = useDashboardStore(
+    useShallow((s) => ({
+      savedCharts: s.savedCharts,
+      selectedChartId: s.selectedChartId,
+      setSelectedChartId: s.setSelectedChartId,
+      loadSavedCharts: s.loadSavedCharts,
+      filterValues: s.filterValues,
+      dashboards: s.dashboards,
+      refreshChartsVersion: s.refreshChartsVersion,
+    }))
+  );
   const isSelected = selectedChartId === item.chartId;
 
-  const savedChart = savedCharts.find(c => c.id === item.chartId);
+  // P1-13：用 useMemo 派生当前图表对象，避免每次渲染都 .find()
+  const savedChart = useMemo(
+    () => savedCharts.find(c => c.id === item.chartId),
+    [savedCharts, item.chartId]
+  );
 
   // P2-1 筛选器联动：获取当前仪表盘的筛选器定义
   const dashboardFilters: DashboardFilter[] = (() => {
@@ -455,14 +492,12 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         if (!latestChart) {
           if (cancelled) return;
           setLoading(false);
-          setError(t('dashboard.item.chart_not_found_detailed'));
+          setError('图表不存在（该图表可能已被删除，或图表库尚未加载完成）');
           return;
         }
         return;
       }
 
-      // 策略 0：使用自动化任务刷新缓存的查询结果（跳过 SQL 查询）
-      // 手动刷新时跳过此策略，强制重新执行 SQL
       if (!isManualRefresh && !filtersActive && savedChart.lastResult && savedChart.lastResult.rows && savedChart.lastResult.rows.length > 0
           && savedChart.lastResult.columns && savedChart.lastResult.columns.length > 0) {
         const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
@@ -490,8 +525,6 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         }
       }
 
-      // 策略 1：直接使用已保存的 ECharts config
-      // 手动刷新或筛选器激活时跳过，强制走 SQL 路径
       if (!isManualRefresh && !filtersActive && savedChart.config && Object.keys(savedChart.config).length > 0) {
         const cfg = savedChart.config as Record<string, unknown>;
         const hasSeries = Array.isArray(cfg.series) && cfg.series.length > 0;
@@ -506,7 +539,6 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         console.warn('[DashboardItem] config 存在但内容不完整，回退到 SQL 路径');
       }
 
-      // 策略 2：通过 SQL + 已保存的图表参数重新生成配置
       const hasSql = savedChart.sql && savedChart.sql.trim().length > 0;
       const hasValidXAxis = savedChart.xAxis && savedChart.xAxis.trim().length > 0 && savedChart.xAxis !== '0';
       const hasValidYAxis = savedChart.yAxis && savedChart.yAxis.length > 0;
@@ -516,20 +548,13 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
           ? applyFiltersToSql(savedChart.sql, JSON.parse(filterValuesKey), dashboardFilters)
           : savedChart.sql;
         try {
-          await renderWithSql(
-            effectiveSql,
-            savedChart,
-            (cfg) => { if (!cancelled) setChartConfig(cfg); },
-            (err) => { if (!cancelled) setError(err); },
-            (loading) => { if (!cancelled) setLoading(loading); },
-          );
+          await renderWithSql(effectiveSql, savedChart, (cfg) => { if (!cancelled) setChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
           return;
         } catch (e) {
           console.error('[DashboardItem] SQL 渲染失败，继续尝试回退:', e);
         }
       }
 
-      // 策略 3：回退 —— 从 saved_queries 查找原始 SQL
       if (savedChart.queryId && savedChart.queryId.trim() !== '') {
         try {
           const { tauriService } = await import('../../services');
@@ -540,13 +565,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               ? applyFiltersToSql(queryResponse.data.sql, JSON.parse(filterValuesKey), dashboardFilters)
               : queryResponse.data.sql;
             if (savedChart.xAxis && savedChart.yAxis?.length > 0) {
-              await renderWithSql(
-                fallbackSql,
-                savedChart,
-                (cfg) => { if (!cancelled) setChartConfig(cfg); },
-                (err) => { if (!cancelled) setError(err); },
-                (loading) => { if (!cancelled) setLoading(loading); },
-              );
+              await renderWithSql(fallbackSql, savedChart, (cfg) => { if (!cancelled) setChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
               return;
             }
           }
@@ -555,18 +574,17 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
         }
       }
 
-      // 所有策略都失败
       if (cancelled) return;
       setLoading(false);
       const missing: string[] = [];
-      if (!hasSql || !(savedChart.sql && savedChart.sql.trim().length > 0)) missing.push(t('dashboard.item.missing_sql'));
-      if (!hasValidXAxis) missing.push(t('dashboard.item.missing_x_axis'));
-      if (!hasValidYAxis) missing.push(t('dashboard.item.missing_y_axis'));
-      if (!(savedChart.config && Object.keys(savedChart.config).length > 0)) missing.push(t('dashboard.item.missing_chart_config'));
+      if (!hasSql || !(savedChart.sql && savedChart.sql.trim().length > 0)) missing.push('SQL');
+      if (!hasValidXAxis) missing.push('X 轴配置');
+      if (!hasValidYAxis) missing.push('Y 轴配置');
+      if (!(savedChart.config && Object.keys(savedChart.config).length > 0)) missing.push('图表配置');
 
       setError(
-        `${t('dashboard.item.incomplete_missing', { missing: missing.join(' / ') })}\n` +
-        t('dashboard.item.incomplete_hint')
+        `此图表数据不完整（缺少：${missing.join(' / ')}）。\n` +
+        `请：1) 点击右上角 🗘 按钮刷新仪表盘 或 2) 回到 SQL 查询页面重新生成并保存该图表。`
       );
     };
 
@@ -758,7 +776,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               {isEditing && (
                 <div style={styles.editHintBar}>
                   <span style={styles.editHintIcon}>✋</span>
-                  <span style={styles.editHintText}>{t('dashboard.item.drag_hint')}</span>
+                  <span style={styles.editHintText}>拖拽移动</span>
                 </div>
               )}
             </div>
@@ -796,7 +814,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
                   <div style={styles.loading}>{t('common.loading')}</div>
                 ) : error ? (
                   <div style={styles.error}>
-                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>{t('dashboard.item.load_failed')}</div>
+                    <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>❌ 图表加载失败</div>
                     <div style={{ fontSize: '11px', opacity: 0.8, whiteSpace: 'pre-wrap' }}>{error}</div>
                     <div style={{ marginTop: '10px' }}>
                       <button
@@ -818,12 +836,12 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
                           cursor: 'pointer',
                         }}
                       >
-                        {t('dashboard.item.refresh_retry')}
+                        🗘 刷新重试
                       </button>
                     </div>
                     {error.includes('查询不存在') && (
                       <div style={{ fontSize: '10px', marginTop: '6px', color: 'var(--warning)' }}>
-                        {t('dashboard.item.old_chart_hint')}
+                        💡 提示：此图表是在旧版本保存的，请重新保存图表
                       </div>
                     )}
                   </div>
@@ -840,7 +858,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               </>
             ) : (
               <div style={styles.placeholder}>
-                {t('dashboard.item.not_found')}
+                图表未找到
               </div>
             )}
           </div>

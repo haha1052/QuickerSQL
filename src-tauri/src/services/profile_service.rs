@@ -59,7 +59,7 @@ impl ProfileService {
             .collect();
 
         // 3) 决定是否采样
-        let count_sql = format!("SELECT COUNT(*) FROM {}", quoted);
+        let count_sql = format!("SELECT COUNT(*) FROM {}", quoted); // safe_sql: SqlIdentifier quoted
         let total_rows: i64 = Self::scalar_i64(conn, &count_sql).unwrap_or(0);
         let (sampled, sample_size) = if !force_full_scan && total_rows > SAMPLING_THRESHOLD_ROWS
         {
@@ -72,9 +72,9 @@ impl ProfileService {
 
         // 4) 取数据（采样时用 LIMIT）
         let data_sql = if sampled {
-            format!("SELECT * FROM {} LIMIT ?", quoted)
+            format!("SELECT * FROM {} LIMIT ?", quoted) // safe_sql: SqlIdentifier quoted
         } else {
-            format!("SELECT * FROM {}", quoted)
+            format!("SELECT * FROM {}", quoted) // safe_sql: SqlIdentifier quoted
         };
         let data = if sampled {
             let size_param = sample_size;

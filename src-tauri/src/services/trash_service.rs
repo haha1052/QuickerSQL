@@ -83,7 +83,7 @@ impl TrashService {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trash_deleted_at ON __trash_metadata(deleted_at)",
             &[],
-        ).map_err(|e| format!("创建 idx_trash_deleted_at 索引失败：{}", e))?;
+        ).map_err(|e| format!("创建 idx_trash_deleted_at 索引失败：{}", e))?; // safe_sql: error message, not SQL execution
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trash_original_name ON __trash_metadata(original_table_name)",
             &[],
@@ -152,26 +152,26 @@ impl TrashService {
         row_count: u64,
         safe_original: String,
     ) -> Result<TrashItem, String> {
+        use crate::database::traits::ToSql;
+
         let trash_table_name = format!("__trash_{}", id.replace('-', "_"));
         let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table_name);
 
-        // 重命名表
+        // 重命名表（表名通过 SqlIdentifier::quote_identifier 安全引用，可保留 format!）
         let rename_sql = format!("ALTER TABLE {} RENAME TO {}", safe_original, safe_trash);
         conn.execute(&rename_sql, &[])
             .map_err(|e| format!("重命名表失败：{}", e))?;
 
         log::debug!("已将表 {} 重命名为 {}（回收站）", table_name, trash_table_name);
 
-        // 插入元数据（直接嵌入值）
-        let insert_sql = format!(
-            "INSERT INTO __trash_metadata (id, original_table_name, trash_table_name, row_count, strategy) VALUES ('{}', '{}', '{}', {}, 'Rename');",
-            id.replace("'", "''"),
-            table_name.replace("'", "''"),
-            trash_table_name.replace("'", "''"),
-            row_count
-        );
+        // 插入元数据：参数化查询，避免 format! + replace 单引号转义
+        let insert_sql = "INSERT INTO __trash_metadata (id, original_table_name, trash_table_name, row_count, strategy) VALUES (?, ?, ?, ?, 'Rename');";
+        let row_count_i64 = row_count as i64;
+        let insert_params: [&dyn ToSql; 4] = [
+            &id, &table_name, &trash_table_name, &row_count_i64,
+        ];
 
-        conn.execute(&insert_sql, &[])
+        conn.execute(insert_sql, &insert_params)
             .map_err(|e| format!("插入元数据失败：{}", e))?;
 
         Ok(TrashItem {
@@ -187,17 +187,22 @@ impl TrashService {
     }
 
     /// 从回收站恢复表（同步版本）
+    ///
+    /// 恢复前会先查询目标表名是否已存在（避免 `ALTER TABLE ... RENAME TO`
+    /// 在目标表已存在时抛出底层错误）。元数据查询、目标表存在性检查与
+    /// 删除元数据均使用参数化查询；ALTER TABLE 中的表名通过
+    /// `SqlIdentifier::quote_identifier` 安全引用。
     pub fn restore_from_trash_sync(
         conn: &MutexGuardConnection<'_>,
         trash_id: &str,
     ) -> Result<String, String> {
-        // 查找回收站项
-        let select_sql = format!(
-            "SELECT original_table_name, trash_table_name, strategy FROM __trash_metadata WHERE id = '{}';",
-            trash_id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        let result = conn.query(&select_sql, &[])
+        // 查找回收站项（参数化查询）
+        let select_sql = "SELECT original_table_name, trash_table_name, strategy FROM __trash_metadata WHERE id = ?;";
+        let select_params: [&dyn ToSql; 1] = [&trash_id];
+
+        let result = conn.query(select_sql, &select_params)
             .map_err(|e| format!("查询回收站失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -208,15 +213,15 @@ impl TrashService {
         let original_name = &row[0];
         let trash_table_name = row[1].as_str();
         let strategy_str = &row[2];
-        
-        log::info!("恢复表 - 原始表名: {}, 回收站表名: {:?}, 策略值: '{}'", 
+
+        log::info!("恢复表 - 原始表名: {}, 回收站表名: {:?}, 策略值: '{}'",
             original_name, trash_table_name, strategy_str);
-        
+
         // 处理空字符串
-        let trash_table_name_owned = if trash_table_name.is_empty() { 
-            None 
-        } else { 
-            Some(trash_table_name.to_string()) 
+        let trash_table_name_owned = if trash_table_name.is_empty() {
+            None
+        } else {
+            Some(trash_table_name.to_string())
         };
 
         if !crate::database::SqlIdentifier::is_safe_identifier(original_name) {
@@ -228,20 +233,31 @@ impl TrashService {
             log::info!("使用 Rename 策略恢复表");
             if let Some(trash_table) = trash_table_name_owned {
                 if crate::database::SqlIdentifier::is_safe_identifier(&trash_table) {
+                    // P2-7: 恢复前检查目标表名是否已存在
+                    let exists_check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = ?;";
+                    let exists_params: [&dyn ToSql; 1] = [&original_name];
+                    let exists_result = conn.query(exists_check_sql, &exists_params)
+                        .map_err(|e| format!("检查目标表是否存在失败：{}", e))?;
+                    if !exists_result.rows.is_empty() {
+                        return Err(format!(
+                            "目标表 '{}' 已存在，无法恢复。请先重命名或删除已存在的表后再恢复",
+                            original_name
+                        ));
+                    }
+
                     let safe_original = crate::database::SqlIdentifier::quote_identifier(original_name);
                     let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table);
 
                     log::info!("执行重命名: {} -> {}", safe_trash, safe_original);
+                    // ALTER TABLE 中的表名通过 SqlIdentifier::quote_identifier 安全引用
                     let restore_sql = format!("ALTER TABLE {} RENAME TO {}", safe_trash, safe_original);
                     conn.execute(&restore_sql, &[])
                         .map_err(|e| format!("恢复表失败：{}", e))?;
 
-                    // 删除元数据
-                    let delete_sql = format!(
-                        "DELETE FROM __trash_metadata WHERE id = '{}';",
-                        trash_id.replace("'", "''")
-                    );
-                    conn.execute(&delete_sql, &[])
+                    // 删除元数据（参数化查询）
+                    let delete_sql = "DELETE FROM __trash_metadata WHERE id = ?;";
+                    let delete_params: [&dyn ToSql; 1] = [&trash_id];
+                    conn.execute(delete_sql, &delete_params)
                         .map_err(|e| format!("删除元数据失败：{}", e))?;
 
                     return Ok(format!("已恢复表：{}", original_name));
@@ -261,12 +277,13 @@ impl TrashService {
         conn: &MutexGuardConnection<'_>,
         trash_id: &str,
     ) -> Result<String, String> {
-        let select_sql = format!(
-            "SELECT trash_table_name, strategy FROM __trash_metadata WHERE id = '{}';",
-            trash_id.replace("'", "''")
-        );
+        use crate::database::traits::ToSql;
 
-        let result = conn.query(&select_sql, &[])
+        // 查找回收站项（参数化查询）
+        let select_sql = "SELECT trash_table_name, strategy FROM __trash_metadata WHERE id = ?;";
+        let select_params: [&dyn ToSql; 1] = [&trash_id];
+
+        let result = conn.query(select_sql, &select_params)
             .map_err(|e| format!("查询回收站失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -276,18 +293,19 @@ impl TrashService {
         let row = &result.rows[0];
         let trash_table_name = row[0].as_str();
         let strategy_str = &row[1];
-        
+
         // 处理空字符串
-        let trash_table_name_owned = if trash_table_name.is_empty() { 
-            None 
-        } else { 
-            Some(trash_table_name.to_string()) 
+        let trash_table_name_owned = if trash_table_name.is_empty() {
+            None
+        } else {
+            Some(trash_table_name.to_string())
         };
 
         if strategy_str == "Rename" {
             if let Some(trash_table) = trash_table_name_owned {
                 if crate::database::SqlIdentifier::is_safe_identifier(&trash_table) {
                     let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table);
+                    // DROP TABLE 中的表名通过 SqlIdentifier::quote_identifier 安全引用
                     let drop_sql = format!("DROP TABLE IF EXISTS {}", safe_trash);
                     conn.execute(&drop_sql, &[])
                         .map_err(|e| format!("删除表失败：{}", e))?;
@@ -295,11 +313,10 @@ impl TrashService {
             }
         }
 
-        let delete_sql = format!(
-            "DELETE FROM __trash_metadata WHERE id = '{}';",
-            trash_id.replace("'", "''")
-        );
-        conn.execute(&delete_sql, &[])
+        // 删除元数据（参数化查询）
+        let delete_sql = "DELETE FROM __trash_metadata WHERE id = ?;";
+        let delete_params: [&dyn ToSql; 1] = [&trash_id];
+        conn.execute(delete_sql, &delete_params)
             .map_err(|e| format!("删除元数据失败：{}", e))?;
 
         Ok(format!("已永久删除回收站项：{}", trash_id))

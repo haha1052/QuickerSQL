@@ -67,7 +67,38 @@ impl TaskService {
     // 初始化：确保系统表存在
     // ============================================================
 
+    /// P1-4: 启动时清理 stuck running 状态的 run 记录
+    ///
+    /// 应用上次崩溃时，可能留下 status='running' 的 run 记录（事务未提交或
+    /// 进程被强杀）。本方法将这些记录标记为 'failed'，避免它们永久占用
+    /// "运行中"状态而阻塞后续调度（scan_due_task_ids 会跳过 last_run_status='running' 的任务）。
+    ///
+    /// 应在 ensure_tables_exists 之后、调度器首次扫描之前调用。
+    pub fn cleanup_stuck_running_runs(conn: &MutexGuardConnection<'_>) -> Result<u64, String> {
+        let sql = "UPDATE __automation_runs SET status='failed', output='应用启动时清理：上次运行未正常结束（疑似崩溃）' WHERE status='running';";
+        let affected = conn.execute(sql, &[])
+            .map_err(|e| format!("清理 stuck running runs 失败: {}", e))?;
+        if affected > 0 {
+            log::info!("启动清理：将 {} 条 stuck running run 记录标记为 failed", affected);
+
+            // 同步重置任务的 last_run_status，避免调度器永远跳过这些任务
+            let reset_sql = "UPDATE __automation_tasks SET last_run_status='failed' WHERE last_run_status='running';";
+            if let Err(e) = conn.execute(reset_sql, &[]) {
+                log::warn!("重置 stuck running task 状态失败: {}", e);
+            }
+        }
+        Ok(affected)
+    }
+
+    /// 确保自动化任务相关系统表存在（__automation_tasks / __automation_runs / __task_dependencies）。
+    ///
+    /// - 参数 `conn`：数据库连接（已持有锁）
+    /// - 行为：幂等创建三张表 + 必要索引；随后调用 `migrate_schedule_to_dependencies`
+    ///   迁移旧调度数据，并调用 `cleanup_stuck_running_runs` 清理上次崩溃遗留的 running 记录
+    /// - 返回：成功返回 `Ok(())`；任一 DDL 执行失败时返回带具体语句序号的错误信息
     pub fn ensure_tables_exists(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
+        // P1-4: 系统表就绪后立即清理上次崩溃遗留的 stuck running 记录
+        // 放在 ensure_tables_exists 内部调用，确保所有启动路径都会执行清理
         let statements: &[&str] = &[
             // ============================================================
             // 1) __automation_tasks（任务定义表）
@@ -117,7 +148,8 @@ impl TaskService {
                 output TEXT,
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 trigger_type TEXT NOT NULL DEFAULT 'schedule',
-                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                FOREIGN KEY (task_id) REFERENCES __automation_tasks(id) ON DELETE CASCADE
             )"#,
             "CREATE INDEX IF NOT EXISTS idx_automation_runs_task_created ON __automation_runs(task_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_automation_runs_status ON __automation_runs(status)",
@@ -130,7 +162,8 @@ impl TaskService {
                 dependency_type TEXT NOT NULL DEFAULT 'time_interval',
                 dependency_config TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                FOREIGN KEY (task_id) REFERENCES __automation_tasks(id) ON DELETE CASCADE
             )"#,
             "CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON __task_dependencies(task_id)",
             "CREATE INDEX IF NOT EXISTS idx_task_deps_upstream ON __task_dependencies(dependency_type, dependency_config)",
@@ -148,6 +181,12 @@ impl TaskService {
         // ============================================================
         if let Err(e) = Self::migrate_schedule_to_dependencies(conn) {
             log::warn!("迁移任务调度数据到依赖表失败: {}", e);
+        }
+
+        // P1-4: 清理上次崩溃遗留的 stuck running 记录
+        // 确保调度器不会被"幽灵 running 任务"永久阻塞
+        if let Err(e) = Self::cleanup_stuck_running_runs(conn) {
+            log::warn!("启动清理 stuck running runs 失败: {}", e);
         }
 
         Ok(())
@@ -202,6 +241,14 @@ impl TaskService {
     // CRUD
     // ============================================================
 
+    /// 创建新的自动化任务。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `req`：任务创建请求（name/task_type/payload/schedule_* 等）
+    /// - 行为：自动生成 UUID；从 settings 读取默认 retry_on_fail/timeout_secs；
+    ///   state=enabled 时计算 next_run_at；INSERT 后调用 `get_task` 返回完整对象
+    /// - 返回：新建任务的完整 `Task` 对象
+    /// - 错误：参数非法、INSERT 失败、写后读取失败时返回 Err
     pub fn create_task(
         conn: &MutexGuardConnection<'_>,
         req: CreateTaskRequest,
@@ -281,6 +328,11 @@ impl TaskService {
         Self::get_task(conn, &id)
     }
 
+    /// 按 ID 查询单个自动化任务的完整定义。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：任务 ID
+    /// - 返回：任务存在时返回 `Task`；不存在时返回 `Err("任务不存在")`
     pub fn get_task(conn: &MutexGuardConnection<'_>, id: &str) -> Result<Task, String> {
         let sql = "SELECT id, name, description, task_type, payload, schedule_mode, schedule_value, timezone, state, project_id, next_run_at, last_run_at, last_run_status, last_run_duration_ms, total_runs, success_runs, failed_runs, retry_on_fail, retry_interval_secs, timeout_secs, notify_on_success, notify_on_failure, tags, created_by, created_at, updated_at \
              FROM __automation_tasks WHERE id = ?;";
@@ -292,6 +344,13 @@ impl TaskService {
         Self::row_to_task(&result.rows[0])
     }
 
+    /// 列出自动化任务（支持按 state/task_type/keyword 过滤）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `filter_state`：可选状态过滤（enabled/disabled 等），空字符串视为不过滤
+    /// - 参数 `filter_type`：可选任务类型过滤（sql/refresh_chart 等）
+    /// - 参数 `keyword`：可选关键字，匹配 name 或 description（LIKE 模糊匹配）
+    /// - 返回：`TaskListResponse`（含总数、enabled 数量、failed 数量、最多 500 条任务）
     pub fn list_tasks(
         conn: &MutexGuardConnection<'_>,
         filter_state: Option<String>,
@@ -357,6 +416,14 @@ impl TaskService {
         })
     }
 
+    /// 局部更新任务字段（仅更新 patch 中非 None 的字段）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：任务 ID
+    /// - 参数 `patch`：要更新的字段集合（name/description/payload/schedule_*/state/retry/timeout）
+    /// - 行为：动态拼接 SET 子句；schedule_mode/schedule_value/state 变更时重算 next_run_at
+    /// - 返回：更新完成后的最新 `Task` 对象
+    /// - 错误：任务不存在、UPDATE 失败时返回 Err
     pub fn update_task(
         conn: &MutexGuardConnection<'_>,
         id: &str,
@@ -445,6 +512,13 @@ impl TaskService {
         Self::get_task(conn, id)
     }
 
+    /// 删除任务及其所有运行记录（事务保证原子性）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：任务 ID
+    /// - 行为：先删 `__automation_runs` 中该任务的所有运行记录，再删 `__automation_tasks` 行；
+    ///   任一删除失败即回滚事务
+    /// - 返回：成功返回 `Ok(())`；删除失败或提交事务失败时返回 Err
     pub fn delete_task(conn: &MutexGuardConnection<'_>, id: &str) -> Result<(), String> {
         let sql1 = "DELETE FROM __automation_runs WHERE task_id = ?;";
         let sql2 = "DELETE FROM __automation_tasks WHERE id = ?;";
@@ -478,6 +552,11 @@ impl TaskService {
         }
     }
 
+    /// 启用任务：等价于 `update_task` 仅设置 state="enabled"。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：任务 ID
+    /// - 返回：启用后的最新 `Task` 对象（含重算后的 next_run_at）
     pub fn enable_task(conn: &MutexGuardConnection<'_>, id: &str) -> Result<Task, String> {
         Self::update_task(conn, id, UpdateTaskRequest {
             name: None,
@@ -491,6 +570,11 @@ impl TaskService {
         })
     }
 
+    /// 禁用任务：等价于 `update_task` 仅设置 state="disabled"。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：任务 ID
+    /// - 返回：禁用后的最新 `Task` 对象（next_run_at 不会被重算，由 update_task 内部决定）
     pub fn disable_task(conn: &MutexGuardConnection<'_>, id: &str) -> Result<Task, String> {
         Self::update_task(conn, id, UpdateTaskRequest {
             name: None,
@@ -508,6 +592,13 @@ impl TaskService {
     // 执行任务
     // ============================================================
 
+    /// 手动触发任务立即执行（不启用临时连接，直接使用主连接）。
+    ///
+    /// - 参数 `db_manager`：数据库管理器（用于获取主连接 + 内部调度）
+    /// - 参数 `id`：任务 ID
+    /// - 行为：trigger_type="manual"；与调度器触发的区别在于不使用临时连接，
+    ///   避免长 SQL 任务在主连接外执行；事务与乐观锁逻辑同 `execute`
+    /// - 返回：执行结果 `TaskRun`（含 success/failed 状态）
     pub fn run_task_now(
         db_manager: &SharedDatabaseManager,
         id: &str,
@@ -536,6 +627,11 @@ impl TaskService {
 
     /// 真正的业务逻辑：持有主连接 `primary_conn` 读写系统表；
     /// 当 `use_temp_conn=true` 时，用户 SQL 通过临时连接执行。
+    ///
+    /// P1-4 + P1-5 改造：
+    /// - 开始时用乐观锁（UPDATE ... WHERE last_run_status != 'running'）抢占任务
+    /// - 用事务包裹 run 记录的 INSERT + UPDATE，确保最终状态原子写入
+    /// - dispatch 失败或 panic 时事务自动回滚，不会留下半成品状态
     fn execute_inner(
         db_manager: &SharedDatabaseManager,
         primary_conn: &MutexGuardConnection<'_>,
@@ -543,21 +639,41 @@ impl TaskService {
         trigger_type: &str,
         use_temp_conn: bool,
     ) -> Result<TaskRun, String> {
-        // ============================================================
-        // 非事务化执行：INSERT run（立即可见）→ dispatch → UPDATE run+tasks
-        //
-        // 为什么不用事务：
-        //   之前对 execute_core 的结果做 Err → rollback 会导致：
-        //   - run 记录被撤销 → 用户看不到失败记录
-        //   - tasks 状态/next_run_at 未更新 → 调度器永不触发
-        //   现在改为"无论成功失败，都把 run 记录 + 任务状态/调度时间写回"。
-        // ============================================================
-
         let start_unix = chrono::Utc::now().timestamp();
         let run_id = uuid::Uuid::new_v4().to_string();
 
-        // 1. 读取任务
+        // ============================================================
+        // P1-5: 乐观锁——原子地抢占任务，防止并发执行同一任务
+        //
+        // 条件 `last_run_status IS NULL OR last_run_status != 'running'` 确保：
+        // - 首次运行的任务（last_run_status IS NULL）可以被抢占
+        // - 上次运行已结束（success/failed）的任务可以被抢占
+        // - 当前正在运行的任务（last_run_status='running'）会被跳过
+        //
+        // 检查 affected rows：若为 0，说明另一实例正在执行该任务
+        // ============================================================
+        let lock_sql = "UPDATE __automation_tasks SET last_run_status='running' WHERE id=? AND (last_run_status IS NULL OR last_run_status != 'running');";
+        let lock_params: [&dyn ToSql; 1] = [&id];
+        let lock_affected = primary_conn.execute(lock_sql, &lock_params)
+            .map_err(|e| format!("获取任务锁失败: {}", e))?;
+        if lock_affected == 0 {
+            return Err("任务正在运行中，无法重复执行".to_string());
+        }
+
+        // 1. 读取任务（已获取锁，可以安全读取）
         let task = Self::get_task(primary_conn, id)?;
+
+        // ============================================================
+        // P1-4: 开启事务，包裹 run 记录的 INSERT + UPDATE
+        //
+        // 事务确保：
+        // - INSERT run（status='running'）与 UPDATE run（status='success'/'failed'）
+        //   原子提交，前端要么看到最终状态，要么看不到任何记录
+        // - 若 dispatch panic 或进程崩溃，事务自动回滚，不会留下 stuck running 记录
+        //   （启动时的 cleanup_stuck_running_runs 作为兜底）
+        // ============================================================
+        primary_conn.begin_transaction()
+            .map_err(|e| format!("开启事务失败: {}", e))?;
 
         // 2. 写入一条 status='running' 的 run 记录（始终用主连接写系统表）
         let insert_run_sql = "INSERT INTO __automation_runs (id, task_id, status, started_at, trigger_type) \
@@ -565,6 +681,7 @@ impl TaskService {
         let params_run: [&dyn ToSql; 4] = [&run_id, &id, &start_unix.to_string(), &trigger_type];
         if let Err(e) = primary_conn.execute(insert_run_sql, &params_run) {
             log::warn!("写入 run 记录失败: {}", e);
+            let _ = primary_conn.rollback_transaction();
             return Err(format!("写入 run 记录失败: {}", e));
         }
 
@@ -597,7 +714,15 @@ impl TaskService {
             Err(user_msg) => Self::handle_execute_failure(&ctx, user_msg),
         };
 
+        // P1-4: 提交事务——run 记录与 task 状态原子写入
+        if let Err(e) = primary_conn.commit_transaction() {
+            log::warn!("提交事务失败: {}", e);
+            let _ = primary_conn.rollback_transaction();
+            return Err(format!("提交事务失败: {}", e));
+        }
+
         // 5. 任务完成后触发下游任务（仅触发一层，后续由调度器自然处理）
+        //    放在事务外：下游触发失败不应回滚本任务的成功状态
         let is_success = exec_result.is_ok();
         if let Err(e) = Self::trigger_downstream_tasks(primary_conn, id, is_success, now) {
             log::warn!("触发下游任务失败: {}", e);
@@ -1019,6 +1144,12 @@ impl TaskService {
     // 运行日志
     // ============================================================
 
+    /// 查询某任务的运行历史记录（按 created_at DESC 排序）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `task_id`：任务 ID
+    /// - 参数 `limit`：返回条数上限，None 时默认 50；会被 clamp 到 1..=500
+    /// - 返回：`Vec<TaskRun>`，可能为空
     pub fn get_task_runs(
         conn: &MutexGuardConnection<'_>,
         task_id: &str,
@@ -1319,6 +1450,10 @@ impl TaskService {
     ) -> Result<(), String> {
         let downstream = Self::get_downstream_tasks(conn, upstream_task_id)?;
 
+        // P2-6: 预计算所有需要更新的下游任务，再用事务批量提交
+        // 避免多次独立 UPDATE 在中途失败导致部分下游被触发、部分未触发的不一致状态
+        let mut updates: Vec<(String, i64)> = Vec::new(); // (task_id, trigger_time)
+
         for (dep, task) in downstream {
             // 检查依赖类型是否满足触发条件
             let should_trigger = match dep.dependency_type {
@@ -1356,14 +1491,34 @@ impl TaskService {
             };
 
             if should_update {
-                let update_sql = "UPDATE __automation_tasks SET next_run_at = ?, updated_at = ? WHERE id = ?;";
-                let trigger_time_str = trigger_time.to_string();
-                let now_str = now.to_string();
-                let params: [&dyn ToSql; 3] = [&trigger_time_str, &now_str, &task.id];
-                if let Err(e) = conn.execute(update_sql, &params) {
-                    log::warn!("更新下游任务 {} next_run_at 失败: {}", task.id, e);
-                }
+                updates.push((task.id.clone(), trigger_time));
             }
+        }
+
+        // P2-6: 没有需要更新的下游任务，直接返回，不开启空事务
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        // P2-6: 用事务包裹所有下游 UPDATE，确保原子性
+        conn.begin_transaction()
+            .map_err(|e| format!("开启下游触发事务失败: {}", e))?;
+
+        let now_str = now.to_string();
+        for (task_id, trigger_time) in &updates {
+            let update_sql = "UPDATE __automation_tasks SET next_run_at = ?, updated_at = ? WHERE id = ?;";
+            let trigger_time_str = trigger_time.to_string();
+            let params: [&dyn ToSql; 3] = [&trigger_time_str, &now_str, &task_id];
+            if let Err(e) = conn.execute(update_sql, &params) {
+                log::warn!("更新下游任务 {} next_run_at 失败: {}", task_id, e);
+                let _ = conn.rollback_transaction();
+                return Err(format!("更新下游任务 {} 失败: {}", task_id, e));
+            }
+        }
+
+        if let Err(e) = conn.commit_transaction() {
+            let _ = conn.rollback_transaction();
+            return Err(format!("提交下游触发事务失败: {}", e));
         }
 
         Ok(())

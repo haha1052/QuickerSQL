@@ -28,12 +28,10 @@ tauri = { version = "=2.11.1", features = [] }
 tauri-plugin-dialog = "=2.7.1"
 # tauri-plugin-fs = "=2.0.0"
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 encoding_rs = "=0.8.35"
 dirs = "=5.0.1"
 thiserror = "=1.0.69"
 tokio = { version = "=1.52.2", features = ["full"] }
-async-trait = "=0.1.89"
 tempfile = "=3.27.0"
 duckdb = { version = "1.10502.0", features = ["bundled", "vtab-full"] }
 regex = "=1.12.3"

@@ -371,15 +371,38 @@ impl DatabaseService {
     /// 创建视图（`CREATE VIEW <view_name> AS <source_sql>`）。
     ///
     /// - `view_name` 必须通过 [`SqlIdentifier::new`] 校验
-    /// - `source_sql` 是用户提供的完整 SELECT 查询定义，直接字符串拼接
-    ///   （因为它是视图定义而非参数绑定）
+    /// - `source_sql` 是用户提供的完整 SELECT 查询定义
+    ///
+    /// P1-16 安全加固：
+    /// - 禁止多语句（`source_sql` 不允许包含分号，避免 `CREATE VIEW ... AS SELECT 1; DROP TABLE ...`）
+    /// - 要求以 SELECT 或 WITH 开头（视图定义必须是查询语句）
     pub fn create_view(
         conn: &MutexGuardConnection,
         view_name: &str,
         source_sql: &str,
     ) -> Result<(), String> {
         let ident = SqlIdentifier::new(view_name)?;
-        let sql = format!("CREATE VIEW {} AS {}", ident.quoted(), source_sql);
+
+        // P1-16: 多语句防护——禁止 source_sql 中出现分号
+        // 允许末尾单个分号（用户习惯），但中间不允许出现
+        let trimmed = source_sql.trim();
+        if trimmed.is_empty() {
+            return Err("视图定义 SQL 不能为空".to_string());
+        }
+
+        // 去掉末尾的单个分号（如果有），再检查中间是否还有分号
+        let without_trailing_semicolon = trimmed.trim_end_matches(';').trim_end();
+        if without_trailing_semicolon.contains(';') {
+            return Err("视图定义 SQL 不允许包含分号（禁止多语句注入）".to_string());
+        }
+
+        // P1-16: 要求视图定义以 SELECT 或 WITH 开头
+        let upper = without_trailing_semicolon.to_uppercase();
+        if !upper.starts_with("SELECT") && !upper.starts_with("WITH") {
+            return Err("视图定义 SQL 必须以 SELECT 或 WITH 开头".to_string());
+        }
+
+        let sql = format!("CREATE VIEW {} AS {}", ident.quoted(), without_trailing_semicolon);
         conn.execute(&sql, &[])
             .map_err(|e| format!("创建视图失败: {}", e))?;
         Ok(())
@@ -503,9 +526,14 @@ impl DatabaseService {
         Ok(total)
     }
 
-    /// 使用 DuckDB COPY 命令快速导入 CSV 文件
-    /// 
-    /// COPY 命令是 DuckDB 原生支持的最快导入方式，直接从文件读取数据，无需先加载到内存
+    /// 使用 DuckDB 快速导入 CSV 文件
+    ///
+    /// P2-1 安全加固：使用 `read_csv_auto(?)` 参数化查询替代手工路径转义，
+    /// 彻底消除 SQL 注入风险。文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
+    ///
+    /// 实现方式：`CREATE TABLE <table> AS SELECT * FROM read_csv_auto(?, ...options)`
+    /// - `?` 绑定文件路径，由 DuckDB 驱动安全处理
+    /// - header / delimiter 是经验证的字面量（delimiter 已校验为单字符），直接拼入
     pub fn fast_import_csv(
         conn: &MutexGuardConnection,
         table_name: &str,
@@ -515,54 +543,37 @@ impl DatabaseService {
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
 
-        // 处理 Windows 路径（转义反斜杠与单引号）
-        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
-
         // 使用指定的分隔符，默认逗号
         let delimiter = delimiter.unwrap_or(",");
 
         // COPY DELIMITER 必须是单个字符
         if delimiter.chars().count() != 1 {
-            return Err(format!("COPY 命令分隔符必须是单个字符，当前为 '{}'", delimiter));
+            return Err(format!("分隔符必须是单个字符，当前为 '{}'", delimiter));
         }
 
-        // 将实际制表符转换为 SQL 转义序列 \t；对其他字符仅转义单引号
-        let sql_delimiter = if delimiter == "\t" {
-            "\\t".to_string()
+        // P2-1: 构建 read_csv_auto 的选项子句
+        // delimiter 已校验为单字符，header 是布尔字面量，均安全拼接
+        let header_str = if has_header { "true" } else { "false" };
+        let options = if delimiter == "," {
+            format!("header={}", header_str)
+        } else if delimiter == "\t" {
+            format!("header={}, delimiter='\\t'", header_str)
         } else {
-            delimiter.replace('\'', "''")
+            // 单字符 delimiter，已通过 chars().count() 校验
+            format!("header={}, delimiter='{}'", header_str, delimiter)
         };
 
-        // DuckDB COPY 命令格式：
-        // 默认逗号分隔符省略 DELIMITER 子句，其他分隔符显式声明
-        let sql = if sql_delimiter == "," {
-            if has_header {
-                format!(
-                    "COPY {} FROM '{}' (FORMAT CSV, HEADER true)",
-                    table_ident.quoted(), escaped_path
-                )
-            } else {
-                format!(
-                    "COPY {} FROM '{}' (FORMAT CSV)",
-                    table_ident.quoted(), escaped_path
-                )
-            }
-        } else if has_header {
-            format!(
-                "COPY {} FROM '{}' (FORMAT CSV, DELIMITER '{}', HEADER true)",
-                table_ident.quoted(), escaped_path, sql_delimiter
-            )
-        } else {
-            format!(
-                "COPY {} FROM '{}' (FORMAT CSV, DELIMITER '{}')",
-                table_ident.quoted(), escaped_path, sql_delimiter
-            )
-        };
+        // P2-1: 文件路径用 ? 参数绑定，杜绝 SQL 注入
+        let sql = format!(
+            "CREATE TABLE {} AS SELECT * FROM read_csv_auto(?, {})",
+            table_ident.quoted(), options
+        );
 
-        log::info!("执行 COPY 命令: {}", sql);
+        log::info!("执行 CSV 导入（参数化路径）: {}", sql);
 
-        conn.execute(&sql, &[])
-            .map_err(|e| format!("COPY 命令执行失败: {}", e))?;
+        let params: [&dyn crate::database::ToSql; 1] = [&file_path];
+        conn.execute(&sql, &params)
+            .map_err(|e| format!("CSV 导入失败: {}", e))?;
 
         // 获取插入的行数
         Self::get_row_count(conn, table_name)
@@ -572,22 +583,22 @@ impl DatabaseService {
 
     /// 预览 Parquet 文件内容
     ///
-    /// 使用 DuckDB 的 parquet_scan 函数读取 Parquet 文件并返回预览数据。
-    /// 文件路径会进行转义处理以防止 SQL 注入。
+    /// P2-1 安全加固：使用 `read_parquet(?)` 参数化查询替代手工路径转义。
+    /// 文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
     pub fn preview_parquet_file(
         conn: &dyn DatabaseConnection,
         file_path: &str,
         max_rows: usize,
     ) -> Result<CsvPreview, String> {
-        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
-
+        // P2-1: 文件路径用 ? 参数绑定；max_rows 是 usize 字面量，安全拼接
         let sql = format!(
-            "SELECT * FROM parquet_scan('{}') LIMIT {}",
-            escaped_path, max_rows
+            "SELECT * FROM read_parquet(?) LIMIT {}",
+            max_rows
         );
 
+        let params: [&dyn crate::database::ToSql; 1] = [&file_path];
         let result = conn
-            .query(&sql, &[])
+            .query(&sql, &params)
             .map_err(|e| format!("执行 Parquet 查询失败: {}", e))?;
 
         Ok(CsvPreview {
@@ -596,9 +607,10 @@ impl DatabaseService {
         })
     }
 
-    /// 使用 DuckDB COPY 命令快速导入 Parquet 文件
+    /// 使用 DuckDB 快速导入 Parquet 文件
     ///
-    /// COPY 命令是 DuckDB 原生支持的最快导入方式，直接从文件读取数据，无需先加载到内存
+    /// P2-1 安全加固：使用 `read_parquet(?)` 参数化查询替代手工路径转义。
+    /// 文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
     pub fn fast_import_parquet(
         conn: &MutexGuardConnection,
         table_name: &str,
@@ -606,18 +618,17 @@ impl DatabaseService {
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
 
-        let escaped_path = file_path.replace('\\', "\\\\").replace('\'', "''");
-
+        // P2-1: 文件路径用 ? 参数绑定，杜绝 SQL 注入
         let sql = format!(
-            "COPY {} FROM '{}' (FORMAT PARQUET);",
-            table_ident.quoted(),
-            escaped_path
+            "CREATE TABLE {} AS SELECT * FROM read_parquet(?)",
+            table_ident.quoted()
         );
 
-        log::info!("执行 COPY PARQUET 命令: {}", sql);
+        log::info!("执行 Parquet 导入（参数化路径）: {}", sql);
 
-        conn.execute(&sql, &[])
-            .map_err(|e| format!("COPY PARQUET 命令执行失败: {}", e))?;
+        let params: [&dyn crate::database::ToSql; 1] = [&file_path];
+        conn.execute(&sql, &params)
+            .map_err(|e| format!("Parquet 导入失败: {}", e))?;
 
         Self::get_row_count(conn, table_name)
             .map(|count| count as usize)

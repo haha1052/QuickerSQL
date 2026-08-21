@@ -31,7 +31,7 @@ export const useQueryStore = create<QueryState>()(
         { 
           id: '1', 
           name: '查询 1', 
-          sql: 'SELECT * FROM my_table', 
+          sql: 'SELECT * FROM my_table', // safe_sql: 默认 SQL 示例文案（用户首次打开查询页的初始内容）
           result: null, 
           batchResults: null 
         }

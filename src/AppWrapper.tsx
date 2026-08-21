@@ -67,6 +67,7 @@ export interface StartupData {
     tags: string[];
     description: string;
     visibility: string;
+    authorizedDashboardIds: string[];
     createdAt: number;
     updatedAt: number;
   }>;
@@ -205,13 +206,14 @@ const AppWrapper: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [startupData, setStartupData] = useState<StartupData | null>(null);
 
+  const startupHasRunRef = useRef(false);
+  const duckDbListenedRef = useRef(false);
+  const duckDbUnlistenRef = useRef<(() => void) | null>(null);
+  const duckDbCancelledRef = useRef(false);
+
   // v12: 启动计时状态（React 内部计时，不渲染到 UI，由 index.html splash 显示计时）
   const [, setRuntimeMs] = useState<number>(0);
   const [, setStageText] = useState<string>('正在初始化...');
-  // v9.3: 启动完成后冻结的最终耗时，不再随时间变化
-  const [finalRuntimeMs, setFinalRuntimeMs] = useState<number | null>(null);
-
-  const jsStartMs = performance.now();
 
   // v9.3: 仅在 isLoading=true 期间动态刷新计时；一旦加载完成，停止刷新
   useEffect(() => {
@@ -229,11 +231,11 @@ const AppWrapper: React.FC = () => {
 
   // DuckDB 初始化完成事件监听
   useEffect(() => {
-    const unlistenRef = { current: null as (() => void) | null };
-    const cancelledRef = { current: false };
-    
+    if (duckDbListenedRef.current) return;
+    duckDbListenedRef.current = true;
+
     tauriService.onDuckDbInitCompleted((status) => {
-      if (cancelledRef.current) return;
+      if (duckDbCancelledRef.current) return;
       if (status.success) {
         useToastStore.getState().addToast(
           `DuckDB 初始化完成，已同步 ${status.view_count} 个表（耗时 ${status.duration_ms}ms）`,
@@ -248,20 +250,20 @@ const AppWrapper: React.FC = () => {
         );
       }
     }).then((unlisten) => {
-      if (cancelledRef.current) {
+      if (duckDbCancelledRef.current) {
         unlisten();
       } else {
-        unlistenRef.current = unlisten;
+        duckDbUnlistenRef.current = unlisten;
       }
     }).catch((e) => {
       console.error('[DuckDB] 注册初始化事件监听失败:', e);
     });
 
     return () => {
-      cancelledRef.current = true;
-      if (unlistenRef.current) {
-        unlistenRef.current();
-        unlistenRef.current = null;
+      duckDbCancelledRef.current = true;
+      if (duckDbUnlistenRef.current) {
+        duckDbUnlistenRef.current();
+        duckDbUnlistenRef.current = null;
       }
     };
   }, []);
@@ -287,7 +289,6 @@ const AppWrapper: React.FC = () => {
   //    - 此后再调用 __TRIGGER_SPLASH_TRANSITION__ 淡出 splash 卡片
   // 5) 失败路径（catch）同样改为事件驱动，不再依赖静态延迟
   // v14（事件驱动过渡 · S2 方案）: 启动完成时执行完整的过渡流程
-  // 使用 ref 替代 state 作为依赖，避免 setFinalRuntimeMs 触发清理函数
   const hasDoneTransitionRef = useRef(false);
   
   useEffect(() => {
@@ -295,7 +296,6 @@ const AppWrapper: React.FC = () => {
       hasDoneTransitionRef.current = true;
       
       const now = performance.now();
-      setFinalRuntimeMs(now);
 
       const transitionMs = Math.max(150, Math.min(300, Math.round(now / 5)));
 
@@ -395,10 +395,8 @@ const AppWrapper: React.FC = () => {
   // P0-2 启动优化：调用合并后的 get_startup_status，1 次 IPC 搞定
   // 代替原先的：getAppState + getDefaultDbPath + listProjects + databaseStatus + loadWorkspace
   useEffect(() => {
-    // 使用 useRef 确保这个 effect 只执行一次
-    const hasRun = { current: false };
-    if (hasRun.current) return;
-    hasRun.current = true;
+    if (startupHasRunRef.current) return;
+    startupHasRunRef.current = true;
     
     (async () => {
       const jsStartMs = performance.now();
@@ -431,6 +429,15 @@ const AppWrapper: React.FC = () => {
             startupTimestampMs: raw.startupTimestampMs,
           };
           setStartupData(data);
+
+          const totalMs = Math.round(performance.now() - jsStartMs);
+          const rustMs = data.timing?.rustAppInitMs ?? 0;
+          const ipcMs = Math.max(1, Math.round(ipcEndMs - jsStartMs));
+          useToastStore.getState().addToast(
+            `启动完成 ${totalMs}ms · Rust ${rustMs}ms / IPC ${ipcMs}ms`,
+            'info',
+            3000
+          );
 
           if (data.hasLaunched) {
             tauriService.updateAppState(
@@ -496,12 +503,9 @@ const AppWrapper: React.FC = () => {
     return null;
   }
 
-  // —— 正常页面渲染（启动完成后，计时冻结为 finalRuntimeMs，不再增长）——
-  const displayMs = finalRuntimeMs ?? performance.now();
-  const displayRustMs = startupData?.timing?.rustAppInitMs ?? 0;
-  const displayIpcMs = Math.max(1, Math.round(displayMs - jsStartMs));
-
   return (
+    // P1-14：最外层 OuterErrorBoundary 兜底，捕获任何逃逸 SettingsWrapper 内层 ErrorBoundary 的错误
+    <OuterErrorBoundary>
     <ThemeProvider>
       {/* ⭐ v11：主应用背景色必须显式设置（html/body 已透明化）
          加一层 div 设 background-color 填充整个 1200×800 窗口 */}
@@ -523,27 +527,9 @@ const AppWrapper: React.FC = () => {
           </StartupContext.Provider>
         </AppContext.Provider>
       </div>
-      {startupData?.timing && (
-        <div style={{
-          position: 'fixed',
-          bottom: '6px',
-          right: '12px',
-          fontSize: '11px',
-          color: '#888',
-          background: 'rgba(255,255,255,0.85)',
-          padding: '4px 8px',
-          borderRadius: '4px',
-          pointerEvents: 'none',
-          zIndex: 10000,
-        }}>
-          <span style={{ fontWeight: 600, color: displayMs > 1000 ? '#c0392b' : '#27ae60' }}>
-            启动 {Math.round(displayMs)} ms
-          </span>
-          {' · '}
-          Rust {displayRustMs}ms / IPC {displayIpcMs}ms
-        </div>
-      )}
+      
     </ThemeProvider>
+    </OuterErrorBoundary>
   );
 };
 
@@ -563,6 +549,21 @@ const SettingsWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) 
       </AdvancedSettingsSync>
     </SettingsProvider>
   );
+};
+
+/**
+ * OuterErrorBoundary（P1-14）：
+ *
+ * 最外层兜底 ErrorBoundary，捕获任何逃逸 SettingsWrapper 内层 ErrorBoundary 的错误
+ * （如 ThemeProvider / AppContext.Provider / StartupContext.Provider 渲染时抛错）。
+ *
+ * 设计动机：
+ * - 原本 ErrorBoundary 嵌在 SettingsWrapper 内部，无法捕获 SettingsProvider
+ *   之外所有 Context Provider 的渲染错误
+ * - 加一层外层兜底确保用户永远看到友好的错误界面，而不是白屏
+ */
+const OuterErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  return <ErrorBoundary>{children}</ErrorBoundary>;
 };
 
 export default AppWrapper;

@@ -11,7 +11,7 @@
  *
  * 安全说明：
  *   - 字符串值通过转义单引号防止 SQL 注入（' → ''）
- *   - 仅支持 SELECT 语句的 WHERE 注入，不处理 INSERT/UPDATE/DELETE
+ *   - 仅支持 SELECT 语句的 WHERE 注入，不处理 INSERT/UPDATE/DELETE // safe_sql: 注释中引用 SQL 关键字
  *   - 若 SQL 已有 WHERE 子句，则追加 AND 条件；否则新增 WHERE
  */
 

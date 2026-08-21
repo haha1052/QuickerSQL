@@ -1,3 +1,4 @@
 export { useQueryExecution, editorSelectionGetter } from './useQueryExecution';
-export { useQueryCopy } from './useQueryCopy';
-export { useQueryExport } from './useQueryExport';
+export { useGridCopy } from './useGridCopy';
+export { useGridSelection } from './useGridSelection';
+export { useGridColumns } from './useGridColumns';

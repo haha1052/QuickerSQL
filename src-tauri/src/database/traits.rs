@@ -61,21 +61,39 @@ pub struct QueryResult {
 
 pub trait DatabaseConnection: Send + Sync + 'static {
     fn get_database_type(&self) -> &'static str;
-    
+
     fn execute(&self, sql: &str, params: &[&dyn ToSql]) -> Result<u64>;
-    
+
     fn query(&self, sql: &str, params: &[&dyn ToSql]) -> Result<QueryResult>;
-    
+
     fn begin_transaction(&self) -> Result<()>;
-    
+
     fn commit_transaction(&self) -> Result<()>;
-    
+
     fn rollback_transaction(&self) -> Result<()>;
-    
+
+    /// 以 RAII 守卫方式开启事务（P1-7）。
+    ///
+    /// 守卫在 drop 时若未调用 `commit()` 或 `rollback()`，将自动执行 ROLLBACK 作为安全兜底，
+    /// 避免事务泄漏导致连接处于未提交状态。
+    ///
+    /// 此方法有默认实现（调用 `begin_transaction()` + 构造守卫），各实现无需单独覆写。
+    /// `where Self: Sized` 是将 `&Self` 转换为 `&dyn DatabaseConnection` 的必需约束。
+    fn begin_transaction_guarded(&self) -> Result<TransactionGuard<'_>>
+    where
+        Self: Sized,
+    {
+        self.begin_transaction()?;
+        Ok(TransactionGuard {
+            conn: self,
+            committed: false,
+        })
+    }
+
     fn is_open(&self) -> bool;
-    
+
     fn close(&self);
-    
+
     /// 批量插入数据
     /// table: 已通过安全校验的表名（SqlIdentifier）
     /// columns: 列名列表
@@ -84,13 +102,80 @@ pub trait DatabaseConnection: Send + Sync + 'static {
     fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64>;
 }
 
+/// RAII 事务守卫（P1-7）。
+///
+/// 通过 `DatabaseConnection::begin_transaction_guarded()` 创建，创建时执行 BEGIN TRANSACTION。
+/// - 调用 `commit()` 提交事务并消费守卫。
+/// - 调用 `rollback()` 回滚事务并消费守卫。
+/// - 若守卫在未提交的情况下被 drop，将自动执行 ROLLBACK 作为安全兜底。
+///
+/// 守卫持有 `&dyn DatabaseConnection` 引用，其生命周期不超过原始连接借用。
+pub struct TransactionGuard<'a> {
+    conn: &'a dyn DatabaseConnection,
+    committed: bool,
+}
+
+impl<'a> TransactionGuard<'a> {
+    /// 提交事务并消费守卫。调用后 Drop 不会再次执行 ROLLBACK。
+    pub fn commit(mut self) -> Result<()> {
+        self.conn.commit_transaction()?;
+        self.committed = true;
+        Ok(())
+    }
+
+    /// 回滚事务并消费守卫。调用后 Drop 不会再次执行 ROLLBACK。
+    pub fn rollback(mut self) -> Result<()> {
+        let result = self.conn.rollback_transaction();
+        self.committed = true;
+        result
+    }
+}
+
+impl<'a> Drop for TransactionGuard<'a> {
+    fn drop(&mut self) {
+        if !self.committed {
+            log::warn!("[TransactionGuard] 事务未提交，自动回滚");
+            if let Err(e) = self.conn.rollback_transaction() {
+                log::error!("[TransactionGuard] 自动回滚失败: {}", e);
+            }
+        }
+    }
+}
+
+/// 带类型的 SQL 参数值（P1-1：保留原始类型，避免全转 String 导致类型丢失）。
+///
+/// DuckDB 驱动在绑定参数时会根据此枚举的变体选择对应的 `duckdb::ToSql` 实现，
+/// 从而保留 i64/f64/bool 等原始类型信息，避免此前统一 `to_string()` 后字符串
+/// 被当作 TEXT 绑定、在 `WHERE id = ?` 等场景下因类型不匹配而失效的问题。
+pub enum ToSqlValue {
+    /// 整型（i32/i64 统一提升为 i64）
+    Int(i64),
+    /// 浮点型
+    Float(f64),
+    /// 布尔型
+    Bool(bool),
+    /// 字符串型
+    Text(String),
+    /// SQL NULL
+    Null,
+}
+
 pub trait ToSql {
     fn to_sql(&self) -> String;
+
+    /// 返回带类型的 SQL 参数值，默认实现为 `Text`（向后兼容）。
+    /// 各具体类型应覆写本方法以保留原始类型信息（P1-1）。
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Text(self.to_sql())
+    }
 }
 
 impl ToSql for str {
     fn to_sql(&self) -> String {
         self.to_string()
+    }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Text(self.to_string())
     }
 }
 
@@ -98,11 +183,17 @@ impl ToSql for String {
     fn to_sql(&self) -> String {
         self.clone()
     }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Text(self.clone())
+    }
 }
 
 impl ToSql for i32 {
     fn to_sql(&self) -> String {
         self.to_string()
+    }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Int(*self as i64)
     }
 }
 
@@ -110,17 +201,25 @@ impl ToSql for i64 {
     fn to_sql(&self) -> String {
         self.to_string()
     }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Int(*self)
+    }
 }
 
 impl ToSql for u64 {
     fn to_sql(&self) -> String {
         self.to_string()
     }
+    // u64 不在 P1-1 覆写清单内：u64 可能超出 i64 正数范围，
+    // 直接转 i64 会溢出截断，故沿用默认 Text 实现保持安全。
 }
 
 impl ToSql for f64 {
     fn to_sql(&self) -> String {
         self.to_string()
+    }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Float(*self)
     }
 }
 
@@ -128,11 +227,21 @@ impl ToSql for bool {
     fn to_sql(&self) -> String {
         if *self { "1".to_string() } else { "0".to_string() }
     }
+    fn to_sql_value(&self) -> ToSqlValue {
+        ToSqlValue::Bool(*self)
+    }
 }
 
 impl<T: ToSql + ?Sized> ToSql for &T {
     fn to_sql(&self) -> String {
         (*self).to_sql()
+    }
+    /// 委托给内部具体类型的 `to_sql_value`，确保 `&i64 as &dyn ToSql`
+    /// 等引用形式也能走类型保留路径（P1-1）。
+    /// 使用 UFCS（`T::to_sql_value`）显式指定 `<T as ToSql>` 实现，
+    /// 避免方法解析回退到 `<&T as ToSql>` 自身导致无限递归。
+    fn to_sql_value(&self) -> ToSqlValue {
+        T::to_sql_value(*self)
     }
 }
 
@@ -189,7 +298,12 @@ impl DatabaseManager {
             .ok_or_else(|| DatabaseError::ConnectionFailed(format!("未找到驱动: {}", driver_name)))?;
 
         let connection = driver.connect(path)?;
-        *self.lock_active_connection()? = Some(connection);
+        // P1-3: 替换前显式关闭旧连接，确保文件句柄及时释放
+        let mut guard = self.lock_active_connection()?;
+        if let Some(old_conn) = guard.take() {
+            old_conn.close();
+        }
+        *guard = Some(connection);
         self.record_connection_meta(driver_name, path);
         Ok(())
     }
@@ -200,7 +314,12 @@ impl DatabaseManager {
             .ok_or_else(|| DatabaseError::ConnectionFailed(format!("未找到驱动: {}", driver_name)))?;
 
         let connection = driver.create_database(path)?;
-        *self.lock_active_connection()? = Some(connection);
+        // P1-3: 替换前显式关闭旧连接，确保文件句柄及时释放
+        let mut guard = self.lock_active_connection()?;
+        if let Some(old_conn) = guard.take() {
+            old_conn.close();
+        }
+        *guard = Some(connection);
         self.record_connection_meta(driver_name, path);
         Ok(())
     }
@@ -243,9 +362,12 @@ impl DatabaseManager {
 
     /// 获取主连接（带超时）——使用 try_lock + sleep 实现超时逻辑
     /// 默认超时 5 秒，超时返回 ConnectionTimeout 错误
+    /// P2-5: 休眠间隔改为指数退避（50ms → 100ms → 200ms → 400ms → 800ms → 1000ms，封顶 1000ms），
+    /// 减少高频争抢时的 CPU 开销，同时保证短任务快速重试。
     pub fn get_connection_with_timeout(&self, timeout: Duration) -> Result<MutexGuardConnection<'_>> {
         let start = Instant::now();
-        
+        let mut backoff = 50u64;
+
         loop {
             match self.active_connection.try_lock() {
                 Ok(guard) => {
@@ -256,8 +378,9 @@ impl DatabaseManager {
                     if start.elapsed() >= timeout {
                         return Err(DatabaseError::ConnectionTimeout);
                     }
-                    // 短暂休眠后重试，避免 CPU 空转
-                    thread::sleep(Duration::from_millis(50));
+                    // P2-5: 指数退避，封顶 1000ms
+                    thread::sleep(Duration::from_millis(backoff));
+                    backoff = (backoff * 2).min(1000);
                 }
                 Err(std::sync::TryLockError::Poisoned(poisoned)) => {
                     log::warn!("DB Mutex 被 poison（上一命令可能 panic），自动恢复到 poison 前状态");
@@ -341,6 +464,19 @@ impl<'a> MutexGuardConnection<'a> {
     pub fn rollback_transaction(&self) -> Result<()> {
         let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
         conn.rollback_transaction()
+    }
+
+    /// 以 RAII 守卫方式开启事务（P1-7）。
+    /// 守卫在 drop 时若未提交，会自动回滚，避免事务泄漏。
+    /// 注意：此处直接构造 TransactionGuard 而非调用 trait 的 begin_transaction_guarded，
+    /// 因为 trait 方法带 `where Self: Sized` 约束，无法在 `&dyn DatabaseConnection` 上调用。
+    pub fn begin_transaction_guarded(&self) -> Result<TransactionGuard<'_>> {
+        let conn = self.guard.as_ref().ok_or(DatabaseError::ConnectionNotInitialized)?;
+        conn.begin_transaction()?;
+        Ok(TransactionGuard {
+            conn: &**conn,  // 显式解引用 Box<dyn DatabaseConnection> → &dyn DatabaseConnection
+            committed: false,
+        })
     }
 
     pub fn batch_insert(&self, table: &SqlIdentifier, columns: &[&str], rows: &[Vec<String>], batch_size: usize) -> Result<u64> {

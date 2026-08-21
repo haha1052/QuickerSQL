@@ -365,41 +365,62 @@ impl TauriAppState {
             let _ = conn.query("LOAD sqlite;", &[]);
         }
 
-        // 1. ATTACH SQLite 数据库
-        // 路径中的单引号需要转义（SQL 标准：' → ''），反斜杠不需要转义
-        let sqlite_path_str = sqlite_path.to_string_lossy().replace("'", "''");
-        let attach_sql = format!("ATTACH '{}' AS sqlite_db (TYPE SQLITE);", sqlite_path_str);
-
-        conn.execute(&attach_sql, &[])
+        // 1. ATTACH SQLite 数据库（P2-2: 使用参数化查询，避免 format! 拼接路径）
+        // 之前用 format!("ATTACH '{}' AS ...", path.replace("'", "''")) 拼接路径，
+        // 存在转义遗漏风险。改为 ATTACH ? 绑定参数，由 DuckDB 安全处理。
+        let sqlite_path_str = sqlite_path.to_string_lossy().to_string();
+        conn.execute(
+            "ATTACH ? AS sqlite_db (TYPE SQLITE);",
+            &[&sqlite_path_str as &dyn crate::database::ToSql],
+        )
             .map_err(|e| format!("ATTACH SQLite 失败: {}", e))?;
 
-        // 3. 为每个表创建 VIEW（表名从 SQLite 获取，不依赖 DuckDB 的元数据系统）
-        let mut success_count = 0;
+        // 3. 为每个表创建 VIEW（P2-3: 包裹在事务内，任一失败则回滚全部）
+        // 之前逐个创建且失败仅 warn，可能导致部分 VIEW 缺失而后续查询报错。
+        // 现改为事务式创建：全部成功才 COMMIT，否则 ROLLBACK 并返回错误。
+        use crate::database::SqlIdentifier;
+        conn.begin_transaction()
+            .map_err(|e| format!("[DuckDB] 开启 VIEW 创建事务失败: {}", e))?;
+
+        let mut created_count = 0u32;
         for table_name in table_names {
-            use crate::database::SqlIdentifier;
-            
             // 验证表名安全
             if !SqlIdentifier::is_safe_identifier(table_name) {
                 log::warn!("[DuckDB] 跳过不安全的表名: {}", table_name);
                 continue;
             }
-            
-            // 创建 VIEW 的 SQL
+
+            // 创建 VIEW 的 SQL（表名经 SqlIdentifier::quote_identifier 安全拼装，属于标识符范畴）
             let quoted_table = SqlIdentifier::quote_identifier(table_name);
             let create_view_sql = format!(
                 "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
                 quoted_table,
                 quoted_table
             );
-            
-            // 执行创建 VIEW
+
+            // 执行创建 VIEW — 失败则回滚事务并返回错误
             if let Err(e) = conn.execute(&create_view_sql, &[]) {
-                log::warn!("[DuckDB] 为表 '{}' 创建 VIEW 失败: {}", table_name, e);
-            } else {
-                log::debug!("[DuckDB] 为表 '{}' 成功创建 VIEW", table_name);
-                success_count += 1;
+                let rollback_msg = match conn.rollback_transaction() {
+                    Ok(_) => "已回滚".to_string(),
+                    Err(re) => format!("回滚也失败: {}", re),
+                };
+                return Err(format!(
+                    "[DuckDB] 为表 '{}' 创建 VIEW 失败（{}）: {}",
+                    table_name, rollback_msg, e
+                ));
             }
+            log::debug!("[DuckDB] 为表 '{}' 成功创建 VIEW", table_name);
+            created_count += 1;
         }
+
+        // 所有 VIEW 创建成功，提交事务
+        conn.commit_transaction()
+            .map_err(|e| {
+                let _ = conn.rollback_transaction();
+                format!("[DuckDB] 提交 VIEW 创建事务失败: {}", e)
+            })?;
+
+        let success_count = created_count;
 
         // 4. 设置其他配置
         conn.execute("SET preserve_insertion_order = false;", &[])
@@ -616,6 +637,8 @@ pub fn run() {
             // 启动辅助命令
             commands::startup::window_resize_to_main,
             commands::startup::get_startup_diagnostics,
+            // 查询缓存单 key 失效（P3-7 补充：精确失效某条 SQL 缓存）
+            commands::sql::invalidate_query_cache,
         ])
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -715,8 +738,8 @@ pub fn run() {
 
             Ok(())
         })
-        // 安全理由：Tauri 应用运行时若失败则程序无法继续执行，此处 panic 是合理的
-        // 这是应用主入口点，运行失败属于致命错误，应当立即终止并报错
+        // SAFETY: Tauri 应用运行时若失败则程序无法继续执行，此处 panic 是合理的。
+        // 这是应用主入口点，运行失败属于致命错误，应当立即终止并报错。
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

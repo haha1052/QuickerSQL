@@ -5,6 +5,40 @@ use crate::models::dashboard::*;
 use crate::services::DashboardService;
 use tauri::State;
 
+/// 仪表盘名称最大长度（与数据库列约束保持一致）
+const MAX_DASHBOARD_NAME_LEN: usize = 255;
+
+/// 仪表盘/图表名称参数校验（commands 层边界检查）
+///
+/// 校验规则：
+/// - 拒绝空名称（含纯空白）
+/// - 拒绝超长名称（超过 255 字符）
+/// - 允许特殊字符（引号、分号等），因 Service 层使用参数化查询保证安全
+///
+/// 返回 `Ok(())` 表示通过校验；`Err(String)` 表示参数非法。
+fn validate_dashboard_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    if name.chars().count() > MAX_DASHBOARD_NAME_LEN {
+        return Err(format!("名称过长（最多 {} 字符）", MAX_DASHBOARD_NAME_LEN));
+    }
+    Ok(())
+}
+
+/// 仪表盘/图表/项目 ID 参数校验（commands 层边界检查）
+///
+/// 校验规则：
+/// - 拒绝空 ID（含纯空白）
+///
+/// 返回 `Ok(())` 表示通过校验；`Err(String)` 表示参数非法。
+fn validate_dashboard_id(id: &str) -> Result<(), String> {
+    if id.trim().is_empty() {
+        return Err("ID 不能为空".to_string());
+    }
+    Ok(())
+}
+
 // ============ SavedChart Commands ============
 
 /// 获取保存的图表列表
@@ -50,6 +84,8 @@ pub async fn create_saved_chart(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
+
+    validate_dashboard_name(&name)?;
 
     log::info!(
         "[create_saved_chart] name={}, query_id={}, sql_len={}, chart_type={}, x_axis={}, y_axis={:?}, visibility={:?}, authorized_dashboards={:?}",
@@ -198,6 +234,8 @@ pub async fn get_dashboard(
         return Err("未连接到数据库".to_string());
     }
 
+    validate_dashboard_id(&id)?;
+
     let conn = state.db_manager.get_connection().map_err(|e| {
         log::error!("[dashboard] 获取数据库连接失败: error={}", e);
         "数据库连接异常，请重新打开数据库".to_string()
@@ -216,6 +254,8 @@ pub async fn create_dashboard(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
+
+    validate_dashboard_name(&name)?;
 
     let conn = state.db_manager.get_connection().map_err(|e| {
         log::error!("[dashboard] 获取数据库连接失败: error={}", e);
@@ -249,6 +289,11 @@ pub async fn update_dashboard(
 ) -> Result<Dashboard, String> {
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
+    }
+
+    validate_dashboard_id(&id)?;
+    if let Some(ref n) = name {
+        validate_dashboard_name(n)?;
     }
 
     let conn = state.db_manager.get_connection().map_err(|e| {
@@ -288,6 +333,8 @@ pub async fn delete_dashboard(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
+
+    validate_dashboard_id(&id)?;
 
     let conn = state.db_manager.get_connection().map_err(|e| {
         log::error!("[dashboard] 获取数据库连接失败: error={}", e);
@@ -378,6 +425,8 @@ pub async fn save_dashboard_layout(
         return Err("未连接到数据库".to_string());
     }
 
+    validate_dashboard_id(&dashboard_id)?;
+
     let conn = state.db_manager.get_connection().map_err(|e| {
         log::error!("[dashboard] 获取数据库连接失败: error={}", e);
         "数据库连接异常，请重新打开数据库".to_string()
@@ -390,4 +439,128 @@ pub async fn save_dashboard_layout(
         })?;
 
     DashboardService::save_dashboard_layout(&conn, &dashboard_id, layout_updates_vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ validate_dashboard_name 测试 ============
+
+    /// 空名称应被拒绝
+    #[test]
+    fn test_validate_dashboard_name_empty() {
+        let result = validate_dashboard_name("");
+        assert!(result.is_err(), "空名称应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("不能为空"), "错误信息应提示空值，实际: {}", msg);
+    }
+
+    /// 纯空白名称应被拒绝（与空字符串等价）
+    #[test]
+    fn test_validate_dashboard_name_whitespace_only() {
+        let result = validate_dashboard_name("   \n\t  ");
+        assert!(result.is_err(), "纯空白名称应返回错误");
+        assert!(
+            result.unwrap_err().contains("不能为空"),
+            "纯空白应提示空值"
+        );
+    }
+
+    /// 正常名称应通过校验
+    #[test]
+    fn test_validate_dashboard_name_valid() {
+        let result = validate_dashboard_name("销售仪表盘");
+        assert!(result.is_ok(), "正常中文名称应通过校验");
+    }
+
+    /// 含引号的名称应通过校验（Service 层使用参数化查询保证安全）
+    #[test]
+    fn test_validate_dashboard_name_with_quotes() {
+        let result = validate_dashboard_name("仪表盘'销售'");
+        assert!(result.is_ok(), "含单引号的名称应通过校验（参数化查询保证安全）");
+    }
+
+    /// 含分号的名称应通过校验
+    #[test]
+    fn test_validate_dashboard_name_with_semicolon() {
+        let result = validate_dashboard_name("销售;利润");
+        assert!(result.is_ok(), "含分号的名称应通过校验");
+    }
+
+    /// SQL 注入尝试的名称应通过校验（参数化查询保证安全，不在 command 层拦截）
+    #[test]
+    fn test_validate_dashboard_name_sql_injection_attempt() {
+        let result = validate_dashboard_name("test'; DROP TABLE __dashboards; --");
+        assert!(result.is_ok(), "SQL 注入尝试名称应通过校验（参数化查询保证安全）");
+    }
+
+    /// 超长名称应被拒绝（超过 255 字符）
+    #[test]
+    fn test_validate_dashboard_name_too_long() {
+        let long_name = "a".repeat(MAX_DASHBOARD_NAME_LEN + 1);
+        let result = validate_dashboard_name(&long_name);
+        assert!(result.is_err(), "超长名称应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("过长"), "错误信息应提示过长，实际: {}", msg);
+    }
+
+    /// 刚好达到上限的名称应通过校验（边界值：255 字符）
+    #[test]
+    fn test_validate_dashboard_name_boundary_max_length() {
+        let max_name = "a".repeat(MAX_DASHBOARD_NAME_LEN);
+        let result = validate_dashboard_name(&max_name);
+        assert!(result.is_ok(), "刚好达到上限的名称应通过校验");
+    }
+
+    // ============ validate_dashboard_id 测试 ============
+
+    /// 空 ID 应被拒绝
+    #[test]
+    fn test_validate_dashboard_id_empty() {
+        let result = validate_dashboard_id("");
+        assert!(result.is_err(), "空 ID 应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("不能为空"), "错误信息应提示空值，实际: {}", msg);
+    }
+
+    /// 纯空白 ID 应被拒绝
+    #[test]
+    fn test_validate_dashboard_id_whitespace_only() {
+        let result = validate_dashboard_id("   \t  ");
+        assert!(result.is_err(), "纯空白 ID 应返回错误");
+        assert!(
+            result.unwrap_err().contains("不能为空"),
+            "纯空白 ID 应提示空值"
+        );
+    }
+
+    /// 正常 ID 应通过校验
+    #[test]
+    fn test_validate_dashboard_id_valid() {
+        let result = validate_dashboard_id("dash_abc123");
+        assert!(result.is_ok(), "正常 ID 应通过校验");
+    }
+
+    /// 含特殊字符的 ID 应通过校验（参数化查询保证安全）
+    #[test]
+    fn test_validate_dashboard_id_with_special_chars() {
+        let result = validate_dashboard_id("id'with;special--chars");
+        assert!(result.is_ok(), "含特殊字符的 ID 应通过校验（参数化查询保证安全）");
+    }
+
+    /// 仅含空格的 ID 应被拒绝（避免空格被当作有效 ID）
+    #[test]
+    fn test_validate_dashboard_id_single_space() {
+        let result = validate_dashboard_id(" ");
+        assert!(result.is_err(), "仅含空格的 ID 应返回错误");
+    }
+
+    // ============ 常量校验 ============
+
+    /// MAX_DASHBOARD_NAME_LEN 应为 255（与数据库列约束保持一致）
+    #[test]
+    fn test_max_dashboard_name_len_is_255() {
+        assert_eq!(MAX_DASHBOARD_NAME_LEN, 255, "仪表盘名称最大长度应为 255");
+    }
 }

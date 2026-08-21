@@ -1,17 +1,17 @@
 import { create } from 'zustand';
-import { useToastStore } from './toastStore';
+import { useToastStore, type ToastMessage } from './toastStore';
 import type { TabType, DatabaseStatus } from '../types';
 
 // AppStoreState: 应用全局状态（不同于后端 Rust AppState）
 interface AppStoreState {
   activeTab: TabType;
-  message: string;
+  message: ToastMessage;
   messageType: 'success' | 'error' | 'info' | 'warning';
   isLoading: boolean;
   allDatabaseStatus: DatabaseStatus[];
   
   setActiveTab: (tab: TabType) => void;
-  setMessage: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
+  setMessage: (message: ToastMessage, type?: 'success' | 'error' | 'info' | 'warning') => void;
   clearMessage: () => void;
   setLoading: (loading: boolean) => void;
   setAllDatabaseStatus: (status: DatabaseStatus[]) => void;

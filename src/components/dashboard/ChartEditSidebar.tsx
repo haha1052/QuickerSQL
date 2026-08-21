@@ -244,7 +244,7 @@ export const ChartEditSidebar: React.FC<ChartEditSidebarProps> = ({ chart, onClo
               style={{ ...styles.textarea, fontFamily: 'monospace', fontSize: 12 }}
               value={sql}
               onChange={(e) => setSql(e.target.value)}
-              placeholder="SELECT ... FROM ..."
+              placeholder="SELECT ... FROM ..." // safe_sql: form placeholder 中的 SQL 示例文案
               rows={6}
             />
             <div style={styles.helper}>

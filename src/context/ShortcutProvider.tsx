@@ -67,7 +67,7 @@ function isEditableElement(target: EventTarget | null): boolean {
     return false;
   }
   const tagName = target.tagName;
-  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') {
+  if (tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT') { // safe_sql: HTML <select> 元素名（非 SQL 关键字）
     return true;
   }
   if (target.isContentEditable) {
@@ -361,7 +361,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // 构建 EXPLAIN QUERY PLAN 查询
         const explainSql = sql.startsWith('EXPLAIN')
           ? sql
-          : sql.startsWith('SELECT') || sql.startsWith('WITH')
+          : sql.startsWith('SELECT') || sql.startsWith('WITH') // safe_sql: SQL 关键字检测逻辑（用于判断 SQL 类型以决定是否加 EXPLAIN 前缀）
             ? `EXPLAIN QUERY PLAN ${sql}`
             : sql;
 

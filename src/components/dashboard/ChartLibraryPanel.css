@@ -1,0 +1,372 @@
+/* ChartLibraryPanel styles - migrated from inline styles */
+
+/* Overlay */
+.clp-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 800;
+}
+
+/* Panel */
+.clp-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 400px;
+  background: var(--bg-primary);
+  border-right: 1px solid var(--border-primary);
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.1);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header */
+.clp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.clp-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.clp-close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 0 8px;
+}
+
+/* Search Row */
+.clp-search-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-primary);
+  align-items: center;
+}
+
+.clp-search-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.clp-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+/* Stat Bar */
+.clp-stat-bar {
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+}
+
+.clp-stat-num {
+  color: var(--primary);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.clp-stat-extra {
+  margin-left: 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* List Container */
+.clp-list-container {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.clp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Chart Item */
+.clp-chart-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  cursor: pointer;
+  transition: all 0.15s;
+  background: var(--bg-primary);
+}
+
+.clp-chart-item:hover {
+  border-color: var(--primary);
+}
+
+.clp-chart-item-selected {
+  border-color: var(--primary);
+  background: var(--primary-bg);
+}
+
+.clp-chart-item-unavailable {
+  opacity: 0.55;
+}
+
+.clp-chart-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.clp-preview-wrapper {
+  width: 100%;
+  padding-top: 4px;
+}
+
+.clp-chart-icon {
+  font-size: 28px;
+  width: 40px;
+  text-align: center;
+}
+
+.clp-chart-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.clp-chart-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clp-chart-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+.clp-auth-extra {
+  margin-left: 6px;
+  color: var(--text-tertiary);
+}
+
+.clp-tag-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.clp-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--primary-bg);
+  color: var(--primary);
+  border-radius: 4px;
+}
+
+/* Chart Item Actions */
+.clp-chart-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.clp-add-btn {
+  background: var(--primary);
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: white;
+  font-weight: 500;
+}
+
+.clp-add-btn:hover {
+  opacity: 0.9;
+}
+
+.clp-schedule-btn {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.clp-schedule-btn:hover {
+  background: var(--bg-secondary);
+}
+
+.clp-delete-btn {
+  background: none;
+  border: 1px solid var(--border-primary);
+  border-radius: 6px;
+  font-size: 14px;
+  padding: 6px 10px;
+  cursor: pointer;
+  opacity: 0.7;
+  color: var(--text-secondary);
+}
+
+.clp-delete-btn:hover {
+  opacity: 1;
+}
+
+/* Empty State */
+.clp-empty {
+  text-align: center;
+  padding: 48px;
+  color: var(--text-tertiary);
+}
+
+.clp-empty-icon {
+  font-size: 40px;
+  margin-bottom: 12px;
+}
+
+.clp-empty-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.clp-empty-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+}
+
+/* Footer */
+.clp-footer {
+  padding: 12px;
+  border-top: 1px solid var(--border-primary);
+  text-align: center;
+}
+
+/* Confirm Modal */
+.clp-confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.clp-confirm-modal {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.clp-confirm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.clp-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.clp-confirm-close-btn {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.clp-confirm-body {
+  padding: 20px;
+}
+
+.clp-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.clp-confirm-cancel-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.clp-confirm-confirm-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--error);
+  background: var(--error);
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.clp-confirm-delete-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--error);
+  background: var(--error);
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}

@@ -672,7 +672,7 @@ pub fn export_selected_projects(
         ),
         status: "success".to_string(),
         duration_ms: None,
-        details: Some(format!("project_ids={:?}", selected_project_ids)),
+        details: Some(format!("project_ids={:?}", selected_project_ids)), // safe_sql: debug log, not SQL
     };
     let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
 

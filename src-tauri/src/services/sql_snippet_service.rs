@@ -8,6 +8,11 @@ use chrono::Utc;
 pub struct SqlSnippetService;
 
 impl SqlSnippetService {
+    /// 确保 SQL 片段系统表 `__sql_snippets` 存在。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 行为：幂等创建表 + name/category/is_favorite 三个索引
+    /// - 返回：成功返回 `Ok(())`；任一 DDL 失败时返回带具体名称的错误信息
     pub fn ensure_table_exists(conn: &MutexGuardConnection<'_>) -> Result<(), String> {
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS __sql_snippets (
@@ -38,6 +43,11 @@ impl SqlSnippetService {
         Ok(())
     }
 
+    /// 列出 SQL 片段（可选按 category 过滤）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `category`：可选分类过滤；None 表示返回全部
+    /// - 返回：`Vec<SqlSnippet>`，按 `updated_at DESC` 排序；空表返回空 Vec
     pub fn list_snippets(conn: &MutexGuardConnection<'_>, category: Option<&str>) -> Result<Vec<SqlSnippet>, String> {
         let result = if let Some(cat) = category {
             let sql = "SELECT id, name, sql, description, category, tags, is_favorite, created_at, updated_at 
@@ -56,8 +66,13 @@ impl SqlSnippetService {
         Ok(snippets)
     }
 
+    /// 按 ID 查询单个 SQL 片段。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：片段 ID
+    /// - 返回：`Ok(Some(snippet))` 存在；`Ok(None)` 不存在；查询失败返回 Err
     pub fn get_snippet(conn: &MutexGuardConnection<'_>, id: &str) -> Result<Option<SqlSnippet>, String> {
-        let sql = "SELECT id, name, sql, description, category, tags, is_favorite, created_at, updated_at 
+        let sql = "SELECT id, name, sql, description, category, tags, is_favorite, created_at, updated_at
                    FROM __sql_snippets WHERE id = ?1";
 
         let result = conn.query(sql, &[&id])
@@ -70,6 +85,13 @@ impl SqlSnippetService {
         }
     }
 
+    /// 创建新的 SQL 片段。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `name`：片段名称（无 UNIQUE 约束，允许重名）
+    /// - 参数 `sql`：SQL 文本（原样存储，支持特殊字符/多语句）
+    /// - 参数 `description`/`category`/`tags`：可选元信息；None 时存空字符串但返回 None
+    /// - 返回：新建的 `SqlSnippet`（is_favorite 默认 false）
     pub fn create_snippet(
         conn: &MutexGuardConnection<'_>,
         name: &str,
@@ -104,6 +126,15 @@ impl SqlSnippetService {
         })
     }
 
+    /// 更新 SQL 片段（全字段替换式更新；is_favorite=None 时保留原值）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：片段 ID
+    /// - 参数 `name`/`sql`：必填，直接覆盖
+    /// - 参数 `description`/`category`/`tags`：可选；未传时按原值保留逻辑处理
+    /// - 参数 `is_favorite`：可选；None 时沿用原值
+    /// - 返回：更新后的 `SqlSnippet`（created_at 不变，updated_at 刷新）
+    /// - 错误：片段不存在、UPDATE 失败时返回 Err
     // TODO(2026-07-17): 参数 8 个，与 commands/sql.rs::update_sql_snippet 一一对应，
     // 重构需同步前端调用契约，留待 v24.0 统一引入 UpdateSnippetParams struct
     #[allow(clippy::too_many_arguments)]
@@ -162,6 +193,11 @@ impl SqlSnippetService {
         })
     }
 
+    /// 按 ID 删除 SQL 片段。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：片段 ID
+    /// - 返回：成功返回 `Ok(())`；SQLite 对不存在的 ID 也返回 Ok，调用方需自行检查影响行数
     pub fn delete_snippet(conn: &MutexGuardConnection<'_>, id: &str) -> Result<(), String> {
         conn.execute(
             "DELETE FROM __sql_snippets WHERE id = ?1",
@@ -170,6 +206,12 @@ impl SqlSnippetService {
         Ok(())
     }
 
+    /// 切换 SQL 片段的收藏状态（true <-> false）。
+    ///
+    /// - 参数 `conn`：数据库连接
+    /// - 参数 `id`：片段 ID
+    /// - 返回：切换后的最新收藏状态（true=已收藏，false=未收藏）
+    /// - 错误：片段不存在时返回带 ID 的错误信息
     pub fn toggle_favorite(conn: &MutexGuardConnection<'_>, id: &str) -> Result<bool, String> {
         let current = Self::get_snippet(conn, id)?
             .ok_or_else(|| format!("SQL 片段不存在：{}", id))?;

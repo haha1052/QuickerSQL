@@ -30,6 +30,21 @@
 - 双引擎：SQLite（事务）+ DuckDB（分析）
 - 构建：Vite 7，类型检查 `tsc --noEmit`，构建 `tsc && vite build`
 
+## i18n 架构（2026-08-09 v25.3 完成 Phase 2）
+
+- **统一入口**：`src/context/LocaleContext.tsx` 提供 `useLocale()` hook，`t(key, params?)` 函数
+- **翻译存储**：`zhCNTranslations` 和 `enUSTranslations` 两个大对象（非 JSON 文件），key 命名用点分命名空间（`task.error.nameRequired`、`chart.saveTitle`、`dep.cronLabel` 等）
+- **参数插值**：`t('key', { name: 'value' })` → 模板中 `{name}` 自动替换
+- **已清理文件**：DashboardPage、TaskEditorModal、SaveChartModal、DependencyEditorModal、App.tsx（共 112 处硬编码→t() 调用，新增 70+ key）
+- **规则**：console.log/info/error 中的中文不需要翻译（开发者日志）；JSX 注释中的中文不翻译；所有用户可见的 UI 文本必须走 t()
+
+## 技术债管理（2026-08-09 v25.3）
+
+- **当前状态**：P0=0, P1=0, P2=2（内联样式迁移/大组件拆分，长期治理）, NEW=1（E2E skip 评估）
+- **文档版本**：架构现状 v25.3，技术债清单 v6.3，综合评分 9.2/10
+- **磁盘空间注意**：E 盘可能在编译/测试时空间不足（ENOSPC），需定期清理 `src-tauri/target/` 目录
+- **cargo check 文件锁**：target/debug/.fingerprint 目录可能被 IDE/rust-analyzer 锁定（os error 5 拒绝访问），需关闭 IDE 后清理
+
 ## 透明窗口启动架构（2026-06-21 修复）
 
 - **`transparent: true` 与 `backgroundColor` 冲突**：Tauri 2 在 Windows 上设置 `backgroundColor` 后可能不走分层窗口路径，导致 WebView2 底层用白色画刷填充。**禁止在 `tauri.conf.json` 的窗口配置中同时设置 `transparent: true` 和 `backgroundColor`**，只保留 `transparent: true`。

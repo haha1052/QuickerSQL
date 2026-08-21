@@ -426,17 +426,7 @@ mod batch_insert_security_tests {
     }
 
     /// DuckDB batch_insert：值含单引号（如 O'Brien）通过 ? 参数化正确写入，
-    /// 不再使用 v.replace('\'', "''") 手工转义。
-    ///
-    /// 注：若旧实现仍在使用 v.replace('\'', "''") 手工转义，O'Brien 会被写成 O''Brien
-    /// 但 INSERT 不会报错（双引号是合法 SQL 转义）。这里通过 `batch_insert` 返回 Ok
-    /// 且 count 正确来验证：参数化查询使值原样绑定，不会触发 SQL 语法错误。
-    /// 数据完整性（值未被错误转义为 O''Brien）已在 SQLite 同等测试中验证
-    /// （见 test_sqlite_batch_insert_value_with_single_quote）。
-    ///
-    /// 这里不调用 conn.query() 读回数据，因为 DuckDB 的 query 方法对
-    /// 某些 SQL 类型（如 SELECT COUNT(*)）在 stmt.column_names() 处会 panic
-    /// （duckdb crate v1.10502.0 的预先存在问题，与本任务无关）。
+    /// 不再使用 v.replace('\'', "''") 手工转义
     #[test]
     fn test_duckdb_batch_insert_value_with_single_quote() {
         let driver = DuckDbDriver::new();
@@ -452,15 +442,19 @@ mod batch_insert_security_tests {
             vec!["2".to_string(), "Mary's cafe".to_string()],
         ];
 
-        // 关键验证点：含单引号的值通过 ? 参数化绑定，不会触发 SQL 语法错误
-        // 若仍使用旧的 v.replace('\'', "''") 手工转义 + format! 拼接，
-        // 在某些边界场景下可能 SQL 注入；参数化查询彻底消除该风险
         let count = conn.batch_insert(&table_ident, &columns, &rows, 100)
             .expect("DuckDB batch_insert 含单引号的值应通过 ? 参数化正确写入");
         assert_eq!(count, 2, "应插入 2 行");
+
+        // 校验值原样写入（不再有手工转义导致的 '' 残留）
+        let result = conn.query("SELECT name FROM persons ORDER BY id", &[])
+            .expect("查询应成功");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], "O'Brien", "值应原样保留单引号，不应被手工转义");
+        assert_eq!(result.rows[1][0], "Mary's cafe", "值应原样保留单引号");
     }
 
-    /// DuckDB batch_insert：合法表名能正常工作（含分批逻辑）
+    /// DuckDB batch_insert：合法表名能正常工作
     #[test]
     fn test_duckdb_batch_insert_with_valid_table_name() {
         let driver = DuckDbDriver::new();
@@ -477,9 +471,13 @@ mod batch_insert_security_tests {
             vec!["3".to_string(), "carol".to_string()],
         ];
 
-        // batch_size=2，3 行应分 2 批（2+1）插入
         let count = conn.batch_insert(&table_ident, &columns, &rows, 2)
             .expect("batch_insert 应成功");
         assert_eq!(count, 3, "应插入 3 行（分 2 批：2+1）");
+
+        let result = conn.query("SELECT COUNT(*) FROM my_table", &[])
+            .expect("查询应成功");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], "3");
     }
 }

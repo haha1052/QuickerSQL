@@ -29,6 +29,27 @@ commands/  ─────┐
 | **模型层** | `src-tauri/src/models/*.rs` | 数据结构定义 + `#[serde(rename = "camelCase")]` 对齐前端字段 | ❌ 禁止业务逻辑；❌ 禁止直接连接数据库 |
 | **工具层** | `src-tauri/src/utils/` | 通用工具（schedule 解析等） | ❌ 禁止直接操作数据库 |
 
+**情形 C 补充说明：经 `SqlIdentifier` 封装的 `format!` 调用（允许）**
+
+上表数据层"❌ 禁止暴露 `conn.execute(format!(...))` 形式的 API"针对的是**直接将 `format!` 嵌入 `execute`/`query` 且未经 `SqlIdentifier` 校验**的写法。对于动态表名/列名场景，经 `SqlIdentifier` 封装的 `format!` 调用属于合法用法（详见 [security.md §1.2 情形 C](file:///e:/LA_DUCK/la-duck/.trae/rules/security.md)）。
+
+✅ 正例：
+```rust
+let ident = SqlIdentifier::new(&table_name)?;
+let sql = format!("SELECT * FROM {} WHERE id = ?", ident.quoted());
+conn.query(&sql, &[&id])
+```
+
+❌ 反例：
+```rust
+// 禁止：表名直接拼入，未经 SqlIdentifier 校验
+let sql = format!("SELECT * FROM {} WHERE id = ?", table_name);
+// 禁止：值用 replace 手工转义
+let sql = format!("INSERT INTO t VALUES ('{}')", v.replace("'", "''"));
+```
+
+检测命令已修订（见 [security.md §1.1](file:///e:/LA_DUCK/la-duck/.trae/rules/security.md)），能自动排除 `ident.quoted()` 用法。
+
 ### 1.2 前端三层架构（React · src/）
 
 ```
@@ -92,7 +113,7 @@ types/（类型定义，禁止逻辑）
 | `src-tauri/src/database/security.rs` | SqlIdentifier 安全封装 | ⚠️ 须用户确认 |
 | `src-tauri/src/database/traits.rs` | 数据库连接抽象 | ⚠️ 须用户确认 |
 | `src-tauri/src/lib.rs` | Tauri 命令注册入口 | ⚠️ 须用户确认 |
-| `src-tauri/capabilities/default.json` | Tauri 权限声明 | ⚠️ 仅涉及新命令/插件时 |
+| `src-tauri/capabilities/default.json` | Tauri 插件权限声明 | ⚠️ 仅涉及新插件权限（fs/dialog/shell 等）时；Tauri 2 自定义命令（`#[tauri::command]`）无需在此声明 |
 | `src-tauri/tauri.conf.json` | 应用配置 | ⚠️ 须用户确认 |
 | `package.json` | 前端依赖 | ⚠️ 须用户确认 |
 | `Cargo.toml` | Rust 依赖 | ⚠️ 须用户确认 |
@@ -145,8 +166,8 @@ types/（类型定义，禁止逻辑）
 
 ## 四、接口与文档前置
 
-- 新增 Tauri 命令（`#[tauri::command]`）必须先在 `AGENTS.md` 或 `docs/API设计方案.md` 登记：命令名、输入/输出类型、权限声明
-- 修改既有命令的签名须同步更新 `src-tauri/capabilities/default.json`
+- 新增 Tauri 命令（`#[tauri::command]`）必须先在 `AGENTS.md` 或 `docs/API设计方案.md` 登记：命令名、输入/输出类型
+- **Tauri 2 行为说明**：自定义命令（`#[tauri::command]`）**无需**在 `capabilities/default.json` 中声明。`capabilities/default.json` 仅用于声明**插件权限**（如 `fs`、`dialog`、`shell`、`notification` 等）。仅当新增/修改插件权限时才需更新 `capabilities/default.json`；新增自定义命令只需在 `lib.rs` 的 `invoke_handler` 中注册即可
 - 前端新增加 invokeCommand 封装须在 `services/tauri.ts` 统一添加
 
 ---

@@ -1,33 +1,24 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useAppContext } from '../AppWrapper';
 import { ChevronLeftIcon } from '../components/common/Icons';
+import { useLocale } from '../context/LocaleContext';
 import { tauriService } from '../services';
 import type { AuditLogItem, AuditLogModule, AuditLogStatus } from '../types';
 import './Settings.css';
 
-const MODULE_OPTIONS: { value: AuditLogModule | 'all'; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'sql', label: 'SQL' },
-  { value: 'import', label: '导入' },
-  { value: 'project', label: '项目' },
-  { value: 'settings', label: '设置' },
-  { value: 'trash', label: '回收站' },
-  { value: 'chart', label: '图表' },
-];
-
-const STATUS_OPTIONS: { value: AuditLogStatus | 'all'; label: string }[] = [
-  { value: 'all', label: '全部' },
-  { value: 'success', label: '成功' },
-  { value: 'failed', label: '失败' },
-];
-
-const MODULE_LABELS: Record<AuditLogModule, string> = {
-  sql: 'SQL',
-  import: '导入',
-  project: '项目',
-  settings: '设置',
-  trash: '回收站',
-  chart: '图表',
+/** 审计日志模块 → i18n 标签映射（用于 CSV 导出与表格渲染）。
+ *  SQL 是技术术语，保留原文不翻译。
+ */
+const getModuleLabel = (t: (key: string) => string, module: AuditLogModule): string => {
+  switch (module) {
+    case 'sql': return 'SQL';
+    case 'import': return t('activityLog.moduleImport');
+    case 'project': return t('activityLog.moduleProject');
+    case 'settings': return t('activityLog.moduleSettings');
+    case 'trash': return t('activityLog.moduleTrash');
+    case 'chart': return t('activityLog.moduleChart');
+    default: return module;
+  }
 };
 
 const formatTimestamp = (ts: string): string => {
@@ -42,6 +33,7 @@ const formatTimestamp = (ts: string): string => {
 
 const ActivityLog: React.FC = () => {
   const { goToWorkspace } = useAppContext();
+  const { t } = useLocale();
 
   const [items, setItems] = useState<AuditLogItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -54,6 +46,22 @@ const ActivityLog: React.FC = () => {
   const [retentionDays, setRetentionDays] = useState<number>(30);
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
+
+  const moduleOptions: { value: AuditLogModule | 'all'; label: string }[] = [
+    { value: 'all', label: t('filter.all') },
+    { value: 'sql', label: 'SQL' },
+    { value: 'import', label: t('activityLog.moduleImport') },
+    { value: 'project', label: t('activityLog.moduleProject') },
+    { value: 'settings', label: t('activityLog.moduleSettings') },
+    { value: 'trash', label: t('activityLog.moduleTrash') },
+    { value: 'chart', label: t('activityLog.moduleChart') },
+  ];
+
+  const statusOptions: { value: AuditLogStatus | 'all'; label: string }[] = [
+    { value: 'all', label: t('filter.all') },
+    { value: 'success', label: t('common.success') },
+    { value: 'failed', label: t('activityLog.statusFailed') },
+  ];
 
   const fetchLogs = async () => {
     setLoading(true);
@@ -94,13 +102,21 @@ const ActivityLog: React.FC = () => {
 
   const handleExportCSV = () => {
     if (items.length === 0) {
-      showToast('没有可导出的记录', 'error');
+      showToast(t('activityLog.noExportRecords'), 'error');
       return;
     }
-    const headers = ['时间', '模块', '操作', '描述', '状态', '耗时(ms)', '详情'];
+    const headers = [
+      t('activityLog.csvHeaderTime'),
+      t('activityLog.csvHeaderModule'),
+      t('activityLog.csvHeaderAction'),
+      t('activityLog.csvHeaderDescription'),
+      t('activityLog.csvHeaderStatus'),
+      t('activityLog.csvHeaderDuration'),
+      t('activityLog.csvHeaderDetails'),
+    ];
     const rows = items.map((it) => [
       it.timestamp,
-      MODULE_LABELS[it.module] || it.module,
+      getModuleLabel(t, it.module),
       it.action,
       it.description,
       it.status,
@@ -120,17 +136,17 @@ const ActivityLog: React.FC = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast('导出成功');
+    showToast(t('activityLog.exportSuccess'));
   };
 
   const handleCleanup = async () => {
     setConfirmCleanup(false);
     const resp = await tauriService.cleanupExpiredAuditLogs(retentionDays);
     if (resp.success) {
-      showToast(`已清理 ${resp.data} 条过期日志`);
+      showToast(t('activityLog.cleanupResult', { count: resp.data ?? 0 }));
       fetchLogs();
     } else {
-      showToast(resp.error || '清理失败', 'error');
+      showToast(resp.error || t('activityLog.cleanupFailed'), 'error');
     }
   };
 
@@ -138,10 +154,10 @@ const ActivityLog: React.FC = () => {
     setConfirmClear(false);
     const resp = await tauriService.clearAllAuditLogs();
     if (resp.success) {
-      showToast('已清空所有日志');
+      showToast(t('activityLog.clearAllSuccess'));
       fetchLogs();
     } else {
-      showToast(resp.error || '清空失败', 'error');
+      showToast(resp.error || t('activityLog.clearAllFailed'), 'error');
     }
   };
 
@@ -153,11 +169,11 @@ const ActivityLog: React.FC = () => {
         <div className="settings-header">
           <button className="back-button" onClick={goToWorkspace} title="Back">
             <ChevronLeftIcon size={16} />
-            <span>← 返回</span>
+            <span>← {t('common.back')}</span>
           </button>
-          <h2>🕓 活动记录</h2>
+          <h2>{t('activityLog.pageTitle')}</h2>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
-            共 {total} 条日志
+            {t('activityLog.totalCount', { count: total })}
           </div>
         </div>
       </div>
@@ -166,7 +182,7 @@ const ActivityLog: React.FC = () => {
         {error && (
           <div className="settings-error">
             <p>{error}</p>
-            <button onClick={() => setError(null)}>关闭</button>
+            <button onClick={() => setError(null)}>{t('activityLog.close')}</button>
           </div>
         )}
 
@@ -174,33 +190,33 @@ const ActivityLog: React.FC = () => {
           <div className={`settings-toast ${toast.type}`}>{toast.msg}</div>
         )}
 
-        <div className="settings-category-title">活动记录</div>
+        <div className="settings-category-title">{t('activityLog.categoryTitle')}</div>
 
         <div className="settings-category-content" style={{ padding: 20 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', marginBottom: 16 }}>
             <label style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-              模块：
+              {t('activityLog.moduleLabel')}
               <select
                 value={moduleFilter}
                 onChange={(e) => setModuleFilter(e.target.value as AuditLogModule | 'all')}
                 className="setting-select"
                 style={{ marginLeft: 6, width: 130 }}
               >
-                {MODULE_OPTIONS.map((opt) => (
+                {moduleOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
             </label>
 
             <label style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-              状态：
+              {t('activityLog.statusLabel')}
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value as AuditLogStatus | 'all')}
                 className="setting-select"
                 style={{ marginLeft: 6, width: 120 }}
               >
-                {STATUS_OPTIONS.map((opt) => (
+                {statusOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
@@ -209,15 +225,15 @@ const ActivityLog: React.FC = () => {
             <div style={{ flex: 1 }} />
 
             <button className="export-button" onClick={fetchLogs} disabled={loading}>
-              🔄 刷新
+              🔄 {t('common.refresh')}
             </button>
             <button className="export-button" onClick={handleExportCSV}>
-              📥 导出CSV
+              📥 {t('activityLog.exportCsv')}
             </button>
 
             {confirmCleanup ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>保留天数：</span>
+                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('activityLog.retentionDays')}</span>
                 <input
                   type="number"
                   min={1}
@@ -227,30 +243,30 @@ const ActivityLog: React.FC = () => {
                   style={{ width: 70 }}
                 />
                 <button className="reset-all-button" onClick={handleCleanup} style={{ padding: '8px 12px' }}>
-                  确认清理
+                  {t('activityLog.confirmCleanup')}
                 </button>
                 <button className="reset-button" onClick={() => setConfirmCleanup(false)} style={{ padding: '8px 12px' }}>
-                  取消
+                  {t('common.cancel')}
                 </button>
               </div>
             ) : (
               <button className="reset-button" onClick={() => setConfirmCleanup(true)}>
-                🧹 清理过期日志
+                🧹 {t('activityLog.cleanupExpired')}
               </button>
             )}
 
             {confirmClear ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <button className="reset-all-button" onClick={handleClearAll} style={{ padding: '8px 12px' }}>
-                  确认清空
+                  {t('activityLog.confirmClearAll')}
                 </button>
                 <button className="reset-button" onClick={() => setConfirmClear(false)} style={{ padding: '8px 12px' }}>
-                  取消
+                  {t('common.cancel')}
                 </button>
               </div>
             ) : (
               <button className="reset-all-button" onClick={() => setConfirmClear(true)}>
-                🗑 清空全部
+                🗑 {t('activityLog.clearAll')}
               </button>
             )}
           </div>
@@ -259,28 +275,28 @@ const ActivityLog: React.FC = () => {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead style={{ background: 'var(--bg-tertiary)' }}>
                 <tr>
-                  <th style={thStyle}>时间</th>
-                  <th style={thStyle}>模块</th>
-                  <th style={thStyle}>操作</th>
-                  <th style={thStyle}>描述</th>
-                  <th style={thStyle}>状态</th>
-                  <th style={thStyle}>耗时</th>
+                  <th style={thStyle}>{t('activityLog.thTime')}</th>
+                  <th style={thStyle}>{t('activityLog.thModule')}</th>
+                  <th style={thStyle}>{t('activityLog.thAction')}</th>
+                  <th style={thStyle}>{t('activityLog.thDescription')}</th>
+                  <th style={thStyle}>{t('activityLog.thStatus')}</th>
+                  <th style={thStyle}>{t('activityLog.thDuration')}</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td style={tdStyleCenter} colSpan={6}>加载中...</td>
+                    <td style={tdStyleCenter} colSpan={6}>{t('common.loading')}</td>
                   </tr>
                 ) : visibleItems.length === 0 ? (
                   <tr>
-                    <td style={tdStyleCenter} colSpan={6}>暂无记录</td>
+                    <td style={tdStyleCenter} colSpan={6}>{t('activityLog.noRecords')}</td>
                   </tr>
                 ) : (
                   visibleItems.map((item) => (
                     <tr key={item.id} style={{ borderTop: '1px solid var(--border-primary)' }}>
                       <td style={tdStyle}>{formatTimestamp(item.timestamp)}</td>
-                      <td style={tdStyle}>{MODULE_LABELS[item.module] || item.module}</td>
+                      <td style={tdStyle}>{getModuleLabel(t, item.module)}</td>
                       <td style={tdStyle}>{item.action}</td>
                       <td style={tdStyle} title={item.details || undefined}>
                         {item.description}
@@ -295,7 +311,7 @@ const ActivityLog: React.FC = () => {
                             color: item.status === 'success' ? 'var(--success)' : 'var(--error)',
                           }}
                         >
-                          {item.status === 'success' ? '成功' : '失败'}
+                          {item.status === 'success' ? t('common.success') : t('activityLog.statusFailed')}
                         </span>
                       </td>
                       <td style={tdStyle}>{item.duration_ms ?? '-'}</td>

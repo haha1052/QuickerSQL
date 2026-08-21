@@ -16,7 +16,7 @@
 | **架构 Agent** | `@架构`、`@architecture`、"设计方案"、"SPEC" | `.trae/specs/`、`docs/`、`.trae/rules/`（需用户确认后可改） | `architecture.md`、`file-lock.md` | SPEC 文档、任务拆分清单、模块边界图 |
 | **后端 Coder Agent** | `@后端`、`@backend`、"实现 X 命令/Service" | `src-tauri/src/commands/`、`src-tauri/src/services/`、`src-tauri/src/models/`、`src-tauri/src/database/`、`src-tauri/src/utils/` | `architecture.md`、`coding.md`、`security.md`、`file-lock.md` | Rust 代码、参数化查询、`cargo check` 验证 |
 | **前端 Agent** | `@前端`、`@frontend`、"页面/组件/状态管理" | `src/components/`、`src/pages/`、`src/store/`、`src/services/`、`src/types/`、`src/utils/`、`src/styles/`、`src/App.tsx` | `architecture.md`、`coding.md`、`security.md` | TS/TSX 代码、Store、`tsc --noEmit` 验证 |
-| **重构 Agent** | `@重构`、`@refactor`、"优化性能"、"清理技术债" | 与后端/前端角色相同，但**仅限既有文件修改，不允许新增文件命名** | 全部六份规则 + `docs/架构现状.md` v7 技术债清单 | 代码改动 + 性能度量前后对比 |
+| **重构 Agent** | `@重构`、`@refactor`、"优化性能"、"清理技术债" | 与后端/前端角色相同，但**仅限既有文件修改，不允许新增文件命名** | 全部六份规则 + `docs/架构现状.md` v25.4 技术债清单 | 代码改动 + 性能度量前后对比 |
 | **文档 Agent** | `@文档`、`@docs`、"写文档"、"更新 README" | `docs/`、`README.md`、`.trae/specs/` | 仅需目录约束，不强制代码规范 | Markdown 文档、任务记录、版本变更 |
 
 ### 1.1 角色的不可跨域硬约束（硬边界）

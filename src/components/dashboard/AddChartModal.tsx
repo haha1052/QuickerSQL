@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
 import { useLocale } from '../../context/LocaleContext';
@@ -32,16 +33,27 @@ export const AddChartModal: React.FC<AddChartModalProps> = ({
   onClose,
   onAdded,
 }) => {
-  const { savedCharts, dashboards, loadSavedCharts, addChartToDashboard, error, errorKey } = useDashboardStore();
+  // P1-13：useShallow 仅订阅必要字段
+  const { savedCharts, dashboards, loadSavedCharts, addChartToDashboard, error, errorKey } = useDashboardStore(
+    useShallow((s) => ({
+      savedCharts: s.savedCharts,
+      dashboards: s.dashboards,
+      loadSavedCharts: s.loadSavedCharts,
+      addChartToDashboard: s.addChartToDashboard,
+      error: s.error,
+      errorKey: s.errorKey,
+    }))
+  );
   const { addToast } = useToastStore();
   const { t } = useLocale();
   const [search, setSearch] = useState('');
   const [selectedChartId, setSelectedChartId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // P2-17：补 loadSavedCharts 依赖，避免 exhaustive-deps 警告
   useEffect(() => {
     loadSavedCharts();
-  }, []);
+  }, [loadSavedCharts]);
 
   const filtered = savedCharts
     .filter((c) => {

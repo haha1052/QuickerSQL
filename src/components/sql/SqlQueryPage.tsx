@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { SqlQuery, SqlStatementResult } from '../../types';
+import type { TableRowData, TableColumnDef } from '../../types/table';
 import { SQLEditor } from './SQLEditor';
 // P0-2 启动优化：ag-grid 懒加载（详见 ../common/AgGridLazy.tsx）
 import { AgGridLazy } from '../common/AgGridLazy';
@@ -7,6 +8,84 @@ import { useLocale } from '../../context/LocaleContext';
 import { TaskEditorModal } from '../automation/TaskEditorModal';
 
 // ModuleRegistry.registerModules([AllCommunityModule]);  // ← 已在 AgGridLazy 中动态处理
+
+/**
+ * 模块级 defaultColDef（P2-10）：
+ *
+ * 把原本每次渲染都新建一次的 `{ filter, sortable, resizable, minWidth }` 字面量
+ * 提取为模块级常量，引用稳定，让 ag-grid 内部 diff 时跳过无效更新。
+ */
+const DEFAULT_COL_DEF: TableColumnDef = {
+  filter: true,
+  sortable: true,
+  resizable: true,
+  minWidth: 120,
+};
+
+interface SqlResultGridProps {
+  rows: string[][];
+  columns: string[];
+  localeText: Record<string, string>;
+  /** locale 改变时强制重建 ag-grid 实例（key） */
+  locale: string;
+}
+
+/**
+ * 单个 SQL 结果集的 AgGrid 渲染（P2-10）：
+ *
+ * 将 rows/columns 转换为 ag-grid 期望的结构，并通过 `useMemo` 缓存 rowData /
+ * columnDefs，避免父组件每次重渲染时都重新构造数组和对象引用，
+ * 导致 ag-grid 做不必要的 invalidate / 全量重绘。
+ *
+ * 同时把原先的 `Record<string, any>` 改为强类型 `TableRowData`，遵守
+ * coding.md §2.2「禁止 any 类型」约束。
+ */
+const SqlResultGrid: React.FC<SqlResultGridProps> = ({
+  rows,
+  columns,
+  localeText,
+  locale,
+}) => {
+  // P2-10：缓存 rowData，仅当 rows 引用变化时重新构造
+  const rowData = useMemo<TableRowData[]>(
+    () =>
+      rows.map((row, rowIndex) => {
+        const rowObj: TableRowData = { id: rowIndex };
+        row.forEach((cell, colIndex) => {
+          rowObj[`col${colIndex}`] = cell;
+        });
+        return rowObj;
+      }),
+    [rows]
+  );
+
+  // P2-10：缓存 columnDefs，仅当 columns 引用变化时重新构造
+  const columnDefs = useMemo<TableColumnDef[]>(
+    () =>
+      columns.map((col, colIndex) => ({
+        field: `col${colIndex}`,
+        headerName: col,
+      })),
+    [columns]
+  );
+
+  // P2-10：提供稳定的 row ID，避免 rowData 引用变化时全量刷新
+  const getRowId = React.useCallback(
+    (params: { data: TableRowData }) => String(params.data.id),
+    []
+  );
+
+  return (
+    <AgGridLazy
+      key={locale}
+      rowData={rowData}
+      columnDefs={columnDefs}
+      localeText={localeText}
+      defaultColDef={DEFAULT_COL_DEF}
+      getRowId={getRowId}
+    />
+  );
+};
 
 interface SqlQueryPageProps {
   /** 当前 SQL 查询对象，包含 sql 文本、result 与 batchResults */
@@ -108,31 +187,17 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
             ) : null}
 
             {result.columns !== null && result.columns !== undefined && result.columns.length > 0 ? (
-              <div style={{ 
+              <div style={{
                 maxHeight: '400px',
                 minHeight: '100px',
                 height: Math.min(Math.max((result.rows?.length || 0) * 28 + 40, 100), 400)
               }} className="ag-theme-alpine">
-                <AgGridLazy
-                  key={locale}
-                  rowData={(result.rows ?? []).map((row, rowIndex) => {
-                    const rowObj: Record<string, string | number | boolean | null> = { id: rowIndex };
-                    row.forEach((cell, colIndex) => {
-                      rowObj[`col${colIndex}`] = cell;
-                    });
-                    return rowObj;
-                  })}
-                  columnDefs={result.columns.map((col, colIndex) => ({
-                    field: `col${colIndex}`,
-                    headerName: col,
-                  }))}
+                {/* P2-10：复用 SqlResultGrid，统一 rowData/columnDefs 缓存与类型 */}
+                <SqlResultGrid
+                  rows={result.rows ?? []}
+                  columns={result.columns}
                   localeText={localeText}
-                  defaultColDef={{
-                    filter: true,
-                    sortable: true,
-                    resizable: true,
-                    minWidth: 120,
-                  }}
+                  locale={locale}
                 />
               </div>
             ) : result.success && result.affected_rows !== null ? (
@@ -195,26 +260,12 @@ export const SqlQueryPage: React.FC<SqlQueryPageProps> = ({
             </div>
           ) : query?.result ? (
             <div style={{ height: '100%' }} className="ag-theme-alpine">
-              <AgGridLazy
-                key={locale}
-                rowData={query.result.rows.map((row, rowIndex) => {
-                  const rowObj: Record<string, any> = { id: rowIndex };
-                  row.forEach((cell, colIndex) => {
-                    rowObj[`col${colIndex}`] = cell;
-                  });
-                  return rowObj;
-                })}
-                columnDefs={query.result.columns.map((col, index) => ({
-                  field: `col${index}`,
-                  headerName: col,
-                }))}
+              {/* P2-10：复用 SqlResultGrid，统一 rowData/columnDefs 缓存与类型 */}
+              <SqlResultGrid
+                rows={query.result.rows}
+                columns={query.result.columns}
                 localeText={localeText}
-                defaultColDef={{
-                  filter: true,
-                  sortable: true,
-                  resizable: true,
-                  minWidth: 120,
-                }}
+                locale={locale}
               />
             </div>
           ) : (

@@ -3,7 +3,7 @@ import { Colors, Spacing, FontSizes, BorderRadius } from '../../styles/design-sy
 import { useTaskStore } from '../../store';
 import { useLocale } from '../../context/LocaleContext';
 import { computeVisibleRange } from '../../utils/virtual';
-import type { Task, TaskRunStatus } from '../../types/automation';
+import type { Task, TaskRun, TaskRunStatus } from '../../types/automation';
 
 const ITEM_HEIGHT = 44;
 const OVERSCAN = 5;
@@ -28,6 +28,36 @@ const formatDuration = (ms: number | null): string => {
   return `${m}m ${rs}s`;
 };
 
+/** 将任务执行记录数组导出为 CSV 文件并触发浏览器下载。
+ *  字段：run_id, task_id, status, started_at, finished_at, duration_ms, error_message
+ *  含逗号/引号/换行的字段按 RFC 4180 用双引号包裹，内部双引号转义为两个双引号。
+ *  error_message 取自 run.output（失败时通常包含错误信息）。
+ */
+const exportRunsToCsv = (runs: TaskRun[]): void => {
+  const headers = ['run_id', 'task_id', 'status', 'started_at', 'finished_at', 'duration_ms', 'error_message'];
+  const rows = runs.map((run) => [
+    run.id,
+    run.taskId,
+    run.status,
+    run.startedAt ? formatDateTime(run.startedAt) : '',
+    run.finishedAt ? formatDateTime(run.finishedAt) : '',
+    run.durationMs !== null && run.durationMs !== undefined ? String(run.durationMs) : '',
+    run.output ?? '',
+  ]);
+  const csv = [headers, ...rows]
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `task-runs-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
 const getStatusStyles = (status: TaskRunStatus): React.CSSProperties => {
   switch (status) {
     case 'success':
@@ -45,15 +75,17 @@ const getStatusStyles = (status: TaskRunStatus): React.CSSProperties => {
 
 const getStatusText = (t: (key: string) => string, status: TaskRunStatus): string => {
   switch (status) {
-    case 'success': return '成功';
-    case 'failed': return '失败';
-    case 'running': return t('task.running');
-    case 'skipped': return '跳过';
+    case 'success': return t('task.runSuccess');
+    case 'failed': return t('task.runFailed');
+    case 'running': return t('task.runRunning');
+    case 'skipped': return t('task.runSkipped');
     default: return status;
   }
 };
 
-const getTriggerText = (t: 'manual' | 'schedule'): string => (t === 'manual' ? '手动触发' : '定时触发');
+const getTriggerText = (t: (key: string) => string, trigger: 'manual' | 'schedule'): string => (
+  trigger === 'manual' ? t('task.triggerManual') : t('task.triggerSchedule')
+);
 
 /** 任务开关状态 → badge 样式/文案映射
  *  enabled  → success / 已启用
@@ -72,11 +104,11 @@ const getTaskStateStyle = (state: string): React.CSSProperties => {
       return { background: 'rgba(102,102,102,0.1)', color: Colors.textSecondary };
   }
 };
-const getTaskStateText = (state: string): string => {
+const getTaskStateText = (t: (key: string) => string, state: string): string => {
   switch (state) {
-    case 'enabled': return '已启用';
-    case 'disabled': return '已禁用';
-    case 'paused': return '已暂停';
+    case 'enabled': return t('task.statusEnabled');
+    case 'disabled': return t('task.statusDisabled');
+    case 'paused': return t('task.statusPaused');
     default: return state;
   }
 };
@@ -110,7 +142,7 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
     return (
       <div style={styles.panel}>
         <div style={styles.header}>
-          <div style={styles.headerTitle}>运行日志</div>
+          <div style={styles.headerTitle}>{t('taskLogs.panelTitle')}</div>
         </div>
         <div style={styles.empty}>{t('taskLogs.selectTaskHint')}</div>
       </div>
@@ -120,8 +152,18 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
-        <div style={styles.headerTitle}>任务详情 · 运行日志</div>
-        <button style={styles.refreshBtn} onClick={handleRefresh}>🔄 刷新</button>
+        <div style={styles.headerTitle}>{t('taskLogs.detailTitle')}</div>
+        <div style={{ display: 'flex', gap: Spacing.sm }}>
+          <button
+            style={{ ...styles.refreshBtn, opacity: taskRuns.length === 0 ? 0.5 : 1, cursor: taskRuns.length === 0 ? 'not-allowed' : 'pointer' }}
+            onClick={() => exportRunsToCsv(taskRuns)}
+            disabled={taskRuns.length === 0}
+            title={taskRuns.length === 0 ? t('taskLogs.exportCsvDisabledHint') : t('task.exportCsv')}
+          >
+            📥 {t('task.exportCsv')}
+          </button>
+          <button style={styles.refreshBtn} onClick={handleRefresh}>🔄 {t('common.refresh')}</button>
+        </div>
       </div>
 
       <div style={styles.detailSection}>
@@ -129,23 +171,23 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
         {task.description && <div style={styles.detailDesc}>{task.description}</div>}
         <div style={styles.detailGrid}>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>类型</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.fieldType')}</div>
             <div style={styles.detailItemValue}>{task.taskType}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>状态</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.fieldState')}</div>
             <div>
               <span style={{ ...styles.badge, ...getTaskStateStyle(task.state) }}>
-                {getTaskStateText(task.state)}
+                {getTaskStateText(t, task.state)}
               </span>
             </div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>调度模式</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.fieldScheduleMode')}</div>
             <div style={styles.detailItemValue}>{task.scheduleMode}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>调度值</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.fieldScheduleValue')}</div>
             <div style={styles.detailItemValue}>{task.scheduleValue || '-'}</div>
           </div>
           <div style={styles.detailItem}>
@@ -161,21 +203,21 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
             <div style={{ ...styles.detailItemValue, color: Colors.danger }}>{task.failedRuns}</div>
           </div>
           <div style={styles.detailItem}>
-            <div style={styles.detailItemLabel}>下次运行</div>
+            <div style={styles.detailItemLabel}>{t('taskLogs.fieldNextRun')}</div>
             <div style={styles.detailItemValue}>{task.nextRunAt ? formatDateTime(task.nextRunAt) : '-'}</div>
           </div>
         </div>
-        <div style={styles.subTitle}>执行记录（{taskRuns.length}）</div>
+        <div style={styles.subTitle}>{t('taskLogs.executionRecords', { count: taskRuns.length })}</div>
 
         {taskRuns.length === 0 ? (
           <div style={styles.empty}>{t('taskLogs.noLogs')}</div>
         ) : (
           <div style={styles.logTable}>
             <div style={styles.logHeaderRow}>
-              <div style={{ ...styles.logCell, flex: 1.4 }}>开始时间</div>
-              <div style={{ ...styles.logCell, flex: 0.8 }}>状态</div>
-              <div style={{ ...styles.logCell, flex: 0.8 }}>耗时</div>
-              <div style={{ ...styles.logCell, flex: 1 }}>触发</div>
+              <div style={{ ...styles.logCell, flex: 1.4 }}>{t('taskLogs.fieldStartedAt')}</div>
+              <div style={{ ...styles.logCell, flex: 0.8 }}>{t('taskLogs.fieldStatus')}</div>
+              <div style={{ ...styles.logCell, flex: 0.8 }}>{t('taskLogs.fieldDuration')}</div>
+              <div style={{ ...styles.logCell, flex: 1 }}>{t('taskLogs.fieldTrigger')}</div>
             </div>
             <div
               ref={(el) => {
@@ -214,13 +256,13 @@ export const TaskRunLogsPanel: React.FC<TaskRunLogsPanelProps> = ({ task }) => {
                         <div style={{ ...styles.logCell, flex: 0.8 }}>{formatDuration(run.durationMs)}</div>
                         <div style={{ ...styles.logCell, flex: 1 }}>
                           <span style={{ fontSize: FontSizes.caption, color: Colors.textSecondary }}>
-                            {getTriggerText(run.triggerType)}
+                            {getTriggerText(t, run.triggerType)}
                           </span>
                         </div>
                       </div>
                       {expandedId === run.id && run.output && (
                         <div style={styles.outputPreview}>
-                          <div style={styles.outputLabel}>输出</div>
+                          <div style={styles.outputLabel}>{t('taskLogs.fieldOutput')}</div>
                           <pre style={styles.outputContent}>{run.output}</pre>
                         </div>
                       )}

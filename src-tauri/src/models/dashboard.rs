@@ -187,6 +187,10 @@ pub struct SavedChartLite {
     pub tags: Vec<String>,
     pub description: String,
     pub visibility: String,
+    /// visibility = "restricted" 时生效，记录允许使用的仪表盘 ID
+    /// 修复：启动聚合必须带回该字段，否则前端 ChartLibraryPanel 会因 authorizedDashboardIds=[]
+    /// 误判 restricted 图表不可添加到任何仪表盘（导致"添加图表失败"现象）
+    pub authorized_dashboard_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

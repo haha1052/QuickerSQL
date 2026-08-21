@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { DashboardItem } from './DashboardItem';
 import { AddChartModal } from './AddChartModal';
 import { useDashboardStore } from '../../store';
@@ -24,7 +25,10 @@ export const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
 }) => {
   const { t } = useLocale();
   const [showAddModal, setShowAddModal] = useState(false);
-  const { removeChartFromDashboard } = useDashboardStore();
+  // P1-13：useShallow 仅订阅必要 action，避免 store 任意字段变更引发重渲染
+  const { removeChartFromDashboard } = useDashboardStore(
+    useShallow((s) => ({ removeChartFromDashboard: s.removeChartFromDashboard }))
+  );
 
   const effectiveGap = dashboard?.gridGap ?? layoutSettings.gap;
   const effectiveRowHeight = dashboard?.rowHeight ?? layoutSettings.rowHeight;

@@ -571,3 +571,119 @@
   border: 1px solid var(--error);
   color: var(--error);
 }
+
+/* ========== 确认弹窗样式 ========== */
+.settings-confirm-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-confirm-modal {
+  background: var(--bg-primary);
+  border-radius: 8px;
+  width: 420px;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.settings-confirm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.settings-confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.settings-confirm-close-btn {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.settings-confirm-body {
+  padding: 20px;
+}
+
+.settings-confirm-body p {
+  margin: 0;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.settings-confirm-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-primary);
+}
+
+.settings-confirm-cancel-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.settings-confirm-confirm-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ========== 安全区域信息卡片样式 ========== */
+.settings-info-card {
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px dashed var(--border-primary);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-info-card-title {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.settings-info-card-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.settings-info-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

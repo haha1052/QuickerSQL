@@ -388,3 +388,31 @@ button:not(.header-window-btn):not(.header-tab):not(.header-project-button):not(
 .workspace-tabs-container::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
 }
+
+/* P2-4: LoadingSkeleton 内联样式迁移 */
+.loading-skeleton {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 14px;
+  gap: 8px;
+}
+
+.loading-skeleton-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: quicker-skeleton-spin 0.8s linear infinite;
+}
+
+/* P2-4: 补齐 quicker-skeleton-spin keyframes（原 App.tsx 引用但全局 CSS 未定义） */
+@keyframes quicker-skeleton-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -8,7 +8,7 @@ import { SaveChartModal } from './SaveChartModal';
 // 实际渲染由 ChartRenderer 在需要时动态加载 echarts
 import { useSetting } from '../../context/SettingsContext';
 import { useLocale } from '../../context/LocaleContext';
-import { useQueryStore } from '../../store';
+import { useQueryStore, useToastStore } from '../../store';
 import type { ChartConfig } from '../../types/chart';
 
 interface ChartPanelProps {
@@ -37,6 +37,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const activeQueryId = useQueryStore(s => s.activeQueryId);
   const sqlQueries = useQueryStore(s => s.sqlQueries);
   const activeQuery = sqlQueries.find(q => q.id === activeQueryId);
+  // P2-13: 使用项目内 toast 替代原生 alert
+  const { addToast } = useToastStore();
 
   // 获取可视化设置
   const [defaultChartType] = useSetting('visualization', 'defaultChartType');
@@ -304,7 +306,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       }
 
       if (!base64Data) {
-        alert(t('chart.noChartToExport'));
+        // P2-13: 替换原生 alert 为项目 toast
+        addToast(t('chart.noChartToExport'), 'warning');
         return;
       }
 
@@ -323,7 +326,8 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
 
     } catch (e) {
       console.error('Export failed:', e);
-      alert(t('chart.exportFail') + ': ' + e);
+      // P2-13: 替换原生 alert 为项目 toast
+      addToast(`${t('chart.exportFail')}: ${e}`, 'error');
     }
   };
 

@@ -1,0 +1,386 @@
+/* ============================================================
+ * ResultGrid.css — SQL 结果表格交互增强样式
+ *
+ * 选区高亮 / 活动单元格 / 行号列 / 右键菜单 / 子菜单
+ * 使用主题变量自动适配亮/暗色
+ * ============================================================ */
+
+/* ---------- 选区高亮 ---------- */
+.ag-theme-alpine .ag-cell.rg-cell-selected {
+  background-color: color-mix(in srgb, var(--primary) 18%, transparent) !important;
+}
+
+/* 活动单元格（键盘焦点）：实线边框 */
+.ag-theme-alpine .ag-cell.rg-cell-active {
+  outline: 2px solid var(--primary) !important;
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+/* ---------- 行号列 ---------- */
+.ag-theme-alpine .ag-cell.rg-rownum-cell {
+  text-align: center;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: pointer;
+}
+
+.ag-theme-alpine .ag-header-cell.rg-rownum-header {
+  text-align: center;
+  font-weight: 600;
+}
+
+/* ---------- NULL 单元格（Phase 2 类型感知时启用） ---------- */
+.ag-theme-alpine .ag-cell.rg-cell-null {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ---------- 右键菜单 ---------- */
+.rg-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+  font-size: 13px;
+  user-select: none;
+  animation: rg-menu-fade-in 0.1s ease-out;
+}
+
+@keyframes rg-menu-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 菜单项 */
+.rg-context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-radius: 4px;
+  transition: background 0.15s;
+  box-shadow: none;
+  outline: none;
+  white-space: nowrap;
+}
+
+.rg-context-menu-item:hover:not(.rg-disabled) {
+  background: var(--primary-bg);
+  color: var(--primary);
+  border-color: transparent;
+}
+
+.rg-context-menu-item.rg-disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.rg-context-menu-item.rg-danger {
+  color: var(--error);
+}
+
+.rg-context-menu-item.rg-danger:hover {
+  background: var(--error-bg);
+}
+
+.rg-context-menu-item.rg-recommended {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.rg-context-menu-item.rg-recommended:hover:not(.rg-disabled) {
+  background: var(--primary-bg);
+}
+
+/* 子菜单箭头 */
+.rg-context-menu-item .rg-submenu-arrow {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: 8px;
+}
+
+/* 快捷键提示 */
+.rg-context-menu-item .rg-shortcut-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: 8px;
+}
+
+/* 分隔线 */
+.rg-context-menu-separator {
+  height: 1px;
+  background: var(--border-primary);
+  margin: 4px 8px;
+}
+
+/* ---------- 子菜单（CSS hover） ---------- */
+.rg-submenu-wrapper {
+  position: relative;
+}
+
+.rg-submenu {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  min-width: 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+  margin-left: 2px;
+}
+
+/* 右侧空间不足时子菜单向左展开 */
+.rg-submenu.rg-submenu-left {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+}
+
+.rg-submenu-wrapper:hover > .rg-submenu {
+  display: block;
+  animation: rg-menu-fade-in 0.1s ease-out;
+}
+
+/* ---------- ResultGrid 容器 ---------- */
+.rg-grid-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  min-width: 100%;
+  overflow: hidden;
+  flex: 1;
+  height: 0;
+}
+
+.rg-grid-container {
+  min-width: 100%;
+  background: var(--bg-primary);
+  overflow: auto;
+  flex: 1;
+  height: 0;
+}
+
+/* 分页信息条 */
+.rg-pagination-info {
+  padding: 8px 16px;
+  background: var(--bg-tertiary);
+  border-top: 1px solid var(--border-primary);
+  flex-shrink: 0;
+}
+
+.rg-page-text {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* 超限警告条 */
+.rg-warning-info {
+  padding: 8px 16px;
+  background: var(--warning-bg);
+  border-top: 1px solid var(--warning);
+  flex-shrink: 0;
+}
+
+.rg-warning-text {
+  font-size: 12px;
+  color: var(--warning);
+}
+
+/* ---------- 单元格详情弹窗 ---------- */
+.rg-cell-detail-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rg-cell-detail-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  max-width: 600px;
+  max-height: 400px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.rg-cell-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-tertiary);
+}
+
+.rg-cell-detail-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.rg-cell-detail-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.rg-cell-detail-close:hover {
+  color: var(--text-primary);
+}
+
+.rg-cell-detail-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.rg-cell-detail-pre {
+  margin: 0;
+  font-family: Monaco, Menlo, "Ubuntu Mono", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.rg-cell-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-primary);
+  background: var(--bg-tertiary);
+}
+
+.rg-cell-detail-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.rg-cell-detail-copy-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--primary-bg);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.rg-cell-detail-copy-btn:hover {
+  background: var(--primary);
+  color: white;
+}
+
+/* ---------- 自定义列头（Task 2） ---------- */
+.rg-header-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px 0 12px;
+  gap: 8px;
+  box-sizing: border-box;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rg-header-cell:hover {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.rg-header-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.rg-header-sort-btn {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.rg-header-sort-btn:hover {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+
+.rg-header-sort-btn:active {
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+.rg-header-sort-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 0;
+}
+
+/* 行头样式 */
+.rg-header-rowheader {
+  justify-content: center;
+  padding: 0;
+  color: var(--text-secondary);
+}
+.rg-header-rowheader .rg-header-label {
+  flex: none;
+  font-weight: 600;
+}

@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { DashboardToolbar } from './DashboardToolbar';
-import { DashboardCanvas } from './DashboardCanvas';
-import { DashboardFilterBar } from './filters/DashboardFilterBar';
-import { ChartLibraryPanel } from './ChartLibraryPanel';
-import { ChartEditSidebar } from './ChartEditSidebar';
+import React, { useState, useEffect } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { DashboardEmptyState } from './DashboardEmptyState';
+import { DashboardContent } from './DashboardContent';
+import type {
+  DashboardLayoutEntry,
+  DashboardLayoutSettings,
+  DashboardTempLayout,
+} from './DashboardContent';
 import { useDashboardStore } from '../../store';
-import { useStartupContext } from '../../AppWrapper';
+import { useToastStore } from '../../store/toastStore';
 import { exportDashboardToPng } from '../../utils/dashboardExport';
 import { useLocale } from '../../context/LocaleContext';
-import { useToastStore } from '../../store/toastStore';
 
 export const DashboardPage: React.FC = () => {
+  // P1-13：useShallow 仅订阅必要字段
   const {
     dashboards,
     activeDashboardId,
@@ -21,7 +24,19 @@ export const DashboardPage: React.FC = () => {
     isFullscreen,
     setFullscreen,
     loading,
-  } = useDashboardStore();
+  } = useDashboardStore(
+    useShallow((s) => ({
+      dashboards: s.dashboards,
+      activeDashboardId: s.activeDashboardId,
+      savedCharts: s.savedCharts,
+      selectedChartId: s.selectedChartId,
+      setSelectedChartId: s.setSelectedChartId,
+      setActiveDashboard: s.setActiveDashboard,
+      isFullscreen: s.isFullscreen,
+      setFullscreen: s.setFullscreen,
+      loading: s.loading,
+    }))
+  );
   const { t } = useLocale();
   const [isEditing, setIsEditing] = useState(false);
   const [savingLayout, setSavingLayout] = useState(false);
@@ -31,11 +46,19 @@ export const DashboardPage: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newDashboardName, setNewDashboardName] = useState('');
   const [creatingDashboard, setCreatingDashboard] = useState(false);
-  const [layoutSettings] = useState({
+  const [layoutSettings] = useState<DashboardLayoutSettings>({
     gap: 16,
     rowHeight: 80,
     snapToGrid: true,
   });
+
+  // T3+T4: 编辑模式下的临时布局（按 itemId 存储覆盖后的位置/尺寸）
+  const [tempLayout, setTempLayout] = useState<DashboardTempLayout>({});
+  // P2-13: 替换原生 confirm/alert
+  // pendingExitEdit: 退出编辑模式时有未保存布局变更，等待用户确认
+  const [pendingExitEdit, setPendingExitEdit] = useState(false);
+  // pendingRemoveChart: 用户按 Delete 删除选中图表，等待用户确认
+  const [pendingRemoveChart, setPendingRemoveChart] = useState<{ itemId: string } | null>(null);
 
   // 处理画布设置变化
   const handleCanvasSettingsChange = async (settings: {
@@ -62,9 +85,6 @@ export const DashboardPage: React.FC = () => {
     });
   };
 
-  // T3+T4: 编辑模式下的临时布局（按 itemId 存储覆盖后的位置/尺寸）
-  const [tempLayout, setTempLayout] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
-
   // 进入编辑模式时清空临时布局
   useEffect(() => {
     if (isEditing) {
@@ -75,65 +95,70 @@ export const DashboardPage: React.FC = () => {
   // T3: 图表项位置/尺寸变更回调（在拖拽/缩放时持续调用）
   const handleItemLayoutChange = (
     itemId: string,
-    layout: { x: number; y: number; width: number; height: number }
+    layout: DashboardLayoutEntry
   ) => {
     setTempLayout((prev) => ({ ...prev, [itemId]: layout }));
   };
 
   // T2: 退出编辑模式时：先把临时布局应用到 store，再调用 saveLayout 保存
   // P1 改进：退出前确认是否保存；保存改为并行调用 + 错误收集
-  const handleToggleEdit = async () => {
+  // P2-13: 改为非阻塞弹窗（替代原生 confirm），实际退出动作延后到 executeExitEdit
+  const handleToggleEdit = () => {
     if (isEditing && activeDashboard) {
       // 有布局变更时，询问用户是否保存
       const changedCount = Object.keys(tempLayout).length;
       if (changedCount > 0) {
-        const confirmed = confirm(
-          t('dashboard.confirmSaveLayout', {
-            count: changedCount,
-            confirm: t('common.confirm'),
-            cancel: t('common.cancel'),
-          })
-        );
-        if (!confirmed) return; // 用户选择继续编辑
+        // P2-13: 改为弹窗确认，用户点击确认后调用 executeExitEdit
+        setPendingExitEdit(true);
+        return;
       }
-
-      setSavingLayout(true);
-      try {
-        const { updateDashboardItem, loadDashboards } = useDashboardStore.getState();
-        // P1 改进：改为并行保存 + 错误收集
-        const savePromises = Object.entries(tempLayout).map(async ([itemId, layout]) => {
-          try {
-            await updateDashboardItem(itemId, {
-              x: layout.x,
-              y: layout.y,
-              width: layout.width,
-              height: layout.height,
-            });
-            return { itemId, success: true };
-          } catch (e) {
-            console.error(`[DashboardPage] 保存 item ${itemId} 失败:`, e);
-            return { itemId, success: false, error: e };
-          }
-        });
-
-        const results = await Promise.all(savePromises);
-        const failedCount = results.filter(r => !r.success).length;
-        if (failedCount > 0) {
-          alert(t('dashboard.layoutSavePartialFailed', {
-            failedCount,
-            totalCount: results.length,
-          }));
-        } else {
-          // 保存成功后重新加载完整数据，确保 store 中的 layout 与后端一致
-          await loadDashboards();
-        }
-      } finally {
-        setSavingLayout(false);
-        setIsEditing(false);
-        setTempLayout({});
-      }
+      // 无布局变更直接退出
+      void executeExitEdit();
     } else {
       setIsEditing(true);
+    }
+  };
+
+  // P2-13: 实际执行退出编辑模式 + 保存布局（由确认弹窗触发，或无变更时直接调用）
+  const executeExitEdit = async () => {
+    setSavingLayout(true);
+    try {
+      const { updateDashboardItem, loadDashboards } = useDashboardStore.getState();
+      // P1 改进：改为并行保存 + 错误收集
+      const savePromises = Object.entries(tempLayout).map(async ([itemId, layout]) => {
+        try {
+          await updateDashboardItem(itemId, {
+            x: layout.x,
+            y: layout.y,
+            width: layout.width,
+            height: layout.height,
+          });
+          return { itemId, success: true };
+        } catch (e) {
+          console.error(`[DashboardPage] 保存 item ${itemId} 失败:`, e);
+          return { itemId, success: false, error: e };
+        }
+      });
+
+      const results = await Promise.all(savePromises);
+      const failedCount = results.filter(r => !r.success).length;
+      if (failedCount > 0) {
+        // P2-13: 替换原生 alert 为项目 toast
+        useToastStore.getState().addToast(
+          t('dashboard.layoutSavePartialFailed', {
+            failedCount,
+            totalCount: results.length,
+          }),
+          'error'
+        );
+      } else {
+        // 保存成功后重新加载完整数据，确保 store 中的 layout 与后端一致
+        await loadDashboards();
+      }
+    } finally {
+      setSavingLayout(false);
+      setIsEditing(false);
+      setTempLayout({});
     }
   };
 
@@ -143,13 +168,13 @@ export const DashboardPage: React.FC = () => {
 
     // 非编辑模式下点击保存，提示用户
     if (!isEditing) {
-      useToastStore.getState().addToast({ key: 'dashboard.enter_edit_first' }, 'warning');
+      useToastStore.getState().addToast(t('error.dashboard.enter_edit_first'), 'warning');
       return;
     }
 
     // 编辑模式但无布局变更
     if (Object.keys(tempLayout).length === 0) {
-      useToastStore.getState().addToast({ key: 'dashboard.no_unsaved_changes' }, 'info');
+      useToastStore.getState().addToast(t('error.dashboard.no_unsaved_changes'), 'info');
       return;
     }
 
@@ -167,57 +192,25 @@ export const DashboardPage: React.FC = () => {
       const result = await saveDashboardLayout(activeDashboard.id, layoutUpdates);
       if (result) {
         setTempLayout({});
-        useToastStore.getState().addToast({ key: 'dashboard.save_success' }, 'success');
+        useToastStore.getState().addToast(t('error.dashboard.save_success'), 'success');
       } else {
-        useToastStore.getState().addToast({ key: 'dashboard.save_failed_unknown' }, 'error');
+        useToastStore.getState().addToast(t('error.dashboard.save_failed_unknown'), 'error');
       }
     } catch (e) {
       console.error('[DashboardPage] 保存失败:', e);
-      useToastStore.getState().addToast({ key: 'dashboard.save_failed_with_msg', vars: { message: (e as Error).message } }, 'error');
+      useToastStore.getState().addToast(t('error.dashboard.save_failed_with_msg', { message: (e as Error).message }), 'error');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // v3 启动优化：优先消费 StartupContext 中的缓存数据，避免独立 IPC
-  // 注意：DashboardLite 是精简数据（不含 layout），设置缓存后需加载完整数据
-  const { startupData, isStartupLoaded } = useStartupContext();
-  const hasLoadedRef = useRef(false);
-
-  // 统一加载逻辑：
-  // 1. 启动数据就绪时：先设置缓存（精简数据），再触发完整加载
-  // 2. 组件挂载但无启动缓存（项目切换后进入）：直接加载
-  // 使用 hasLoadedRef 确保只触发一次完整加载，避免竞态
+  // P1-9 + P2-15：移除 needsFullLoad 判断，无条件加载完整数据
+  // 启动时仅注入 Lite 数据（sql 为空），进入 Dashboard 页时必须刷新为完整数据
   useEffect(() => {
-    if (hasLoadedRef.current) return;
-
-    if (isStartupLoaded && startupData) {
-      hasLoadedRef.current = true;
-
-      if (startupData.dashboards.length > 0) {
-        useDashboardStore.getState().setDashboardsFromStartup(startupData.dashboards);
-      }
-      if (startupData.savedCharts.length > 0) {
-        useDashboardStore.getState().setSavedChartsFromStartup(startupData.savedCharts);
-      }
-
-      const currentDashboards = useDashboardStore.getState().dashboards;
-      const currentSavedCharts = useDashboardStore.getState().savedCharts;
-      const needsDashboardsFullLoad = currentDashboards.length > 0 && currentDashboards.every(d => d.layout.length === 0);
-      const needsChartsFullLoad = currentSavedCharts.length > 0 && currentSavedCharts.every(c => !c.sql || c.sql.trim().length === 0);
-
-      if (needsDashboardsFullLoad || currentDashboards.length === 0) {
-        useDashboardStore.getState().loadDashboards();
-      }
-      if (needsChartsFullLoad || currentSavedCharts.length === 0) {
-        useDashboardStore.getState().loadSavedCharts();
-      }
-    } else if (dashboards.length === 0 && !loading) {
-      hasLoadedRef.current = true;
-      useDashboardStore.getState().loadDashboards();
-      useDashboardStore.getState().loadSavedCharts();
-    }
-  }, [isStartupLoaded, startupData, dashboards.length, loading]);
+    const store = useDashboardStore.getState();
+    store.loadDashboards();
+    store.loadSavedCharts();
+  }, []);
 
   // 若存在仪表盘列表但没选，则默认选择第一个仪表盘
   useEffect(() => {
@@ -306,10 +299,8 @@ export const DashboardPage: React.FC = () => {
         if (!activeDash) return;
         const targetItem = activeDash.layout.find((it) => it.chartId === selectedChartId);
         if (targetItem) {
-          if (confirm(t('dashboard.confirmRemoveChart'))) {
-            useDashboardStore.getState().removeChartFromDashboard(targetItem.id);
-            setSelectedChartId(null);
-          }
+          // P2-13: 改为弹窗确认，实际删除延后到 handleConfirmRemoveChart
+          setPendingRemoveChart({ itemId: targetItem.id });
         }
         return;
       }
@@ -328,114 +319,51 @@ export const DashboardPage: React.FC = () => {
       setNewDashboardName('');
     } catch (e) {
       console.error('[DashboardPage] 创建仪表盘失败:', e);
-      alert(t('dashboard.createFailed'));
+      // P2-13: 替换原生 alert 为项目 toast
+      useToastStore.getState().addToast(t('dashboard.createFailed'), 'error');
     } finally {
       setCreatingDashboard(false);
     }
   };
 
-  if (loading && dashboards.length === 0) {
-    return (
-      <div style={styles.emptyContainer}>
-        <div style={styles.emptyIcon}>⏳</div>
-        <div style={styles.emptyTitle}>{t('dashboard.loading_data')}</div>
-        <div style={styles.emptyDesc}>{t('dashboard.loading_data_desc')}</div>
-      </div>
-    );
-  }
+  // P2-13: 用户确认退出编辑模式并保存布局
+  const handleConfirmExitEdit = () => {
+    setPendingExitEdit(false);
+    void executeExitEdit();
+  };
 
+  // P2-13: 用户取消退出编辑模式
+  const handleCancelExitEdit = () => setPendingExitEdit(false);
+
+  // P2-13: 用户确认删除选中图表
+  const handleConfirmRemoveChart = () => {
+    if (!pendingRemoveChart) return;
+    const itemId = pendingRemoveChart.itemId;
+    setPendingRemoveChart(null);
+    useDashboardStore.getState().removeChartFromDashboard(itemId);
+    setSelectedChartId(null);
+  };
+
+  // P2-13: 用户取消删除图表
+  const handleCancelRemoveChart = () => setPendingRemoveChart(null);
+
+  // 加载/空状态：交由 DashboardEmptyState 子组件渲染
   if (dashboards.length === 0) {
     return (
-      <>
-        <div style={styles.emptyContainer}>
-          <div style={styles.emptyIcon}>📊</div>
-          <div style={styles.emptyTitle}>{t('dashboard.noDashboards')}</div>
-          <div style={styles.emptyDesc}>{t('dashboard.createFirstDashboardHint')}</div>
-          <button
-            style={styles.createButton}
-            onClick={() => {
-              setNewDashboardName(t('dashboard.newDashboardName'));
-              setShowCreateModal(true);
-            }}
-          >
-            {t('dashboard.createDashboard')}
-          </button>
-        </div>
-
-        {showCreateModal && (
-          <div
-            style={styles.modalOverlay}
-            onClick={() => {
-              if (!creatingDashboard) setShowCreateModal(false);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && !creatingDashboard) {
-                setShowCreateModal(false);
-              }
-            }}
-          >
-            <div
-              style={styles.modal}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' && !creatingDashboard) {
-                  setShowCreateModal(false);
-                }
-              }}
-              tabIndex={-1}
-            >
-              <div style={styles.modalHeader}>
-                <h3 style={styles.modalTitle}>{t('dashboard.createDashboard')}</h3>
-                <button
-                  style={styles.modalCloseBtn}
-                  onClick={() => !creatingDashboard && setShowCreateModal(false)}
-                  disabled={creatingDashboard}
-                >
-                  ×
-                </button>
-              </div>
-              <div style={styles.modalBody}>
-                <label style={styles.modalLabel}>{t('dashboard.dashboardName')} *</label>
-                <input
-                  style={styles.modalInput}
-                  value={newDashboardName}
-                  onChange={(e) => setNewDashboardName(e.target.value)}
-                  placeholder={t('dashboard.namePlaceholder')}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleCreateDashboard();
-                    } else if (e.key === 'Escape') {
-                      if (!creatingDashboard) setShowCreateModal(false);
-                    }
-                  }}
-                  autoFocus
-                  disabled={creatingDashboard}
-                />
-              </div>
-              <div style={styles.modalFooter}>
-                <button
-                  style={styles.modalCancelBtn}
-                  onClick={() => setShowCreateModal(false)}
-                  disabled={creatingDashboard}
-                >
-                  {t('common.cancel')}
-                </button>
-                <button
-                  style={{
-                    ...styles.modalConfirmBtn,
-                    opacity: creatingDashboard || !newDashboardName.trim() ? 0.6 : 1,
-                    cursor: creatingDashboard || !newDashboardName.trim() ? 'not-allowed' : 'pointer',
-                  }}
-                  onClick={handleCreateDashboard}
-                  disabled={creatingDashboard || !newDashboardName.trim()}
-                >
-                  {creatingDashboard ? t('common.creating') : t('common.create')}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </>
+      <DashboardEmptyState
+        loading={loading}
+        dashboardsCount={dashboards.length}
+        showCreateModal={showCreateModal}
+        newDashboardName={newDashboardName}
+        creatingDashboard={creatingDashboard}
+        onNewDashboardNameChange={setNewDashboardName}
+        onCreateModalClose={() => setShowCreateModal(false)}
+        onCreateDashboard={handleCreateDashboard}
+        onShowCreateModal={() => {
+          setNewDashboardName(t('dashboard.newDashboardName'));
+          setShowCreateModal(true);
+        }}
+      />
     );
   }
 
@@ -444,252 +372,54 @@ export const DashboardPage: React.FC = () => {
   // P3-1：导出仪表盘为 PNG
   const handleExportPng = async () => {
     if (isEditing) {
-      useToastStore.getState().addToast({ key: 'dashboard.exit_edit_first' }, 'warning');
+      useToastStore.getState().addToast(t('error.dashboard.exit_edit_first'), 'warning');
       return;
     }
     if (!activeDashboard) {
-      useToastStore.getState().addToast({ key: 'dashboard.no_active_dashboard' }, 'error');
+      useToastStore.getState().addToast(t('error.dashboard.no_active_dashboard'), 'error');
       return;
     }
     const canvasEl = document.querySelector('[data-dashboard-canvas="true"]') as HTMLElement | null;
     const result = await exportDashboardToPng(activeDashboard, canvasEl, activeDashboard.name);
     if (result.success) {
-      useToastStore.getState().addToast({ key: 'dashboard.export_success' }, 'success');
+      useToastStore.getState().addToast(t('error.dashboard.export_success'), 'success');
     } else {
       useToastStore.getState().addToast(result.message, 'error');
     }
   };
 
-  const mainContent = (
-    <>
-      <DashboardToolbar
-        dashboard={activeDashboard}
-        isEditing={isEditing}
-        onToggleEdit={handleToggleEdit}
-        savingLayout={savingLayout}
-        onDashboardChange={setActiveDashboard}
-        onToggleLibrary={() => setShowLibrary(v => !v)}
-        libraryOpen={showLibrary}
-        onExportPng={handleExportPng}
-        onCanvasSettingsChange={handleCanvasSettingsChange}
-        onSave={handleSave}
-        isSaving={isSaving}
-      />
-      {/* P1 UX：编辑模式提示条 */}
-      {isEditing && (
-        <div style={styles.editModeBanner}>
-          <span style={styles.editModeIcon}>✏️</span>
-          <span style={styles.editModeText}>
-            {t('dashboard.editModeHint')}
-          </span>
-          {Object.keys(tempLayout).length > 0 && (
-            <span style={styles.editModeChanged}>
-              {t('dashboard.itemsModified', { count: Object.keys(tempLayout).length })}
-            </span>
-          )}
-        </div>
-      )}
-      <DashboardFilterBar filters={activeDashboard?.filters || []} />
-      <DashboardCanvas
-        dashboard={activeDashboard}
-        isEditing={isEditing}
-        tempLayout={tempLayout}
-        onItemLayoutChange={handleItemLayoutChange}
-        onItemDoubleClick={handleChartDoubleClick}
-        layoutSettings={layoutSettings}
-      />
-    </>
-  );
-
-  if (isFullscreen) {
-    return <div style={styles.fullscreen}>{mainContent}</div>;
-  }
-
   return (
-    <div style={styles.container}>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {mainContent}
-      </div>
-
-      {showLibrary && (
-        <ChartLibraryPanel open={true} onClose={() => setShowLibrary(false)} />
-      )}
-
-      {(() => {
-        const chart = savedCharts.find((c) => c.id === selectedChartId);
-        if (showEditSidebar && chart) {
-          return (
-            <ChartEditSidebar
-              chart={chart}
-              onClose={() => {
-                setShowEditSidebar(false);
-                setSelectedChartId(null);
-              }}
-            />
-          );
-        }
-        return null;
-      })()}
-    </div>
+    <DashboardContent
+      activeDashboard={activeDashboard}
+      isEditing={isEditing}
+      isFullscreen={isFullscreen}
+      savingLayout={savingLayout}
+      isSaving={isSaving}
+      tempLayout={tempLayout}
+      showLibrary={showLibrary}
+      showEditSidebar={showEditSidebar}
+      selectedChartId={selectedChartId}
+      savedCharts={savedCharts}
+      pendingExitEdit={pendingExitEdit}
+      pendingRemoveChart={pendingRemoveChart}
+      layoutSettings={layoutSettings}
+      onToggleEdit={handleToggleEdit}
+      onDashboardChange={setActiveDashboard}
+      onSave={handleSave}
+      onExportPng={handleExportPng}
+      onCanvasSettingsChange={handleCanvasSettingsChange}
+      onToggleLibrary={() => setShowLibrary(v => !v)}
+      onCloseLibrary={() => setShowLibrary(false)}
+      onItemLayoutChange={handleItemLayoutChange}
+      onItemDoubleClick={handleChartDoubleClick}
+      onConfirmExitEdit={handleConfirmExitEdit}
+      onCancelExitEdit={handleCancelExitEdit}
+      onConfirmRemoveChart={handleConfirmRemoveChart}
+      onCancelRemoveChart={handleCancelRemoveChart}
+      onCloseEditSidebar={() => {
+        setShowEditSidebar(false);
+        setSelectedChartId(null);
+      }}
+    />
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    display: 'flex',
-    flexDirection: 'row',
-    height: '100%',
-    background: 'var(--bg-primary)',
-    overflow: 'hidden',
-  },
-  leftPanel: {
-    width: '320px',
-    minWidth: '280px',
-    maxWidth: '420px',
-    borderRight: '1px solid var(--border-primary)',
-    background: 'var(--bg-primary)',
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  rightPanel: {
-    width: '360px',
-    minWidth: '300px',
-    maxWidth: '480px',
-    borderLeft: '1px solid var(--border-primary)',
-    background: 'var(--bg-primary)',
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  fullscreen: {
-    position: 'fixed',
-    inset: 0,
-    zIndex: 9999,
-    background: 'var(--bg-primary)',
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  emptyContainer: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: '16px',
-    color: 'var(--text-secondary)',
-    padding: '48px 24px',
-  },
-  emptyIcon: { fontSize: '48px' },
-  emptyTitle: { fontSize: '20px', fontWeight: 600, color: 'var(--text-primary)' },
-  emptyDesc: { fontSize: '14px', maxWidth: '400px', textAlign: 'center', lineHeight: 1.6 },
-  createButton: {
-    padding: '10px 24px',
-    background: 'var(--primary)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '14px',
-    cursor: 'pointer',
-  },
-  // P1 UX：编辑模式提示条
-  editModeBanner: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '8px 16px',
-    background: 'var(--primary-bg)',
-    borderBottom: '1px solid var(--primary)',
-    fontSize: '13px',
-    color: 'var(--primary)',
-  },
-  editModeIcon: { fontSize: '14px' },
-  editModeText: { fontWeight: 500 },
-  editModeChanged: { color: 'var(--warning)', fontWeight: 600 },
-  modalOverlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0, 0, 0, 0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  modal: {
-    background: 'var(--bg-primary)',
-    borderRadius: '12px',
-    width: '440px',
-    maxWidth: '90vw',
-    display: 'flex',
-    flexDirection: 'column',
-    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3)',
-    overflow: 'hidden',
-  },
-  modalHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '18px 24px',
-    borderBottom: '1px solid var(--border-primary)',
-  },
-  modalTitle: {
-    margin: 0,
-    fontSize: '16px',
-    fontWeight: 600,
-    color: 'var(--text-primary)',
-  },
-  modalCloseBtn: {
-    background: 'none',
-    border: 'none',
-    fontSize: '22px',
-    cursor: 'pointer',
-    color: 'var(--text-secondary)',
-    padding: '4px 8px',
-    lineHeight: 1,
-    borderRadius: '4px',
-  },
-  modalBody: {
-    padding: '24px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-  },
-  modalLabel: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: 'var(--text-primary)',
-  },
-  modalInput: {
-    padding: '10px 14px',
-    border: '1px solid var(--border-primary)',
-    borderRadius: '8px',
-    fontSize: '14px',
-    background: 'var(--bg-secondary)',
-    color: 'var(--text-primary)',
-    outline: 'none',
-  },
-  modalFooter: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    gap: '10px',
-    padding: '16px 24px',
-    borderTop: '1px solid var(--border-primary)',
-  },
-  modalCancelBtn: {
-    padding: '8px 20px',
-    background: 'var(--bg-secondary)',
-    border: '1px solid var(--border-primary)',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    color: 'var(--text-primary)',
-    fontSize: '14px',
-  },
-  modalConfirmBtn: {
-    padding: '8px 20px',
-    background: 'var(--primary)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '14px',
-  },
 };

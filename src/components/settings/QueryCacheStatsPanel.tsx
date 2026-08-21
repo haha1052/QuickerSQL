@@ -214,20 +214,20 @@ const QueryCacheStatsPanel: React.FC = () => {
     <div style={{ maxWidth: 640 }}>
       <div style={cardStyle}>
         <div style={headerStyle}>
-          <span style={titleStyle}>🔍 查询缓存状态</span>
+          <span style={titleStyle}>{t('cache.statsTitle')}</span>
           <div>
             <button
               style={buttonStyle}
               onClick={handleRefresh}
               disabled={cacheStatsLoading}
             >
-              {cacheStatsLoading ? '加载中...' : '刷新'}
+              {cacheStatsLoading ? t('common.loading') : t('common.refresh')}
             </button>
             <button style={buttonStyle} onClick={handleReset}>
-              重置默认
+              {t('cache.resetDefault')}
             </button>
             <button style={buttonStyle} onClick={() => void clearCache()}>
-              清空缓存
+              {t('cache.clearCache')}
             </button>
           </div>
         </div>
@@ -241,28 +241,28 @@ const QueryCacheStatsPanel: React.FC = () => {
             marginBottom: 8,
             fontSize: 13,
           }}>
-            加载失败：{cacheStatsError}
+            {t('cache.loadFailed', { error: cacheStatsError })}
           </div>
         )}
 
         {!cacheStats && !cacheStatsError && !cacheStatsLoading && (
           <div style={{ padding: 8, color: 'var(--text-secondary, #6a737d)' }}>
-            暂无数据
+            {t('common.noData')}
           </div>
         )}
 
         {cacheStats && (
           <>
             <div style={rowStyle}>
-              <span style={labelStyle}>容量 (capacity)</span>
-              <span style={valueStyle}>{cacheStats.capacity} 条</span>
+              <span style={labelStyle}>{t('cache.capacity')}</span>
+              <span style={valueStyle}>{cacheStats.capacity} {t('cache.unitItems')}</span>
             </div>
             <div style={rowStyle}>
-              <span style={labelStyle}>当前使用 (size)</span>
-              <span style={valueStyle}>{cacheStats.size} 条</span>
+              <span style={labelStyle}>{t('cache.currentSize')}</span>
+              <span style={valueStyle}>{cacheStats.size} {t('cache.unitItems')}</span>
             </div>
             <div style={rowStyle}>
-              <span style={labelStyle}>命中次数 (hits)</span>
+              <span style={labelStyle}>{t('cache.hitCount')}</span>
               <span style={valueStyle}>{cacheStats.hits.toLocaleString()}</span>
             </div>
             <div style={rowStyle}>
@@ -270,11 +270,11 @@ const QueryCacheStatsPanel: React.FC = () => {
               <span style={valueStyle}>{cacheStats.misses.toLocaleString()}</span>
             </div>
             <div style={rowStyle}>
-              <span style={labelStyle}>过期次数 (expired)</span>
+              <span style={labelStyle}>{t('cache.expiredCount')}</span>
               <span style={valueStyle}>{cacheStats.expiredCount.toLocaleString()}</span>
             </div>
             <div style={{ ...rowStyle, alignItems: 'center' }}>
-              <span style={labelStyle}>命中率 (hitRate)</span>
+              <span style={labelStyle}>{t('cache.hitRate')}</span>
               <span style={{ display: 'flex', alignItems: 'center', flex: 1, marginLeft: 12 }}>
                 <span style={valueStyle}>{hitRatePercent}%</span>
                 <div style={progressBarContainerStyle}>
@@ -283,7 +283,7 @@ const QueryCacheStatsPanel: React.FC = () => {
               </span>
             </div>
             <div style={{ ...rowStyle, borderBottom: 'none' }}>
-              <span style={labelStyle}>启用状态 (enabled)</span>
+              <span style={labelStyle}>{t('cache.enabledStatus')}</span>
               <span style={{
                 ...valueStyle,
                 color: cacheStats.enabled ? '#27ae60' : '#c0392b',
@@ -298,14 +298,14 @@ const QueryCacheStatsPanel: React.FC = () => {
 
       <div style={cardStyle}>
         <div style={headerStyle}>
-          <span style={titleStyle}>📈 命中率趋势</span>
+          <span style={titleStyle}>{t('cache.hitRateTrend')}</span>
           <span style={{ fontSize: 12, color: 'var(--text-tertiary, #6a737d)' }}>
-            最近 {hitRateHistory.length} / {MAX_HISTORY} 个采样点
+            {t('cache.samplePoints', { current: hitRateHistory.length, max: MAX_HISTORY })}
           </span>
         </div>
         {hitRateHistory.length < 2 ? (
           <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-tertiary, #6a737d)', fontSize: 13 }}>
-            数据不足。请开启"{t('cache.autoRefresh')}"或手动刷新几次以生成趋势图。
+            {t('cache.insufficientData', { autoRefresh: t('cache.autoRefresh') })}
           </div>
         ) : (() => {
           const chartWidth = 560;
@@ -348,11 +348,11 @@ const QueryCacheStatsPanel: React.FC = () => {
 
       <div style={cardStyle}>
         <div style={{ ...headerStyle, justifyContent: 'flex-start', gap: 8 }}>
-          <span style={titleStyle}>⚙️ 配置</span>
+          <span style={titleStyle}>{t('cache.configTitle')}</span>
         </div>
         <div style={{ ...rowStyle, flexWrap: 'wrap', gap: 16, justifyContent: 'flex-start' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={labelStyle}>容量:</span>
+            <span style={labelStyle}>{t('cache.configCapacity')}</span>
             <input
               type="number"
               min={1}
@@ -362,7 +362,7 @@ const QueryCacheStatsPanel: React.FC = () => {
             />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={labelStyle}>TTL(秒):</span>
+            <span style={labelStyle}>{t('cache.configTtl')}</span>
             <input
               type="number"
               min={0}
@@ -379,7 +379,7 @@ const QueryCacheStatsPanel: React.FC = () => {
               checked={enabledInput}
               onChange={(e) => setEnabledInput(e.target.checked)}
             />
-            <span style={labelStyle}>启用缓存</span>
+            <span style={labelStyle}>{t('cache.enableCache')}</span>
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
             <input
@@ -387,12 +387,12 @@ const QueryCacheStatsPanel: React.FC = () => {
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />
-            <span style={labelStyle}>自动刷新（每5秒）</span>
+            <span style={labelStyle}>{t('cache.autoRefreshEvery5s')}</span>
           </label>
         </div>
         <div style={{ ...rowStyle, borderBottom: 'none', paddingTop: 10 }}>
           <button style={primaryButtonStyle} onClick={handleApply}>
-            应用配置
+            {t('cache.applyConfig')}
           </button>
         </div>
       </div>

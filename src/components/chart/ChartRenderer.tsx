@@ -23,7 +23,7 @@ interface ChartRendererProps {
 }
 
 interface EChartsModule {
-  init: (container: HTMLDivElement) => ECharts;
+  init: (container: HTMLDivElement, theme?: string, opts?: { renderer?: 'canvas' | 'svg' }) => ECharts;
 }
 
 export const ChartRenderer: React.FC<ChartRendererProps> = ({
@@ -59,6 +59,19 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     [colorScheme]
   );
 
+  // P2-3: 数据点 ≤ 5000 用 SVG 渲染（更流畅、可访问性好），> 5000 用 canvas（性能优先）
+  const renderer = useMemo<'svg' | 'canvas'>(() => {
+    const configPayloadForRenderer = config as ChartConfigPayload;
+    const seriesArr = configPayloadForRenderer.series;
+    const dataPoints = Array.isArray(seriesArr)
+      ? seriesArr.reduce<number>(
+          (sum, s) => sum + (Array.isArray(s?.data) ? s.data.length : 0),
+          0
+        )
+      : 0;
+    return dataPoints <= 5000 ? 'svg' : 'canvas';
+  }, [config]);
+
   // 首次挂载时动态加载 echarts 模块
   useEffect(() => {
     let cancelled = false;
@@ -75,124 +88,13 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     };
   }, []);
 
-  // 初始化图表（echarts 加载完成后执行）
-  useEffect(() => {
-    if (!echartsModule || !containerRef.current) return;
-
-    // 初始化图表实例
-    const chart = echartsModule.init(containerRef.current);
-    chartInstanceRef.current = chart;
-
-    // 暴露图表实例给外部
-    if (externalChartRef) {
-      externalChartRef.current = chart;
-    }
-
-    // 配置图表
-    const titleText = Array.isArray(config.title)
-      ? (config.title as unknown as Array<{ text?: string }>)[0]?.text
-      : (config.title as unknown as { text?: string })?.text;
-    const configPayload = config as ChartConfigPayload;
-    const userGrid = configPayload.grid as Record<string, unknown> | undefined;
-    const userLegend = configPayload.legend as Record<string, unknown> | undefined;
-
-    const echartsConfig: Record<string, unknown> = {
-      ...configPayload,
-      grid: {
-        left: '10%',
-        right: '5%',
-        bottom: (configPayload.dataZoom || dataZoom) ? '15%' : '8%',
-        top: titleText ? '60px' : '40px',
-        containLabel: true,
-        show: userGrid?.show !== undefined ? userGrid.show as boolean : showGrid,
-      },
-      legend: userLegend
-        ? { ...userLegend, show: userLegend.show !== undefined ? userLegend.show : showLegend }
-        : { show: showLegend },
-      animation: configPayload.animation !== undefined ? (configPayload.animation as boolean) : animation,
-      animationDuration: configPayload.animationDuration !== undefined ? (configPayload.animationDuration as number) : animationDuration,
-      color: configPayload.color ? (configPayload.color as string[]) : colorPalette,
-    };
-
-    if (toolboxFeature && !configPayload.toolbox) {
-      echartsConfig.toolbox = {
-        show: true,
-        feature: {
-          saveAsImage: { title: '保存为图片' },
-          restore: { title: '还原' },
-          dataView: { title: '数据视图', lang: ['数据视图', '关闭', '刷新'] },
-          magicType: { type: ['line', 'bar', 'stack'], title: { line: '折线图', bar: '柱状图', stack: '堆积' } },
-        },
-        right: 20,
-        top: 5,
-      };
-    } else if (configPayload.toolbox) {
-      echartsConfig.toolbox = configPayload.toolbox;
-    }
-
-    if (dataZoom && !configPayload.dataZoom) {
-      echartsConfig.dataZoom = [
-        {
-          type: 'slider',
-          show: true,
-          start: 0,
-          end: 100,
-          bottom: 10,
-          height: 20,
-        },
-        {
-          type: 'inside',
-          start: 0,
-          end: 100,
-        },
-      ];
-    } else if (configPayload.dataZoom) {
-      echartsConfig.dataZoom = configPayload.dataZoom;
-    }
-
-    // 根据 enableTooltip 设置控制 tooltip
-    if (!enableTooltip) {
-      echartsConfig.tooltip = false;
-    } else if (configPayload.tooltip) {
-      echartsConfig.tooltip = configPayload.tooltip;
-    }
-
-    chart.setOption(echartsConfig as ChartConfig);
-
-    // 触发回调
-    if (onChartReady) {
-      onChartReady(chart);
-    }
-
-    // 响应窗口大小变化
-    const handleResize = () => {
-      chart.resize();
-    };
-    window.addEventListener('resize', handleResize);
-
-    // 初始调整一次大小
-    setTimeout(() => {
-      chart.resize();
-    }, 100);
-
-    // 清理
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      chart.dispose();
-      if (externalChartRef) {
-        externalChartRef.current = null;
-      }
-      chartInstanceRef.current = null;
-    };
-  }, [echartsModule]);
-
-  // 当配置或可视化设置变化时更新图表
-  useEffect(() => {
-    if (chartInstanceRef.current && config) {
-      const titleText = Array.isArray(config.title)
-        ? (config.title as unknown as Array<{ text?: string }>)[0]?.text
-        : (config.title as unknown as { text?: string })?.text;
-      const configPayload = config as ChartConfigPayload;
+  // P2-3: 构建 ECharts 配置（提取公共逻辑，消除 init 和 update 两个 useEffect 中的重复代码）
+  const buildEchartsConfig = React.useCallback(
+    (cfg: ChartConfig): Record<string, unknown> => {
+      const titleText = Array.isArray(cfg.title)
+        ? (cfg.title as unknown as Array<{ text?: string }>)[0]?.text
+        : (cfg.title as unknown as { text?: string })?.text;
+      const configPayload = cfg as ChartConfigPayload;
       const userGrid = configPayload.grid as Record<string, unknown> | undefined;
       const userLegend = configPayload.legend as Record<string, unknown> | undefined;
 
@@ -232,35 +134,62 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
 
       if (dataZoom && !configPayload.dataZoom) {
         echartsConfig.dataZoom = [
-          {
-            type: 'slider',
-            show: true,
-            start: 0,
-            end: 100,
-            bottom: 10,
-            height: 20,
-          },
-          {
-            type: 'inside',
-            start: 0,
-            end: 100,
-          },
+          { type: 'slider', show: true, start: 0, end: 100, bottom: 10, height: 20 },
+          { type: 'inside', start: 0, end: 100 },
         ];
       } else if (configPayload.dataZoom) {
         echartsConfig.dataZoom = configPayload.dataZoom;
       }
 
-      // 根据 enableTooltip 设置控制 tooltip
       if (!enableTooltip) {
         echartsConfig.tooltip = false;
       } else if (configPayload.tooltip) {
         echartsConfig.tooltip = configPayload.tooltip;
       }
 
-      chartInstanceRef.current.setOption(echartsConfig as ChartConfig, true);
+      return echartsConfig;
+    },
+    [showGrid, showLegend, animation, animationDuration, toolboxFeature, dataZoom, colorPalette, enableTooltip],
+  );
+
+  // 初始化图表（echarts 加载完成后执行）
+  useEffect(() => {
+    if (!echartsModule || !containerRef.current) return;
+
+    // P2-3: 根据 dataPoints 动态选择 svg/canvas 渲染器
+    const chart = echartsModule.init(containerRef.current, undefined, { renderer });
+    chartInstanceRef.current = chart;
+    if (externalChartRef) externalChartRef.current = chart;
+
+    chart.setOption(buildEchartsConfig(config) as ChartConfig);
+    if (onChartReady) onChartReady(chart);
+
+    // P2-3: resize 加 200ms debounce 减少高频触发
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => chart.resize(), 200);
+    };
+    window.addEventListener('resize', handleResize);
+
+    setTimeout(() => chart.resize(), 100);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (resizeTimer) clearTimeout(resizeTimer);
+      chart.dispose();
+      if (externalChartRef) externalChartRef.current = null;
+      chartInstanceRef.current = null;
+    };
+  }, [echartsModule, renderer, buildEchartsConfig]);
+
+  // 当配置或可视化设置变化时更新图表
+  React.useEffect(() => {
+    if (chartInstanceRef.current && config) {
+      chartInstanceRef.current.setOption(buildEchartsConfig(config) as ChartConfig, true);
       chartInstanceRef.current.resize();
     }
-  }, [config, showGrid, showLegend, animation, animationDuration, toolboxFeature, dataZoom, colorPalette, enableTooltip]);
+  }, [config, buildEchartsConfig]);
 
   // 加载骨架屏
   if (!echartsModule && !loadError) {

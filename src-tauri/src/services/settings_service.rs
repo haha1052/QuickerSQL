@@ -64,7 +64,7 @@ fn default_settings() -> Vec<DefaultSettingEntry> {
         ("editor".to_string(), "cursorStyle".to_string(), "line".to_string(), SettingValueType::Select, Some(r#"["line","block","underline","line-thin","block-outline","underline-thin"]"#.to_string()), Some("光标样式".to_string())),
         ("editor".to_string(), "renderWhitespace".to_string(), "none".to_string(), SettingValueType::Select, Some(r#"["none","boundary","all"]"#.to_string()), Some("显示空白字符".to_string())),
 
-        // ========== SQL查询设置 (9项) ==========
+        // ========== SQL查询设置 (14项) ==========
         ("sql".to_string(), "autoComplete".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("SQL自动完成".to_string())),
         ("sql".to_string(), "formatOnSave".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("保存时自动格式化".to_string())),
         ("sql".to_string(), "resultLimit".to_string(), "1000".to_string(), SettingValueType::Number, None, Some("查询结果限制行数".to_string())),
@@ -74,6 +74,11 @@ fn default_settings() -> Vec<DefaultSettingEntry> {
         ("sql".to_string(), "maxHistorySize".to_string(), "500".to_string(), SettingValueType::Number, None, Some("历史记录最大条数".to_string())),
         ("sql".to_string(), "enableAutoRecover".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("启用自动恢复".to_string())),
         ("sql".to_string(), "defaultSelectLimit".to_string(), "100".to_string(), SettingValueType::Number, None, Some("SELECT默认限制行数".to_string())),
+        ("sql".to_string(), "copy_include_header".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("复制时包含表头".to_string())),
+        ("sql".to_string(), "copy_null_text".to_string(), "".to_string(), SettingValueType::String, None, Some("复制时NULL的表示文本".to_string())),
+        ("sql".to_string(), "null_display".to_string(), "NULL".to_string(), SettingValueType::String, None, Some("表格中NULL的显示文本".to_string())),
+        ("sql".to_string(), "grid_row_numbers".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("显示行号列".to_string())),
+        ("sql".to_string(), "insert_default_table".to_string(), "my_table".to_string(), SettingValueType::String, None, Some("INSERT语句默认表名".to_string())),
 
         // ========== 数据导入设置 (7项) ==========
         ("import".to_string(), "autoDetectEncoding".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("自动检测编码".to_string())),
@@ -81,7 +86,7 @@ fn default_settings() -> Vec<DefaultSettingEntry> {
         ("import".to_string(), "skipEmptyRows".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("跳过空行".to_string())),
         ("import".to_string(), "firstRowAsHeader".to_string(), "true".to_string(), SettingValueType::Boolean, None, Some("首行作为表头".to_string())),
         ("import".to_string(), "importBatchSize".to_string(), "1000".to_string(), SettingValueType::Number, None, Some("批量导入行数".to_string())),
-        ("import".to_string(), "maxImportFileSize".to_string(), "100".to_string(), SettingValueType::Number, None, Some("最大导入文件大小（MB）".to_string())),
+        ("import".to_string(), "maxImportFileSize".to_string(), "1000".to_string(), SettingValueType::Number, None, Some("最大导入文件大小（MB）".to_string())),
         ("import".to_string(), "importTimeout".to_string(), "60".to_string(), SettingValueType::Number, None, Some("导入超时时间（秒）".to_string())),
 
         // ========== 可视化设置 (8项) ==========
@@ -223,7 +228,7 @@ fn implemented_settings() -> std::collections::HashSet<(String, String)> {
     set.insert(("editor".to_string(), "cursorStyle".to_string()));
     set.insert(("editor".to_string(), "renderWhitespace".to_string()));
 
-    // ========== sql (9项) ==========
+    // ========== sql (14项) ==========
     set.insert(("sql".to_string(), "autoComplete".to_string()));
     set.insert(("sql".to_string(), "resultLimit".to_string()));
     set.insert(("sql".to_string(), "showExecutionTime".to_string()));
@@ -233,6 +238,11 @@ fn implemented_settings() -> std::collections::HashSet<(String, String)> {
     set.insert(("sql".to_string(), "autoExecute".to_string()));
     set.insert(("sql".to_string(), "enableAutoRecover".to_string()));
     set.insert(("sql".to_string(), "defaultSelectLimit".to_string()));
+    set.insert(("sql".to_string(), "copy_include_header".to_string()));
+    set.insert(("sql".to_string(), "copy_null_text".to_string()));
+    set.insert(("sql".to_string(), "null_display".to_string()));
+    set.insert(("sql".to_string(), "grid_row_numbers".to_string()));
+    set.insert(("sql".to_string(), "insert_default_table".to_string()));
 
     // ========== import (7项) ==========
     set.insert(("import".to_string(), "autoDetectEncoding".to_string()));

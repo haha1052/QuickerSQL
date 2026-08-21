@@ -27,12 +27,18 @@ let sql = format!("SELECT * FROM {}", user_supplied_table);
 // ❌ 禁止 `executescript` / 多语句 SQL（本项目架构已禁止）
 ```
 
-**检测方法（Windows PowerShell 环境执行）：**
+**检测方法（Windows PowerShell 环境执行，两段式 — 排除 `SqlIdentifier` 封装的合法用法）：**
 
 ```powershell
-# 检测 format! 拼接 SQL 的可疑写法
+# SQL 注入检测（两段式）：
+# 第一段：粗筛所有 format! + SQL 关键字匹配
 cd src-tauri
-Get-ChildItem -Path src -Include *.rs -Recurse | Select-String -Pattern 'format!' | Select-String -Pattern 'select|insert|update|delete|create|alter' -CaseSensitive:$false
+$matches = Get-ChildItem -Path src -Include *.rs -Recurse | Select-String -Pattern 'format!\s*\(".*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)' -CaseSensitive:$false
+# 第二段：排除合法的 ident.quoted() / SqlIdentifier 封装用法
+$violations = $matches | Where-Object { $_.Line -notmatch 'ident\.quoted\(\)|SqlIdentifier|safe_' }
+$violations | Format-Table -AutoSize
+Write-Host "潜在违规数: $($violations.Count)"
+# 期望：潜在违规数 = 0（所有 format! + SQL 用法都已通过 SqlIdentifier 封装）
 
 # 检测手动转义引号（绕过参数化查询）
 Get-ChildItem -Path src -Include *.rs -Recurse | Select-String -Pattern 'replace.*["'\'']["'\'']'
@@ -128,11 +134,32 @@ components → use*Store() → taskService.{listTasks, getTask, ...}
                                        └─ commands/automation.rs  (Rust 参数化查询)
 ```
 
-**前端 SQL 拼接检测（PowerShell）：**
+**前端 SQL 拼接检测（PowerShell，v26.2 修订：case-sensitive + 排除 SQL 客户端工具类目录 + safe_sql 白名单）：**
+
+> **修订说明**（v26.2）：
+> 1. QuickerSQL 是 SQL 客户端工具，`src/components/sql/`、`src/utils/sql*`、`src/utils/resultCopy`、`src/context/LocaleContext.tsx` 中存在 SQL 关键字属正常业务用法（SQL 编辑器、SQL 格式化、SQL 补全、SQL 结果复制、SQL 示例文案），不属于"前端拼接 SQL"违规。
+> 2. 测试文件（`__tests__/`、`*.test.ts`、`*.test.tsx`）中使用 SQL 字符串作为测试数据属正常用法。
+> 3. **case-sensitive** 匹配：原规则 `-CaseSensitive:$false` 会匹配 `<select>` HTML 元素、`selection`/`update`/`delete` 等 TS 标识符，造成 1744 条误报。SQL 关键字在 SQL 查询中按惯例大写，故改为 case-sensitive 匹配（仅匹配 `SELECT`/`INSERT`/`UPDATE`/`DELETE` 大写形式）。
+> 4. **safe_sql 白名单**：对剩余的合法用例（如 form placeholder 中的 SQL 示例、SQL 关键字检测逻辑、SQL 客户端工具生成的 SQL 模板），在该行末尾添加 `// safe_sql:` 注释标记，检测时自动排除（与 Rust 侧的 `safe_sql` 标记机制一致）。
 
 ```powershell
-Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse | Select-String -Pattern 'SELECT|INSERT|UPDATE|DELETE' -CaseSensitive:$false
+# v26.2 修订版：case-sensitive + 排除 SQL 客户端工具类目录 + safe_sql 白名单过滤
+Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse -File |
+  Where-Object {
+    $_.FullName -notmatch '\\components\\sql\\' -and
+    $_.FullName -notmatch '\\utils\\sql' -and
+    $_.FullName -notmatch '\\utils\\resultCopy' -and
+    $_.FullName -notmatch '\\__tests__\\' -and
+    $_.FullName -notmatch '\\context\\LocaleContext\.tsx$' -and
+    $_.Name -notmatch '\.test\.tsx?$'
+  } |
+  Select-String -Pattern 'SELECT|INSERT|UPDATE|DELETE' -CaseSensitive |
+  Where-Object { $_.Line -notmatch '//\s*safe_sql' } |
+  Measure-Object | Select-Object Count
+# 期望：Count = 0（排除 SQL 客户端工具类目录 + safe_sql 白名单后）
 ```
+
+> ⚠️ **规则边界**：本检测的目的是禁止"前端组件 / store / pages 中直接拼接 SQL 字符串用于查询"，而不是禁止"前端展示或编辑 SQL 文本"。SQL 客户端工具类（编辑器、格式化器、补全器、示例文案、SQL 模板生成）中的 SQL 关键字属正常用法，已通过目录排除或 `// safe_sql:` 白名单处理。
 
 ### 2.2 禁止 any 类型 + 未校验的用户输入
 
@@ -224,9 +251,9 @@ Get-ChildItem -Recurse -Include *.rs,*.ts,*.tsx | Select-String -Pattern 'sk-|pa
 
 | 验证项 | 命令（PowerShell 环境，在项目根目录执行） | 期望结果 |
 |--------|----------------------------------------|---------|
-| **SQL 注入检测（Rust）** | `cd src-tauri; Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'format!.*SELECT\|format!.*INSERT\|format!.*UPDATE\|format!.*DELETE\|conn.execute(format!' -CaseSensitive:$false \| Measure-Object \| Select-Object Count` | **Count = 0**（0 个匹配才算通过） |
+| **SQL 注入检测（Rust，两段式）** | `cd src-tauri; $m = Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'format!\s*\(".*(SELECT\|INSERT\|UPDATE\|DELETE\|CREATE\|ALTER\|DROP)' -CaseSensitive:$false; $v = $m \| Where-Object { $_.Line -notmatch 'ident\.quoted\(\)\|SqlIdentifier\|safe_' }; $v \| Format-Table -AutoSize; Write-Host "潜在违规数: $($v.Count)"` | **潜在违规数 = 0**（排除 SqlIdentifier 封装后的违规数） |
 | **手动转义引号检测** | `cd src-tauri; Get-ChildItem -Path src -Include *.rs -Recurse \| Select-String -Pattern 'replace.*["'\'']["'\'']' \| Measure-Object \| Select-Object Count` | **Count = 0** |
-| **TS 前端 SQL 拼接检测** | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse \| Select-String -Pattern 'SELECT\|INSERT\|UPDATE\|DELETE' -CaseSensitive:$false \| Measure-Object \| Select-Object Count` | **Count = 0** |
+| **TS 前端 SQL 拼接检测（v26.2 修订，case-sensitive + 排除 SQL 工具目录 + safe_sql 白名单）** | `Get-ChildItem -Path src -Include *.ts,*.tsx -Recurse -File \| Where-Object { $_.FullName -notmatch '\\components\\sql\\' -and $_.FullName -notmatch '\\utils\\sql' -and $_.FullName -notmatch '\\utils\\resultCopy' -and $_.FullName -notmatch '\\__tests__\\' -and $_.FullName -notmatch '\\context\\LocaleContext\.tsx$' -and $_.Name -notmatch '\.test\.tsx?$' } \| Select-String -Pattern 'SELECT\|INSERT\|UPDATE\|DELETE' -CaseSensitive \| Where-Object { $_.Line -notmatch '//\s*safe_sql' } \| Measure-Object \| Select-Object Count` | **Count = 0**（case-sensitive 匹配 + 排除 SQL 客户端工具类目录 `src/components/sql/`、`src/utils/sql*`、`src/utils/resultCopy`、测试文件、`LocaleContext.tsx`，剩余合法用例用 `// safe_sql:` 注释标记白名单） |
 | **敏感字符串检测** | `Get-ChildItem -Path src-tauri/src,src -Include *.rs,*.ts,*.tsx -Recurse \| Select-String -Pattern 'sk-\|Bearer \|ghp_\|eyJ\|password:\|pwd=\|PRIVATE KEY' \| Measure-Object \| Select-Object Count` | **Count = 0** |
 | **路径穿越风险（路径字符串硬编码）** | `Get-ChildItem -Path src-tauri/src -Include *.rs -Recurse \| Select-String -Pattern 'C:\\Users\|~/\|"\.\./"\|"\.\."\|\\\\' \| Measure-Object \| Select-Object Count` | 0 个或明确注释说明为何安全 |
 | **参数化查询使用（正面验证）** | `cd src-tauri; Get-ChildItem -Path src/services,src/database -Include *.rs -Recurse \| Select-String -Pattern '\?;"\|params!\|&\[&\w' \| Measure-Object \| Select-Object Count` | Count > 0（确保有使用参数化查询） |

@@ -13,6 +13,7 @@ import {
 import { Header, Toast } from './components/common';
 import { useStartupContext } from './AppWrapper';
 import { useSetting } from './context/SettingsContext';
+import { useLocale } from './context/LocaleContext';
 import { setDeveloperMode, setLogLevel } from './utils/logger';
 import { tauriService } from './services/tauri';
 import type { ProjectInfo } from './types';
@@ -36,36 +37,61 @@ const LazyProjectManager = React.lazy(() =>
  * 在 Suspense fallback 中复用可确保视觉一致性
  */
 function LoadingSkeleton() {
+  const { t } = useLocale();
   return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary)',
-        color: 'var(--text-secondary)',
-        fontSize: 14,
-        gap: 8,
-      }}
-    >
-      <div
-        aria-hidden
-        style={{
-          width: 14,
-          height: 14,
-          border: '2px solid var(--border-default)',
-          borderTopColor: 'var(--accent-primary)',
-          borderRadius: '50%',
-          animation: 'quicker-skeleton-spin 0.8s linear infinite',
-        }}
-      />
-      <span>加载中...</span>
+    <div className="loading-skeleton">
+      <div className="loading-skeleton-spinner" aria-hidden />
+      <span>{t('common.loading')}</span>
     </div>
   );
 }
 
+/** 生成 16 字节随机 salt，返回 base64 编码字符串 */
+function generateSalt(): string {
+  const array = new Uint8Array(16);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...Array.from(array)));
+}
+
+/** 使用 salt + password 通过 SHA-256 哈希，返回 base64 编码的哈希 */
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(salt + password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = new Uint8Array(hashBuffer);
+  return btoa(String.fromCharCode(...Array.from(hashArray)));
+}
+
+/** 生成新的密码哈希存储字符串，格式为 salt$hash（用 $ 分隔） */
+async function hashPasswordWithNewSalt(password: string): Promise<string> {
+  const salt = generateSalt();
+  const hash = await hashPassword(password, salt);
+  return `${salt}$${hash}`;
+}
+
+/**
+ * 验证密码。返回 { valid, needUpgrade }
+ * - valid: 密码是否正确
+ * - needUpgrade: 是否需要升级存储格式（旧 btoa 格式 → 新 salt$hash 格式）
+ */
+async function verifyPassword(password: string, stored: string): Promise<{ valid: boolean; needUpgrade: boolean }> {
+  if (stored.includes('$')) {
+    // 新格式：salt$hash
+    const [salt, expectedHash] = stored.split('$');
+    const actualHash = await hashPassword(password, salt);
+    return { valid: actualHash === expectedHash, needUpgrade: false };
+  } else {
+    // 旧格式：btoa 直接编码
+    const oldHash = btoa(password);
+    if (oldHash === stored) {
+      return { valid: true, needUpgrade: true };
+    }
+    return { valid: false, needUpgrade: false };
+  }
+}
+
 function App() {
+  const { t } = useLocale();
   const { startupData, isStartupLoaded } = useStartupContext();
   const { openSettingsModal } = useSettingsStore();
   const [developerMode] = useSetting('advanced', 'developerMode');
@@ -80,6 +106,21 @@ function App() {
   const [enablePasswordProtect] = useSetting('security', 'enablePasswordProtect');
   const [autoLock] = useSetting('security', 'autoLock');
   const [lockTimeout] = useSetting('security', 'lockTimeout');
+
+  // P1-3: 检测是否运行在 Tauri 桌面环境；非 Tauri 时显示一次性 banner
+  const [showEnvBanner, setShowEnvBanner] = React.useState(false);
+  React.useEffect(() => {
+    // 已关闭过的不再打扰
+    if (localStorage.getItem('__env_banner_dismissed') === 'true') return;
+    if (!tauriService.isTauriEnv()) {
+      setShowEnvBanner(true);
+    }
+  }, []);
+
+  const dismissEnvBanner = () => {
+    setShowEnvBanner(false);
+    localStorage.setItem('__env_banner_dismissed', 'true');
+  };
 
   // Advanced 设置项
   const [enableTelemetry] = useSetting('advanced', 'enableTelemetry');
@@ -101,7 +142,31 @@ function App() {
     }
   }, [enablePasswordProtect]);
 
-  // 自动锁定空闲计时器
+  // P2-1: 共享事件监听器 — 合并 autoLock + sessionTimeout 的 8 个监听器为 4 个，mousemove throttle 500ms
+  const activityCallbacksRef = React.useRef<Array<() => void>>([]);
+  React.useEffect(() => {
+    const THROTTLE_MS = 500;
+    let lastMouseMove = 0;
+
+    const handleActivity = (e: Event) => {
+      if (e.type === 'mousemove') {
+        const now = Date.now();
+        if (now - lastMouseMove < THROTTLE_MS) return;
+        lastMouseMove = now;
+      }
+      activityCallbacksRef.current.forEach(cb => cb());
+    };
+
+    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart'];
+    events.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
+    return () => {
+      events.forEach(evt => window.removeEventListener(evt, handleActivity));
+    };
+  }, []);
+
+  // 自动锁定空闲计时器（isLocked 通过 ref 避免闭包过期）
+  const isLockedRef = React.useRef(isLocked);
+  isLockedRef.current = isLocked;
   React.useEffect(() => {
     if (autoLock !== 'true' || enablePasswordProtect !== 'true') return;
 
@@ -118,58 +183,46 @@ function App() {
     };
 
     const resetTimer = () => {
+      if (isLockedRef.current) return;
       if (timeoutId) {
         window.clearTimeout(timeoutId);
       }
-      // 如果已经锁定，不重置计时器
-      if (!isLocked) {
-        timeoutId = window.setTimeout(lockApp, timeoutMs);
-      }
+      timeoutId = window.setTimeout(lockApp, timeoutMs);
     };
 
-    const handleActivity = () => {
-      if (!isLocked) {
-        resetTimer();
-      }
-    };
-
+    activityCallbacksRef.current.push(resetTimer);
     resetTimer();
 
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    window.addEventListener('mousedown', handleActivity);
-    window.addEventListener('touchstart', handleActivity);
-
     return () => {
+      activityCallbacksRef.current = activityCallbacksRef.current.filter(cb => cb !== resetTimer);
       if (timeoutId) {
         window.clearTimeout(timeoutId);
       }
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('mousedown', handleActivity);
-      window.removeEventListener('touchstart', handleActivity);
     };
-  }, [autoLock, lockTimeout, enablePasswordProtect, isLocked]);
+  }, [autoLock, lockTimeout, enablePasswordProtect]);
 
   // 密码验证逻辑
-  const handlePasswordSubmit = () => {
+  const handlePasswordSubmit = async () => {
     const storedHash = localStorage.getItem('__app_password_hash');
     if (!storedHash) {
-      // 设置新密码（简单哈希存储）
-      const hash = btoa(passwordInput); // 简化实现，生产环境应使用更安全的哈希
+      // 设置新密码
+      const hash = await hashPasswordWithNewSalt(passwordInput);
       localStorage.setItem('__app_password_hash', hash);
       setIsLocked(false);
       setPasswordInput('');
       setPasswordError('');
     } else {
       // 验证密码
-      const hash = btoa(passwordInput);
-      if (hash === storedHash) {
+      const result = await verifyPassword(passwordInput, storedHash);
+      if (result.valid) {
+        if (result.needUpgrade) {
+          localStorage.setItem('__app_password_hash', await hashPasswordWithNewSalt(passwordInput));
+        }
         setIsLocked(false);
         setPasswordInput('');
         setPasswordError('');
       } else {
-        setPasswordError('密码错误');
+        setPasswordError(t('security.passwordError'));
       }
     }
   };
@@ -187,7 +240,7 @@ function App() {
     }
   }, [logLevel]);
 
-  // sessionTimeout: 会话超时后清除敏感数据（自动保存的 SQL）
+  // sessionTimeout: 会话超时后清除敏感数据（使用共享事件监听器）
   React.useEffect(() => {
     const timeoutMinutes = parseInt(sessionTimeout || '120', 10);
     if (timeoutMinutes <= 0) return;
@@ -204,7 +257,7 @@ function App() {
       }
       keysToRemove.forEach(key => localStorage.removeItem(key));
       if (keysToRemove.length > 0) {
-        console.info(`[SessionTimeout] 会话超时，已清除 ${keysToRemove.length} 个自动保存文件`);
+        console.info(`[SessionTimeout] Session timeout, cleared ${keysToRemove.length} autosave files`);
       }
     };
 
@@ -217,25 +270,14 @@ function App() {
       timeoutId = window.setTimeout(cleanupSensitiveData, timeoutMs);
     };
 
-    const handleActivity = () => {
-      resetTimer();
-    };
-
+    activityCallbacksRef.current.push(resetTimer);
     resetTimer();
 
-    window.addEventListener('mousemove', handleActivity);
-    window.addEventListener('keydown', handleActivity);
-    window.addEventListener('mousedown', handleActivity);
-    window.addEventListener('touchstart', handleActivity);
-
     return () => {
+      activityCallbacksRef.current = activityCallbacksRef.current.filter(cb => cb !== resetTimer);
       if (timeoutId) {
         window.clearTimeout(timeoutId);
       }
-      window.removeEventListener('mousemove', handleActivity);
-      window.removeEventListener('keydown', handleActivity);
-      window.removeEventListener('mousedown', handleActivity);
-      window.removeEventListener('touchstart', handleActivity);
     };
   }, [sessionTimeout]);
 
@@ -386,7 +428,7 @@ function App() {
   const handleBatchImport = async () => {
     const selectedItems = importItems.filter(i => i.selected && !i.isParent);
     if (selectedItems.length === 0) {
-      setMessage('请先选择要导入的文件', 'warning');
+      setMessage(t('toolbar.selectFileFirst'), 'warning');
       return;
     }
 
@@ -417,12 +459,12 @@ function App() {
 
       if (successCount > 0) {
         const message = failCount > 0
-          ? `成功导入 ${successCount} 个文件，失败 ${failCount} 个`
-          : `成功导入 ${successCount} 个文件`;
+          ? t('common.importSuccessCount', { success: successCount, fail: failCount })
+          : t('common.importSuccessAll', { success: successCount });
         setMessage(message, failCount > 0 ? 'warning' : 'success');
         handleImportComplete();
       } else if (failCount > 0) {
-        setMessage(`导入失败：${failCount} 个文件`, 'error');
+        setMessage(t('common.importAllFailed', { fail: failCount }), 'error');
       }
     } finally {
       setLoading(false);
@@ -464,7 +506,7 @@ function App() {
           >
             <div style={{ fontSize: 48, marginBottom: 16 }}>🔒</div>
             <h2 style={{ margin: '0 0 24px 0', color: 'var(--text-primary)' }}>
-              {localStorage.getItem('__app_password_hash') ? '应用已锁定' : '设置密码'}
+              {localStorage.getItem('__app_password_hash') ? t('security.appLocked') : t('security.setPassword')}
             </h2>
             <div style={{ marginBottom: 16 }}>
               <input
@@ -472,7 +514,7 @@ function App() {
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handlePasswordSubmit()}
-                placeholder={localStorage.getItem('__app_password_hash') ? '输入密码解锁' : '设置密码'}
+                placeholder={localStorage.getItem('__app_password_hash') ? t('security.enterPasswordUnlock') : t('security.enterPasswordSet')}
                 style={{
                   width: '100%',
                   padding: '12px 16px',
@@ -506,7 +548,7 @@ function App() {
                 cursor: 'pointer',
               }}
             >
-              {localStorage.getItem('__app_password_hash') ? '解锁' : '确认'}
+              {localStorage.getItem('__app_password_hash') ? t('security.unlock') : t('common.confirm')}
             </button>
             {enablePasswordProtect !== 'true' && (
               <button
@@ -523,7 +565,7 @@ function App() {
                   fontSize: 14,
                 }}
               >
-                关闭密码保护
+                {t('security.disablePassword')}
               </button>
             )}
           </div>
@@ -537,6 +579,52 @@ function App() {
         onTabChange={setActiveTab}
         onSettingsClick={openSettingsModal}
       />
+
+      {/* P1-3: 浏览器预览模式一次性提示 banner */}
+      {showEnvBanner && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            padding: '10px 16px',
+            background: '#fff8e1',
+            borderBottom: '1px solid #f0c674',
+            color: '#7a5c00',
+            fontSize: 13,
+            fontFamily: 'system-ui',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
+          }}
+        >
+          <span>
+            {t('browser.previewBanner')}
+          </span>
+          <button
+            type="button"
+            onClick={dismissEnvBanner}
+            aria-label={t('browser.closeBanner')}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#7a5c00',
+              fontSize: 16,
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: '0 6px',
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Workspace 是最大的子树之一，懒加载以降低首屏体积 */}
       <Suspense fallback={<LoadingSkeleton />}>

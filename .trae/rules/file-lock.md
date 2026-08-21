@@ -13,7 +13,7 @@
 |------|---------|
 | `src-tauri/src/lib.rs` | Tauri 命令注册 / 状态初始化 |
 | `src-tauri/tauri.conf.json` | 应用配置 / bundle ID / 窗口设置 |
-| `src-tauri/capabilities/default.json` | Tauri 权限声明（新命令必须改这里） |
+| `src-tauri/capabilities/default.json` | Tauri 插件权限声明（fs/dialog/shell 等插件权限；Tauri 2 自定义命令无需在此声明） |
 | `src-tauri/Cargo.toml` | Rust 依赖 |
 | `package.json` | 前端依赖 + npm scripts |
 | `tsconfig.json` | TS 编译配置（strict / 路径别名等全局开关） |
@@ -34,7 +34,7 @@
 
 - 同一 Tier-1 文件，建议同一对话内串行修改（避免前一次编辑覆盖后一次的预期）
 - 新 command 函数追加到 `lib.rs` 的列表末尾，不重排
-- 新权限追加到 `capabilities/default.json` 的数组末尾，不重排
+- 新**插件权限**追加到 `capabilities/default.json` 的数组末尾，不重排（Tauri 2 自定义命令 `#[tauri::command]` 无需在此声明，仅在 `lib.rs` 的 `invoke_handler` 注册即可）
 - 必须用"旧内容字符串匹配"定位修改位置（不按行号）
 
 ---
@@ -69,6 +69,6 @@
 | Tier-1 文件清单完整性 | `Test-Path src-tauri/src/lib.rs; Test-Path src-tauri/tauri.conf.json; Test-Path src-tauri/Cargo.toml; Test-Path package.json; Test-Path src/App.tsx; Test-Path src/store/appStore.ts; Test-Path src/services/tauri.ts; Test-Path .gitignore` | 所有路径返回 True |
 | 修改前是否完整读取 | `Get-ChildItem -Path src-tauri/src/lib.rs \| Select-Object Length` | 修改前必须先用 Filesystem MCP `read_file` 完整读取 |
 | 三处版本号一致 | `Get-Content package.json \| Select-String '"version"'; Get-Content src-tauri/Cargo.toml \| Select-String '^version'; Get-Content src-tauri/tauri.conf.json \| Select-String '"version"'` | 三处版本号字符串完全相同 |
-| 命令注册与权限同步 | `Get-Content src-tauri/src/lib.rs \| Select-String '#\[tauri::command\]' \| Measure-Object; Get-Content src-tauri/capabilities/default.json \| Select-String '"commands"' \| Measure-Object` | command 函数数量应与 capabilities 中注册的命令数一致 |
+| 插件权限覆盖验证 | `Get-Content src-tauri/capabilities/default.json \| Select-String '"identifier":"[^"]+"' \| ForEach-Object { $_.Matches[0].Value } \| Sort-Object -Unique` | Tauri 2 自定义命令（`#[tauri::command]`）无需在 `capabilities/default.json` 中声明；`capabilities` 仅用于插件权限（fs/dialog/shell 等）。验证项改为：`capabilities` 覆盖所有使用的插件权限（**非** command 数量对齐）。`lib.rs` 中 `#[tauri::command]` 数量与 `capabilities` 中权限数量**不需要**相等 |
 
 > 版本变更记录：见 [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md)。

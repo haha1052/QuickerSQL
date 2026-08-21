@@ -318,7 +318,7 @@ mod tests {
         
         for i in 0..3 {
             let request = RecordQueryHistoryRequest {
-                sql: format!("SELECT {} FROM dual", i),
+                sql: format!("SELECT {} FROM dual", i), // safe_sql: test data
                 name: Some(format!("查询{}", i)),
                 execution_time_ms: Some(10 * i),
                 row_count: Some(i),
@@ -347,7 +347,7 @@ mod tests {
         
         for i in 0..5 {
             let request = RecordQueryHistoryRequest {
-                sql: format!("SELECT {} FROM dual", i),
+                sql: format!("SELECT {} FROM dual", i), // safe_sql: test data
                 name: None,
                 execution_time_ms: None,
                 row_count: None,
@@ -480,10 +480,10 @@ mod tests {
     fn test_cleanup_old_history_sync_normal() {
         let (conn, _temp_dir) = create_test_db_connection();
         QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
-        
+
         for i in 0..3 {
             let request = RecordQueryHistoryRequest {
-                sql: format!("SELECT {}", i),
+                sql: format!("SELECT {}", i), // safe_sql: test data
                 name: None,
                 execution_time_ms: None,
                 row_count: None,
@@ -580,10 +580,10 @@ mod tests {
     fn test_get_favorites_via_get_history() {
         let (conn, _temp_dir) = create_test_db_connection();
         QueryHistoryService::ensure_query_history_table_exists(&conn).unwrap();
-        
+
         for i in 0..3 {
             let request = RecordQueryHistoryRequest {
-                sql: format!("SELECT {}", i),
+                sql: format!("SELECT {}", i), // safe_sql: test data
                 name: None,
                 execution_time_ms: None,
                 row_count: None,

@@ -39,11 +39,30 @@ impl From<&str> for CacheStrategy {
     }
 }
 
+/// 估算 QueryResult 的内存占用（字节）
+///
+/// 用于总大小上限驱逐，避免大结果集导致 OOM。
+/// 估算公式：列名长度 + 行数据长度 + 每个单元格固定开销 + 基础开销。
+fn estimate_size(result: &QueryResult) -> usize {
+    // 列名长度 + 每列 Vec 元素指针开销
+    let columns_size: usize = result.columns.iter().map(|c| c.len() + 8).sum();
+    // 每个单元格字符串长度 + 16 字节开销（String 结构体 + Vec 元素指针）
+    let rows_size: usize = result
+        .rows
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(|cell| cell.len() + 16)
+        .sum();
+    columns_size + rows_size + 64 // 基础开销（结构体头 + Vec 头等）
+}
+
 /// 单个缓存条目
 struct CacheEntry {
     result: QueryResult,
     created_at: Instant,
     ttl: Duration,
+    /// 该条目估算的内存占用（字节），用于总大小上限驱逐
+    estimated_size_bytes: usize,
 }
 
 /// 缓存统计信息
@@ -66,6 +85,10 @@ pub struct CacheStats {
     pub enabled: bool,
     /// 当前缓存策略
     pub strategy: CacheStrategy,
+    /// 当前所有条目估算总内存占用（字节）
+    pub total_size_bytes: usize,
+    /// 总内存占用上限（字节）
+    pub max_total_size_bytes: usize,
 }
 
 /// LRU 查询缓存内部状态
@@ -77,10 +100,21 @@ struct InnerCache {
     misses: u64,
     expired_count: u64,
     lru_order: Vec<String>, // 头部 = 最旧，尾部 = 最新
+    /// 当前所有条目估算总内存占用（字节）
+    total_size_bytes: usize,
+    /// 总内存占用上限（字节），默认 256MB
+    max_total_size_bytes: usize,
 }
 
 impl InnerCache {
+    /// 创建默认 256MB 总大小上限的缓存（仅测试使用）
+    #[cfg(test)]
     fn new(capacity: usize, ttl: Duration) -> Self {
+        Self::with_max_size(capacity, ttl, 256 * 1024 * 1024)
+    }
+
+    /// 创建指定总大小上限的缓存
+    fn with_max_size(capacity: usize, ttl: Duration, max_total_size_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
             capacity,
@@ -89,6 +123,8 @@ impl InnerCache {
             misses: 0,
             expired_count: 0,
             lru_order: Vec::new(),
+            total_size_bytes: 0,
+            max_total_size_bytes,
         }
     }
 
@@ -132,11 +168,19 @@ impl InnerCache {
         self.entries.get(key).map(|e| e.result.clone())
     }
 
-    /// 放入新缓存；超过容量时驱逐最久未使用的条目
+    /// 放入新缓存；超过容量或总大小上限时驱逐最久未使用的条目
     fn set(&mut self, key: String, result: QueryResult) {
-        // 如果 key 已存在，先在 lru_order 中移除旧位置
-        if let Some(pos) = self.lru_order.iter().position(|k| k == &key) {
-            self.lru_order.remove(pos);
+        // 计算新条目估算大小
+        let new_size = estimate_size(&result);
+
+        // 如果 key 已存在，先减去旧条目大小并移除 lru_order 中的旧位置
+        if let Some(old_entry) = self.entries.remove(&key) {
+            self.total_size_bytes = self
+                .total_size_bytes
+                .saturating_sub(old_entry.estimated_size_bytes);
+            if let Some(pos) = self.lru_order.iter().position(|k| k == &key) {
+                self.lru_order.remove(pos);
+            }
         }
         self.lru_order.push(key.clone());
 
@@ -146,16 +190,30 @@ impl InnerCache {
                 result,
                 created_at: Instant::now(),
                 ttl: self.ttl,
+                estimated_size_bytes: new_size,
             },
         );
+        self.total_size_bytes = self.total_size_bytes.saturating_add(new_size);
 
         // 容量上限：从 lru_order 头部驱逐最旧条目
         while self.entries.len() > self.capacity {
-            if let Some(oldest_key) = self.lru_order.first().cloned() {
-                self.lru_order.remove(0);
-                self.entries.remove(&oldest_key);
-            } else {
-                break;
+            self.evict_oldest();
+        }
+
+        // 总大小上限：从 lru_order 头部驱逐最旧条目，保留至少 1 条避免无限驱逐
+        while self.total_size_bytes > self.max_total_size_bytes && self.entries.len() > 1 {
+            self.evict_oldest();
+        }
+    }
+
+    /// 从 lru_order 头部驱逐最旧条目（同步更新 total_size_bytes）
+    fn evict_oldest(&mut self) {
+        if let Some(oldest_key) = self.lru_order.first().cloned() {
+            self.lru_order.remove(0);
+            if let Some(entry) = self.entries.remove(&oldest_key) {
+                self.total_size_bytes = self
+                    .total_size_bytes
+                    .saturating_sub(entry.estimated_size_bytes);
             }
         }
     }
@@ -167,6 +225,26 @@ impl InnerCache {
         self.lru_order.clear();
         if cleared > 0 {
             log::debug!("QueryCache 已清除 {} 条缓存（写操作触发）", cleared);
+        }
+    }
+
+    /// 失效指定 key 对应的条目；返回是否命中并删除
+    ///
+    /// 与 `invalidate_all` 一致：仅删除 `entries` 与 `lru_order` 中的对应项，
+    /// 不影响统计计数器（hits/misses/expired_count）。
+    /// 返回 `true` 表示命中并删除，`false` 表示 key 不存在。
+    fn invalidate(&mut self, key: &str) -> bool {
+        if let Some(entry) = self.entries.remove(key) {
+            self.total_size_bytes = self
+                .total_size_bytes
+                .saturating_sub(entry.estimated_size_bytes);
+            if let Some(pos) = self.lru_order.iter().position(|k| k == key) {
+                self.lru_order.remove(pos);
+            }
+            log::debug!("QueryCache 已失效单条缓存: key_len={}", key.len());
+            true
+        } else {
+            false
         }
     }
 
@@ -202,6 +280,8 @@ impl InnerCache {
             hit_rate,
             enabled,
             strategy,
+            total_size_bytes: self.total_size_bytes,
+            max_total_size_bytes: self.max_total_size_bytes,
         }
     }
 }
@@ -219,7 +299,11 @@ impl QueryCacheService {
     /// 创建新的查询缓存服务
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(InnerCache::new(100, Duration::from_secs(300))),
+            inner: Mutex::new(InnerCache::with_max_size(
+                100,
+                Duration::from_secs(300),
+                256 * 1024 * 1024,
+            )),
             enabled: Mutex::new(true),
             strategy: Mutex::new(CacheStrategy::Lru),
         }
@@ -327,6 +411,30 @@ impl QueryCacheService {
         }
     }
 
+    /// 失效指定缓存 key 对应的条目（若存在）
+    ///
+    /// 与 [`invalidate_all`](Self::invalidate_all) 一致的锁/策略处理：
+    /// - `None` 策略下永远不存储，故返回 `false`
+    /// - `Lru` 策略下命中并删除返回 `true`，key 不存在返回 `false`
+    ///
+    /// 参数：
+    /// - `key`: 缓存键（通常由 [`make_cache_key`] 生成）
+    ///
+    /// 返回：是否真的删除了条目（`true` = 命中并删除，`false` = 不存在）
+    pub fn invalidate(&self, key: &str) -> bool {
+        let strategy = self.get_strategy();
+        match strategy {
+            CacheStrategy::None => false,
+            CacheStrategy::Lru => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.invalidate(key)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     /// 返回统计快照
     pub fn stats(&self) -> CacheStats {
         let enabled = self.is_enabled();
@@ -342,6 +450,8 @@ impl QueryCacheService {
                 hit_rate: 0.0,
                 enabled,
                 strategy,
+                total_size_bytes: 0,
+                max_total_size_bytes: 0,
             },
         }
     }
@@ -586,5 +696,70 @@ mod tests {
         let s = cache.stats();
         assert_eq!(s.size, 0);
         assert_eq!(s.strategy, CacheStrategy::None);
+    }
+
+    #[test]
+    fn test_total_size_limit_evicts_oldest() {
+        // 设置 max_total_size_bytes 较小（1KB），插入多个大条目验证驱逐
+        let mut inner = InnerCache::with_max_size(100, Duration::from_secs(300), 1024);
+        // 构造大结果集：每条 ~5KB 以上，远超 1KB 上限
+        let big_result = QueryResult {
+            columns: vec!["col".to_string(); 10],
+            rows: (0..20)
+                .map(|i| (0..10).map(|j| format!("value_{}_{}", i, j)).collect())
+                .collect(),
+        };
+        // 测试前提：单条应超过 1KB 上限
+        let first_size = estimate_size(&big_result);
+        assert!(first_size > 1024, "测试前提：单条应超过 1KB 上限");
+
+        inner.set("k1".to_string(), big_result.clone());
+        // 仅 1 条时即使超过上限也保留（避免无限驱逐）
+        assert_eq!(inner.entries.len(), 1);
+        assert_eq!(inner.total_size_bytes, first_size);
+
+        // 插入第二条，应驱逐 k1（最旧）保留 k2
+        inner.set("k2".to_string(), big_result.clone());
+        // 总大小不超过上限或仅保留 1 条
+        assert!(
+            inner.total_size_bytes <= inner.max_total_size_bytes || inner.entries.len() == 1,
+            "总大小应不超过上限或仅保留 1 条"
+        );
+        assert!(!inner.entries.contains_key("k1"), "最旧的 k1 应被驱逐");
+        assert_eq!(inner.entries.len(), 1, "超过总大小上限时仅保留最新 1 条");
+    }
+
+    #[test]
+    fn test_stats_includes_size_fields() {
+        let mut inner = InnerCache::with_max_size(10, Duration::from_secs(60), 2048);
+        let result = QueryResult {
+            columns: vec!["c1".to_string()],
+            rows: vec![vec!["hello".to_string()]],
+        };
+        let expected_size = estimate_size(&result);
+        inner.set("k1".to_string(), result);
+        let s = inner.stats(true, CacheStrategy::Lru);
+        assert_eq!(s.total_size_bytes, expected_size);
+        assert_eq!(s.max_total_size_bytes, 2048);
+    }
+
+    #[test]
+    fn test_invalidate_reduces_total_size() {
+        let mut inner =
+            InnerCache::with_max_size(100, Duration::from_secs(300), 256 * 1024 * 1024);
+        let result = dummy_result(10);
+        let expected_size = estimate_size(&result);
+        inner.set("k1".to_string(), result);
+        assert_eq!(inner.total_size_bytes, expected_size);
+        assert!(inner.total_size_bytes > 0);
+
+        let removed = inner.invalidate("k1");
+        assert!(removed);
+        assert_eq!(inner.total_size_bytes, 0, "invalidate 后总大小应归零");
+
+        // 不存在的 key 不影响 total_size_bytes
+        let removed2 = inner.invalidate("nonexistent");
+        assert!(!removed2);
+        assert_eq!(inner.total_size_bytes, 0);
     }
 }

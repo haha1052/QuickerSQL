@@ -155,7 +155,7 @@ impl ViewService {
         }
 
         let quoted_table = SqlIdentifier::quote_identifier(table_name);
-        let drop_view_sql = format!("DROP VIEW IF EXISTS {}", quoted_table);
+        let drop_view_sql = format!("DROP VIEW IF EXISTS {}", quoted_table); // safe_sql: SqlIdentifier quoted_table
 
         conn.execute(&drop_view_sql, &[])
             .map_err(|e| {
@@ -254,7 +254,7 @@ mod tests {
 
         // 测试代码：表名通过 SqlIdentifier::quote_identifier 安全引用后再拼接
         let quoted = SqlIdentifier::quote_identifier(table_name);
-        let create_sql = format!("CREATE TABLE {} (id INTEGER, name TEXT);", quoted);
+        let create_sql = format!("CREATE TABLE {} (id INTEGER, name TEXT);", quoted); // safe_sql: test data, SqlIdentifier quoted
         conn.execute(&create_sql, &[]).expect("创建表失败");
 
         let insert_sql = format!(
@@ -408,7 +408,7 @@ mod tests {
 
         for name in ["t_aaa", "t_bbb"] {
             let quoted = SqlIdentifier::quote_identifier(name);
-            let sql = format!("CREATE TABLE {} (id INTEGER);", quoted);
+            let sql = format!("CREATE TABLE {} (id INTEGER);", quoted); // safe_sql: test data, SqlIdentifier quoted
             sqlite_conn.execute(&sql, &[]).expect("创建表失败");
         }
         sqlite_conn.close();

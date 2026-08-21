@@ -1216,3 +1216,389 @@ pub fn get_file_metadata(file_path: String) -> Result<(u64, bool), String> {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ 路径边界测试 ============
+
+    /// 空路径应被拒绝（get_excel_sheets_impl 内部会检测文件存在性）
+    #[test]
+    fn test_get_excel_sheets_impl_empty_path() {
+        let result = get_excel_sheets_impl("");
+        assert!(result.is_err(), "空路径应返回错误");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("文件不存在") || msg.contains("访问") || msg.contains("路径"),
+            "错误信息应提示路径问题，实际: {}", msg
+        );
+    }
+
+    /// 不存在的文件路径（相对路径）应被拒绝，返回用户可读错误
+    #[test]
+    fn test_get_excel_sheets_impl_nonexistent_relative_path() {
+        let result = get_excel_sheets_impl("nonexistent_file.xlsx");
+        assert!(result.is_err(), "不存在的相对路径应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("文件不存在"), "错误信息应提示文件不存在，实际: {}", msg);
+    }
+
+    /// 不存在的文件路径（绝对路径）应被拒绝
+    #[test]
+    fn test_get_excel_sheets_impl_nonexistent_absolute_path() {
+        let result = get_excel_sheets_impl("C:/nonexistent_dir/nonexistent_file.xlsx");
+        assert!(result.is_err(), "不存在的绝对路径应返回错误");
+        assert!(
+            result.unwrap_err().contains("文件不存在"),
+            "错误信息应提示文件不存在"
+        );
+    }
+
+    /// 含空格的路径应被正确处理（此处文件不存在，验证不 panic 且返回可读错误）
+    #[test]
+    fn test_get_excel_sheets_impl_path_with_spaces() {
+        let result = get_excel_sheets_impl("path with spaces/file.xlsx");
+        assert!(result.is_err(), "含空格的不存在路径应返回错误");
+        assert!(
+            result.unwrap_err().contains("文件不存在"),
+            "应返回文件不存在的错误"
+        );
+    }
+
+    /// 含中文字符的路径应被正确处理
+    #[test]
+    fn test_get_excel_sheets_impl_path_with_chinese() {
+        let result = get_excel_sheets_impl("数据目录/测试文件.xlsx");
+        assert!(result.is_err(), "含中文的不存在路径应返回错误");
+        assert!(
+            result.unwrap_err().contains("文件不存在"),
+            "中文路径错误应返回文件不存在"
+        );
+    }
+
+    /// load_excel_sheet_impl 对空路径应返回错误
+    #[test]
+    fn test_load_excel_sheet_impl_empty_path() {
+        let result = load_excel_sheet_impl("", "Sheet1");
+        assert!(result.is_err(), "空路径应返回错误");
+        assert!(
+            result.unwrap_err().contains("文件不存在"),
+            "空路径错误信息应提示文件不存在"
+        );
+    }
+
+    /// load_excel_sheet_impl 对不存在的文件应返回错误
+    #[test]
+    fn test_load_excel_sheet_impl_nonexistent_file() {
+        let result = load_excel_sheet_impl("nonexistent.xlsx", "Sheet1");
+        assert!(result.is_err(), "不存在的文件应返回错误");
+    }
+
+    /// load_all_excel_data 对不存在的文件应返回错误
+    #[test]
+    fn test_load_all_excel_data_nonexistent_file() {
+        let result = load_all_excel_data("nonexistent.xlsx", "Sheet1");
+        assert!(result.is_err(), "不存在的 Excel 文件应返回错误");
+        assert!(
+            result.unwrap_err().contains("Excel文件不存在"),
+            "错误信息应提示 Excel 文件不存在"
+        );
+    }
+
+    /// export_excel_to_temp_csv 对不存在的文件应返回错误
+    #[test]
+    fn test_export_excel_to_temp_csv_nonexistent_file() {
+        let result = export_excel_to_temp_csv("nonexistent.xlsx", "Sheet1", true);
+        assert!(result.is_err(), "不存在的 Excel 文件导出应返回错误");
+        assert!(
+            result.unwrap_err().contains("Excel文件不存在"),
+            "导出错误信息应提示 Excel 文件不存在"
+        );
+    }
+
+    // ============ 扩展名识别测试 ============
+
+    /// is_json_file 应正确识别 JSON 系列扩展名
+    #[test]
+    fn test_is_json_file_supported_extensions() {
+        assert!(is_json_file("data.json"), ".json 应识别为 JSON 文件");
+        assert!(is_json_file("data.jsonl"), ".jsonl 应识别为 JSON 文件");
+        assert!(is_json_file("data.ndjson"), ".ndjson 应识别为 JSON 文件");
+        assert!(is_json_file("DATA.JSON"), "大写扩展名应识别为 JSON 文件");
+    }
+
+    /// is_json_file 对非 JSON 扩展名应返回 false
+    #[test]
+    fn test_is_json_file_unsupported_extensions() {
+        assert!(!is_json_file("data.exe"), ".exe 不应识别为 JSON 文件");
+        assert!(!is_json_file("data.bat"), ".bat 不应识别为 JSON 文件");
+        assert!(!is_json_file("data.csv"), ".csv 不应识别为 JSON 文件");
+        assert!(!is_json_file("data.xlsx"), ".xlsx 不应识别为 JSON 文件");
+        assert!(!is_json_file("data.txt"), ".txt 不应识别为 JSON 文件");
+    }
+
+    /// is_txt_file 应正确识别 TXT 扩展名
+    #[test]
+    fn test_is_txt_file_supported_extensions() {
+        assert!(is_txt_file("data.txt"), ".txt 应识别为 TXT 文件");
+        assert!(is_txt_file("DATA.TXT"), "大写 .TXT 应识别为 TXT 文件");
+    }
+
+    /// is_txt_file 对非 TXT 扩展名应返回 false
+    #[test]
+    fn test_is_txt_file_unsupported_extensions() {
+        assert!(!is_txt_file("data.exe"), ".exe 不应识别为 TXT 文件");
+        assert!(!is_txt_file("data.bat"), ".bat 不应识别为 TXT 文件");
+        assert!(!is_txt_file("data.csv"), ".csv 不应识别为 TXT 文件");
+        assert!(!is_txt_file("data.json"), ".json 不应识别为 TXT 文件");
+    }
+
+    // ============ calculate_import_timeout 测试 ============
+
+    /// 用户自定义超时应优先生效
+    #[test]
+    fn test_calculate_import_timeout_user_override() {
+        let result = calculate_import_timeout(1024, true, Some(120));
+        assert_eq!(result, Duration::from_secs(120), "用户自定义超时应优先生效");
+    }
+
+    /// 小文件 + COPY 模式应使用基础 COPY 超时
+    #[test]
+    fn test_calculate_import_timeout_small_file_copy() {
+        let result = calculate_import_timeout(1024, true, None);
+        assert_eq!(
+            result, Duration::from_secs(COPY_TIMEOUT_SECS),
+            "小文件 + COPY 应使用 COPY 基础超时"
+        );
+    }
+
+    /// 小文件 + 传统模式应使用基础传统超时
+    #[test]
+    fn test_calculate_import_timeout_small_file_traditional() {
+        let result = calculate_import_timeout(1024, false, None);
+        assert_eq!(
+            result, Duration::from_secs(TRADITIONAL_TIMEOUT_SECS),
+            "小文件 + 传统模式应使用传统基础超时"
+        );
+    }
+
+    /// 大文件应在基础超时上增加每 MB 超时
+    #[test]
+    fn test_calculate_import_timeout_large_file() {
+        // 15MB 文件，超出 10MB 阈值 5MB，应增加 5 * 2 = 10 秒
+        let file_size: u64 = 15 * 1024 * 1024;
+        let result = calculate_import_timeout(file_size, true, None);
+        let expected = Duration::from_secs(COPY_TIMEOUT_SECS + 5 * TIMEOUT_PER_MB_SECS);
+        assert_eq!(result, expected, "大文件应按每 MB 增加超时");
+    }
+
+    // ============ CsvRow::parse 测试 ============
+
+    /// 简单 CSV 行应正确解析
+    #[test]
+    fn test_csv_row_parse_simple() {
+        let row = CsvRow::parse("a,b,c").expect("简单 CSV 行应解析成功");
+        assert_eq!(row.fields, vec!["a", "b", "c"], "字段应正确分割");
+    }
+
+    /// 含引号的 CSV 行应正确解析（引号内逗号不分割）
+    #[test]
+    fn test_csv_row_parse_quoted() {
+        let row = CsvRow::parse("\"a,b\",c").expect("含引号 CSV 行应解析成功");
+        assert_eq!(row.fields.len(), 2, "引号内逗号不应分割字段");
+        assert_eq!(row.fields[0], "a,b", "引号内逗号应保留");
+        assert_eq!(row.fields[1], "c", "非引号字段应正确解析");
+    }
+
+    /// 转义引号应正确解析（"" → "）
+    #[test]
+    fn test_csv_row_parse_escaped_quotes() {
+        let row = CsvRow::parse("\"a\"\"b\",c").expect("转义引号 CSV 行应解析成功");
+        assert_eq!(row.fields[0], "a\"b", "转义引号应还原为单引号");
+    }
+
+    /// 空行应返回单个空字段（不 panic）
+    #[test]
+    fn test_csv_row_parse_empty_line() {
+        let row = CsvRow::parse("").expect("空行不应 panic");
+        assert_eq!(row.fields, vec![""], "空行应返回单字段空字符串");
+    }
+
+    // ============ parse_txt_line 测试 ============
+
+    /// 基本分隔符解析
+    #[test]
+    fn test_parse_txt_line_comma() {
+        let fields = parse_txt_line("a, b, c", ",");
+        assert_eq!(fields, vec!["a", "b", "c"], "逗号分隔应正确解析并 trim");
+    }
+
+    /// 制表符分隔
+    #[test]
+    fn test_parse_txt_line_tab() {
+        let fields = parse_txt_line("a\tb\tc", "\t");
+        assert_eq!(fields, vec!["a", "b", "c"], "制表符分隔应正确解析");
+    }
+
+    /// 空分隔符的行为由 Rust split 实现：按字符分割（边界含空串）
+    ///
+    /// 注意：生产代码中 load_txt 会先过滤掉空分隔符（改用 detect_delimiter），
+    /// 此处仅记录 split("") 的实际行为，避免调用方误以为会得到整行单字段。
+    #[test]
+    fn test_parse_txt_line_empty_delimiter_splits_by_char() {
+        let fields = parse_txt_line("abc", "");
+        // Rust 的 split("") 行为：["", "a", "b", "c", ""]（首尾各有一个空串）
+        assert_eq!(fields.len(), 5, "空分隔符会按字符分割（首尾含空串）");
+    }
+
+    // ============ detect_delimiter 测试 ============
+
+    /// 逗号分隔的文本应检测出逗号
+    #[test]
+    fn test_detect_delimiter_comma() {
+        let text = "a,b,c\n1,2,3\n4,5,6";
+        let delim = detect_delimiter(text);
+        assert_eq!(delim, ",", "应检测出逗号分隔符");
+    }
+
+    /// 制表符分隔的文本应检测出制表符
+    #[test]
+    fn test_detect_delimiter_tab() {
+        let text = "a\tb\tc\n1\t2\t3\n4\t5\t6";
+        let delim = detect_delimiter(text);
+        assert_eq!(delim, "\t", "应检测出制表符分隔符");
+    }
+
+    /// 空文本应回退到制表符
+    #[test]
+    fn test_detect_delimiter_empty_text() {
+        let delim = detect_delimiter("");
+        assert_eq!(delim, "\t", "空文本应回退到制表符");
+    }
+
+    /// 无法分割的文本应回退到制表符
+    #[test]
+    fn test_detect_delimiter_no_separator() {
+        let delim = detect_delimiter("abcdef\nghijkl");
+        assert_eq!(delim, "\t", "无法分割的文本应回退到制表符");
+    }
+
+    // ============ try_decode_all_encodings 测试 ============
+
+    /// UTF-8 自动检测应正确解码
+    #[test]
+    fn test_try_decode_all_encodings_utf8_auto() {
+        let text = "你好，世界";
+        let data = text.as_bytes();
+        let decoded = try_decode_all_encodings(data, true, "UTF-8");
+        assert_eq!(decoded, text, "UTF-8 文本应正确解码");
+    }
+
+    /// 指定 GBK 编码应正确解码
+    #[test]
+    fn test_try_decode_all_encodings_gbk() {
+        // "你好" 的 GBK 编码字节
+        let gbk_bytes: &[u8] = &[0xC4, 0xE3, 0xBA, 0xC3];
+        let decoded = try_decode_all_encodings(gbk_bytes, false, "GBK");
+        assert_eq!(decoded, "你好", "GBK 编码应正确解码为中文");
+    }
+
+    /// 空字节数组应返回空字符串（不 panic）
+    #[test]
+    fn test_try_decode_all_encodings_empty() {
+        let decoded = try_decode_all_encodings(&[], true, "UTF-8");
+        assert_eq!(decoded, "", "空字节数组应返回空字符串");
+    }
+
+    // ============ load_json_content 测试 ============
+
+    /// JSON 数组应正确解析
+    #[test]
+    fn test_load_json_content_array() {
+        let text = r#"[{"name":"alice","age":30},{"name":"bob","age":25}]"#;
+        let values = load_json_content(text).expect("JSON 数组应解析成功");
+        assert_eq!(values.len(), 2, "应解析出 2 个对象");
+    }
+
+    /// JSON Lines 格式应正确解析
+    #[test]
+    fn test_load_json_content_jsonl() {
+        let text = "{\"name\":\"alice\"}\n{\"name\":\"bob\"}";
+        let values = load_json_content(text).expect("JSON Lines 应解析成功");
+        assert_eq!(values.len(), 2, "应解析出 2 个 JSON Lines 对象");
+    }
+
+    /// 非法 JSON 应返回错误
+    #[test]
+    fn test_load_json_content_invalid() {
+        let result = load_json_content("not a json");
+        assert!(result.is_err(), "非法 JSON 应返回错误");
+    }
+
+    /// 空文本（仅空白行）应返回错误
+    #[test]
+    fn test_load_json_content_empty() {
+        let result = load_json_content("   \n  \n");
+        assert!(result.is_err(), "空白文本应返回错误");
+    }
+
+    // ============ prepare_field_info 测试 ============
+
+    /// 基本字段应正确推导列名和类型
+    #[test]
+    fn test_prepare_field_info_basic() {
+        let fields = vec![
+            FieldMeta { name: "id".to_string(), data_type: "INTEGER".to_string() },
+            FieldMeta { name: "name".to_string(), data_type: "TEXT".to_string() },
+            FieldMeta { name: "price".to_string(), data_type: "REAL".to_string() },
+        ];
+        let (column_names, column_defs) = prepare_field_info(&fields);
+        assert_eq!(column_names, vec!["id", "name", "price"], "列名应保留原值");
+        assert_eq!(column_defs[0].1, "INTEGER", "INTEGER 类型应保留");
+        assert_eq!(column_defs[1].1, "TEXT", "TEXT 类型应保留");
+        assert_eq!(column_defs[2].1, "REAL", "REAL 类型应保留");
+    }
+
+    /// 含特殊字符的字段名应被安全化（非字母数字/下划线/中文 → 下划线）
+    #[test]
+    fn test_prepare_field_info_special_chars() {
+        let fields = vec![
+            FieldMeta { name: "user-name".to_string(), data_type: "TEXT".to_string() },
+            FieldMeta { name: "price$".to_string(), data_type: "REAL".to_string() },
+        ];
+        let (column_names, _) = prepare_field_info(&fields);
+        assert_eq!(column_names[0], "user_name", "连字符应被替换为下划线");
+        assert_eq!(column_names[1], "price_", "美元符号应被替换为下划线");
+    }
+
+    /// 全特殊字符的字段名应回退为 column_N
+    #[test]
+    fn test_prepare_field_info_all_special_chars() {
+        let fields = vec![
+            FieldMeta { name: "$$$".to_string(), data_type: "TEXT".to_string() },
+        ];
+        let (column_names, _) = prepare_field_info(&fields);
+        assert_eq!(column_names[0], "column_1", "全特殊字符应回退为 column_N");
+    }
+
+    /// 以数字开头的字段名应加 col_ 前缀
+    #[test]
+    fn test_prepare_field_info_leading_digit() {
+        let fields = vec![
+            FieldMeta { name: "1col".to_string(), data_type: "TEXT".to_string() },
+        ];
+        let (column_names, _) = prepare_field_info(&fields);
+        assert_eq!(column_names[0], "col_1col", "数字开头应加 col_ 前缀");
+    }
+
+    /// 中文字段名应保留（符合安全字符集）
+    #[test]
+    fn test_prepare_field_info_chinese_name() {
+        let fields = vec![
+            FieldMeta { name: "姓名".to_string(), data_type: "TEXT".to_string() },
+        ];
+        let (column_names, _) = prepare_field_info(&fields);
+        assert_eq!(column_names[0], "姓名", "中文字段名应保留");
+    }
+}

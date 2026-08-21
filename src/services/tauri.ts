@@ -52,6 +52,71 @@ import type {
  * Tauri Service Layer
  * 统一封装所有与后端的通信
  */
+
+/**
+ * P2-12: 幂等 GET 类命令白名单（只读、无副作用）
+ *
+ * 这些命令在失败时（瞬时网络/锁问题）可以安全重试，因为它们不修改后端状态，
+ * 多次调用结果一致。匹配规则：以 get_/list_/count_ 开头，或属于显式枚举的
+ * 只读命令。Write 类命令（create_/update_/delete_/save_/add_/remove_/move_/
+ * restore_/enable_/disable_/run_/rename_/switch_/duplicate_/replace_/toggle_/
+ * clear_/cleanup_/reset_/export_/import_/open_/configure_/preload_/execute_sql/
+ * record_query_history 等）一律不重试。
+ */
+const IDEMPOTENT_GET_COMMAND_PATTERNS: readonly RegExp[] = [
+  /^get_/,
+  /^list_/,
+  /^count_/,
+  /^load_workspace_cmd$/,
+  /^profile_(table|result)$/,
+];
+
+/** P2-12: 指数退避延迟表（最多重试 3 次，总延迟 100+200+400=700ms） */
+const RETRY_DELAYS_MS: readonly number[] = [100, 200, 400];
+const MAX_RETRIES = RETRY_DELAYS_MS.length;
+
+function isIdempotentGetCommand(command: string): boolean {
+  return IDEMPOTENT_GET_COMMAND_PATTERNS.some((re) => re.test(command));
+}
+
+/**
+ * P2-12: 判断错误是否为瞬时错误（值得重试）
+ *
+ * DuckDB/SQLite 在并发场景下可能抛出 "database is locked" 类错误，
+ * 这类错误在短暂等待后重试通常能成功。其他错误（如参数无效、命令不存在、
+ * SQL 语法错误）则不应重试，重试只会浪费用户时间。
+ */
+function isTransientError(error: Error): boolean {
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes('database is locked') ||
+    msg.includes('database locked') ||
+    msg.includes('could not acquire lock') ||
+    msg.includes('would deadlock') ||
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('io error') ||
+    msg.includes('disk i/o') ||
+    msg.includes('network') ||
+    msg.includes('connection reset')
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 检测当前是否运行在 Tauri 环境中（P1-3）
+ *
+ * Tauri 2 注入 `window.__TAURI_INTERNALS__` 对象用于 IPC 通信。
+ * 纯浏览器环境下该对象不存在，invoke() 调用会抛出 "Cannot read properties of undefined" 错误。
+ * 本函数让调用方能在调用 invoke 前先判断环境，避免无谓的错误抛出。
+ */
+export function isTauriEnv(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
 class TauriService {
   private static instance: TauriService;
 
@@ -64,22 +129,70 @@ class TauriService {
     return TauriService.instance;
   }
 
+  /** 检测当前是否运行在 Tauri 环境中（P1-3） */
+  isTauriEnv(): boolean {
+    return isTauriEnv();
+  }
+
   /**
    * Generic invoke wrapper with unified error handling
+   *
+   * P1-15：保留 Error 对象的堆栈信息，便于排错定位。
+   * - 日志中打印完整 error 对象 + stack（开发者定位用）
+   * - 返回给调用方的 error 字段保持简洁可读（用户可见）
+   *
+   * P2-12：对幂等 GET 类命令实现指数退避重试（最多 3 次），
+   * 仅当错误信息表示瞬时网络/锁问题时才重试，避免对永久性错误（如参数无效、
+   * SQL 语法错误）做无意义的重试。
    */
   private async invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<ApiResponse<T>> {
-    try {
-      const data = await invoke<T>(command, args);
-      return {
-        success: true,
-        data,
-      };
-    } catch (error) {
+    const shouldRetry = isIdempotentGetCommand(command);
+    const maxAttempts = shouldRetry ? MAX_RETRIES + 1 : 1;
+    let lastError: Error | null = null;
+
+    // P1-3: 非 Tauri 环境直接返回错误，避免 invoke 抛出 undefined 错误
+    if (!isTauriEnv()) {
       return {
         success: false,
-        error: String(error),
+        error: '当前为浏览器预览模式，IPC 不可用。请在 Tauri 应用中运行以使用完整功能。',
       };
     }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const data = await invoke<T>(command, args);
+        return {
+          success: true,
+          data,
+        };
+      } catch (error) {
+        // P1-15：规范化 Error 对象，保留 stack 用于日志诊断
+        const normalizedError: Error = error instanceof Error
+          ? error
+          : new Error(String(error));
+        lastError = normalizedError;
+
+        // P1-15：详细错误日志（含 attempt 计数，便于排错）
+        const attemptInfo = shouldRetry ? ` (attempt ${attempt + 1}/${maxAttempts})` : '';
+        console.error(`[invokeCommand] ${command} failed${attemptInfo}:`, normalizedError);
+        if (normalizedError.stack) {
+          console.error(`[invokeCommand] ${command} stack:`, normalizedError.stack);
+        }
+
+        // P2-12：仅对幂等 GET 类命令的瞬时错误进行重试
+        if (!shouldRetry || !isTransientError(normalizedError) || attempt === MAX_RETRIES) {
+          break;
+        }
+
+        // P2-12：指数退避（100ms → 200ms → 400ms）
+        await sleep(RETRY_DELAYS_MS[attempt]);
+      }
+    }
+
+    return {
+      success: false,
+      error: lastError?.message ?? 'Unknown error',
+    };
   }
 
   // ============ Database Operations ============
@@ -1085,7 +1198,7 @@ class TauriService {
 
   /**
    * 对前端传入的查询结果（列名 + 二维字符串）做内存内数据探查。
-   * 用于：用户刚跑了 SQL，对该 SELECT 结果做统计。
+   * 用于：用户刚跑了 SQL，对该 SELECT 结果做统计。 // safe_sql: 注释中引用 SQL 关键字
    */
   async profileResult(
     columns: string[],
@@ -1297,6 +1410,7 @@ class TauriService {
       tags: string[];
       description: string;
       visibility: string;
+      authorizedDashboardIds: string[];
       createdAt: number;
       updatedAt: number;
     }>;

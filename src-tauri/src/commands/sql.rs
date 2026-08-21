@@ -22,6 +22,32 @@ use tauri::State;
 use tauri::Emitter;
 use super::ApiResponse;
 
+/// SQL 执行前的输入参数校验（commands 层边界检查）
+///
+/// 校验规则：
+/// - 拒绝空 SQL（含纯空白）
+/// - 拒绝包含 NULL 字符（`\0`）的 SQL
+/// - 拒绝多语句 SQL（按 `;` 分割后非空语句数 > 1，符合 security.md "禁止多语句 SQL"）
+///
+/// 返回 `Ok(())` 表示通过校验；`Err(String)` 表示参数非法。
+fn validate_sql_input(sql: &str) -> Result<(), String> {
+    if sql.trim().is_empty() {
+        return Err("SQL 不能为空".to_string());
+    }
+    if sql.contains('\0') {
+        return Err("SQL 包含非法 NULL 字符".to_string());
+    }
+    let non_empty_stmts: Vec<&str> = sql
+        .split(';')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if non_empty_stmts.len() > 1 {
+        return Err("禁止多语句 SQL 执行".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn execute_sql(
     state: State<'_, TauriAppState>,
@@ -30,6 +56,8 @@ pub async fn execute_sql(
     if !state.db_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
+
+    validate_sql_input(&sql)?;
 
     let duckdb_opt = {
         let sqlite_conn = state
@@ -192,6 +220,42 @@ pub fn clear_query_cache(state: State<'_, TauriAppState>) -> CacheStats {
     state.query_cache.invalidate_all();
     log::info!("查询缓存已清空（手动触发）");
     state.query_cache.stats()
+}
+
+/// 失效指定 key 对应的单条查询缓存
+///
+/// 用于精确失效某条 SQL 的缓存而不影响其他条目（例如某表结构变更后
+/// 仅刷新相关查询）。返回 `data: true` 表示命中并删除，`false` 表示 key 不存在。
+///
+/// 参数：
+/// - `key`: 缓存键（前端通常需先通过相同 SQL 重新生成 key，或由后端暴露）
+#[tauri::command]
+pub fn invalidate_query_cache(
+    key: String,
+    state: State<'_, TauriAppState>,
+) -> Result<ApiResponse<bool>, String> {
+    if key.trim().is_empty() {
+        return Ok(ApiResponse {
+            success: false,
+            message: "缓存 key 不能为空".into(),
+            data: Some(false),
+        });
+    }
+    let removed = state.query_cache.invalidate(&key);
+    log::info!(
+        "[查询缓存] 单 key 失效：key_len={}, removed={}",
+        key.len(),
+        removed
+    );
+    Ok(ApiResponse {
+        success: true,
+        message: if removed {
+            "缓存条目已失效".into()
+        } else {
+            "缓存 key 不存在".into()
+        },
+        data: Some(removed),
+    })
 }
 
 #[tauri::command]
@@ -518,3 +582,127 @@ fn duckdb_cast_type(sqlite_type: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空 SQL 字符串应被拒绝，不应 panic
+    #[test]
+    fn test_validate_sql_empty_rejected() {
+        let result = validate_sql_input("");
+        assert!(result.is_err(), "空 SQL 应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("不能为空"), "错误信息应提示空值，实际: {}", msg);
+    }
+
+    /// 纯空白 SQL 应被拒绝（与空字符串等价）
+    #[test]
+    fn test_validate_sql_whitespace_only_rejected() {
+        let result = validate_sql_input("   \n\t  ");
+        assert!(result.is_err(), "纯空白 SQL 应返回错误");
+    }
+
+    /// 包含 NULL 字符（`\0`）的 SQL 应被拒绝，不应 panic
+    #[test]
+    fn test_validate_sql_null_char_rejected() {
+        let result = validate_sql_input("SELECT 1\0");
+        assert!(result.is_err(), "包含 NULL 字符的 SQL 应返回错误");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("NULL"), "错误信息应提示 NULL 字符，实际: {}", msg);
+    }
+
+    /// 多语句 SQL（含 `;` 分隔的两条非空语句）应被拒绝，不应 panic
+    #[test]
+    fn test_validate_sql_multi_statement_rejected() {
+        let result = validate_sql_input("SELECT 1; SELECT 2;");
+        assert!(result.is_err(), "多语句 SQL 应返回错误");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("多语句"),
+            "错误信息应提示多语句禁止，实际: {}",
+            msg
+        );
+    }
+
+    /// 超长 SQL（10KB+）应正常处理（返回 Ok），不应 panic
+    #[test]
+    fn test_validate_sql_long_input_no_panic() {
+        // 构造 10KB+ 的单条 SELECT 语句
+        let big_literal = "a".repeat(10 * 1024);
+        let sql = format!("SELECT '{}' AS col", big_literal); // safe_sql: 测试用 SQL 字面量，不执行
+        assert!(sql.len() > 10 * 1024, "测试 SQL 长度应超过 10KB");
+
+        let result = validate_sql_input(&sql);
+        assert!(result.is_ok(), "超长但合法的单条 SQL 应通过校验，实际: {:?}", result);
+    }
+
+    /// 单条语句带末尾分号应通过校验（不算多语句）
+    #[test]
+    fn test_validate_sql_trailing_semicolon_ok() {
+        let result = validate_sql_input("SELECT 1;");
+        assert!(result.is_ok(), "单条语句带末尾分号应通过校验");
+    }
+
+    /// 合法的单条 SELECT 应通过校验
+    #[test]
+    fn test_validate_sql_valid_simple() {
+        let result = validate_sql_input("SELECT 1");
+        assert!(result.is_ok(), "合法单条 SQL 应通过校验");
+    }
+
+    /// 超长 SQL（1MB）应正常处理（返回 Ok），不应 panic 也不应 OOM
+    ///
+    /// 验证校验逻辑对超大输入的健壮性：仅做轻量字符串检查，
+    /// 不应因输入体积大而崩溃或显著阻塞。
+    #[test]
+    fn test_validate_sql_1mb_input_no_panic() {
+        // 构造 1MB 的单条 SELECT 语句（字面量约 1MB）
+        let big_literal = "a".repeat(1024 * 1024);
+        let sql = format!("SELECT '{}' AS col", big_literal); // safe_sql: 测试用 SQL 字面量，不执行
+        assert!(sql.len() >= 1024 * 1024, "测试 SQL 长度应达到 1MB");
+
+        let result = validate_sql_input(&sql);
+        assert!(result.is_ok(), "1MB 合法单条 SQL 应通过校验，实际: {:?}", result);
+    }
+
+    /// 纯注释 SQL（仅含行注释，无实际语句）不应 panic
+    ///
+    /// 当前 validate_sql_input 仅做空白/NULL/多语句校验，
+    /// 纯注释能通过校验（由后续执行层处理），此处验证不 panic 即可。
+    #[test]
+    fn test_validate_sql_pure_line_comment_no_panic() {
+        let result = validate_sql_input("-- this is a pure comment");
+        // 纯注释非空、无 NULL、单语句 → 通过校验
+        assert!(result.is_ok(), "纯行注释 SQL 不应导致 panic");
+    }
+
+    /// 纯块注释 SQL 不应 panic
+    #[test]
+    fn test_validate_sql_pure_block_comment_no_panic() {
+        let result = validate_sql_input("/* 多行\n块注释 */");
+        assert!(result.is_ok(), "纯块注释 SQL 不应导致 panic");
+    }
+
+    /// 含行内注释的 SQL 应通过校验（注释不影响语句本身合法性）
+    #[test]
+    fn test_validate_sql_with_inline_comment_ok() {
+        let result = validate_sql_input("SELECT 1 -- 查询常量");
+        assert!(result.is_ok(), "含行内注释的单条 SQL 应通过校验");
+    }
+
+    /// 含块注释的 SQL 应通过校验
+    #[test]
+    fn test_validate_sql_with_block_comment_ok() {
+        let result = validate_sql_input("SELECT /* 注释 */ 1");
+        assert!(result.is_ok(), "含块注释的单条 SQL 应通过校验");
+    }
+
+    /// 注释 + 多语句的混合应被拒绝（注释不能绕过多语句禁令）
+    #[test]
+    fn test_validate_sql_comment_does_not_bypass_multi_statement() {
+        let result = validate_sql_input("SELECT 1 -- comment\n; SELECT 2");
+        assert!(result.is_err(), "含多语句的 SQL 应被拒绝（即便中间有注释）");
+    }
+}
+

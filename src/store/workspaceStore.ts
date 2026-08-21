@@ -539,7 +539,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       setTabsFromStartup: (layout) => {
         if (!layout || layout.length === 0) return;
 
-        const queryState = useQueryStore.getState();
+        let queryState = useQueryStore.getState();
         const usedQueryIds = new Set<string>();
         const findUnusedQuery = (): typeof queryState.sqlQueries[number] | undefined => {
           return queryState.sqlQueries.find((q) => !usedQueryIds.has(q.id));
@@ -561,8 +561,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               usedQueryIds.add(unused.id);
               queryId = unused.id;
             } else {
-              // 2. 找不到未被占用的查询 → fallback：新建第一个 tab 的 queryId
-              queryId = `startup-${tab.id}`;
+              // 2. 找不到未被占用的查询 → 真正新建一个 SqlQuery，避免使用不存在的占位 ID
+              queryState.addSqlQuery();
+              queryState = useQueryStore.getState();
+              const newQuery = queryState.sqlQueries[queryState.sqlQueries.length - 1];
+              usedQueryIds.add(newQuery.id);
+              queryId = newQuery.id;
             }
           }
 
