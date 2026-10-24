@@ -1,12 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import hardcodedDetector from "./scripts/vite-plugin-hardcoded-detector";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react()],
+  // i18n 硬编码检测：baseline=300（当前存量），防止新增；详见 .trae/rules/i18n.md
+  plugins: [
+    react(),
+    hardcodedDetector({ baseline: 300 }),
+  ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

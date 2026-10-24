@@ -97,7 +97,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       }
     } catch (e) {
       console.error('[DataImport] Failed to load CSV file:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     }
     return null;
   };
@@ -176,7 +176,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       return items;
     } catch (e) {
       console.error('[DataImport] Failed to load Excel file:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
       return [];
     }
   };
@@ -221,7 +221,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       }
     } catch (e) {
       console.error('[DataImport] Failed to load JSON file:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     }
     return null;
   };
@@ -266,7 +266,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       }
     } catch (e) {
       console.error('[DataImport] Failed to load Parquet file:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     }
     return null;
   };
@@ -312,7 +312,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       }
     } catch (e) {
       console.error('[DataImport] Failed to load TXT file:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     }
     return null;
   };
@@ -349,7 +349,7 @@ export const DataImport: React.FC<DataImportProps> = ({
           if (metaResult.success && metaResult.data) {
             if (metaResult.data.size > maxFileSizeBytes) {
               const fileSizeMB = (metaResult.data.size / (1024 * 1024)).toFixed(2);
-              setMessage(`文件 "${fileName}" 过大（${fileSizeMB}MB），超过最大限制 ${maxFileSizeNum}MB，请拆分文件后再导入`, 'error');
+              setMessage({ key: 'import.fileTooLarge', vars: { file: fileName, size: fileSizeMB, max: maxFileSizeNum } }, 'error');
               continue;
             }
           }
@@ -385,7 +385,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       }
     } catch (e) {
       console.error('[DataImport] Failed to process file paths:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     } finally {
       isProcessingDrop.current = false;
     }
@@ -413,7 +413,7 @@ export const DataImport: React.FC<DataImportProps> = ({
       await processFilePaths(files);
     } catch (e) {
       console.error('[DataImport] Failed to select files:', e);
-      setMessage('文件导入失败，请检查文件格式是否正确、文件是否损坏', 'error');
+      setMessage('import.importFailed', 'error');
     }
   };
 
@@ -496,7 +496,7 @@ export const DataImport: React.FC<DataImportProps> = ({
           <div style={styles.emptyImportDesc}>{t('import.selectFileHint')}</div>
           <div style={styles.addButton}>
             <FilePlusIcon size={18} />
-            <span>选择文件</span>
+            <span>{t('projectManager.selectFile')}</span>
           </div>
           <p style={styles.supportedFormats}>{t('import.supportedFormats')}</p>
         </div>

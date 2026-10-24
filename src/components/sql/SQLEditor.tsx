@@ -172,7 +172,7 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
     monacoRef.current = monaco;
 
     if (autoCompleteEnabled && !completionRegisteredRef.current) {
-      registerSqlCompletionProvider(monaco);
+      registerSqlCompletionProvider(monaco, t);
       completionRegisteredRef.current = true;
     }
 
@@ -540,7 +540,7 @@ export const SQLEditor: React.FC<SQLEditorProps> = ({
     if (!monaco) return;
 
     if (autoCompleteEnabled && !completionRegisteredRef.current) {
-      registerSqlCompletionProvider(monaco);
+      registerSqlCompletionProvider(monaco, t);
       completionRegisteredRef.current = true;
     } else if (!autoCompleteEnabled && completionRegisteredRef.current) {
       unregisterSqlCompletionProvider();

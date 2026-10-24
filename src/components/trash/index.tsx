@@ -94,11 +94,11 @@ const TrashPanel: React.FC<TrashPanelProps> = ({ onBack, onRefresh }) => {
         if (onRefresh) onRefresh();
       } else {
         console.error('[TrashPanel] Restore failed:', response.error);
-        setMessage('恢复失败，请稍后重试', 'error');
+        setMessage('trash.restoreFailed', 'error');
       }
     } catch (err) {
       console.error('Failed to restore:', err);
-      setMessage('恢复失败，请稍后重试', 'error');
+      setMessage('trash.restoreFailed', 'error');
     } finally {
       setLoading(false);
     }

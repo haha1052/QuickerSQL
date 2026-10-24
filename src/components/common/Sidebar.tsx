@@ -83,26 +83,26 @@ export const Sidebar: React.FC = () => {
           const hasSuccess = successResults.length > 0;
           queryState.addToHistory(sql, hasSuccess, totalRows);
           if (hasSuccess) {
-            setMessage(`${successResults.length} 条语句执行成功`, 'success');
+            setMessage({ key: 'sidebar.statementSuccess', vars: { count: successResults.length } }, 'success');
           } else {
             console.error('[Sidebar] Query execution failed: no successful results');
-            setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+            setMessage('sidebar.operationFailed', 'error');
           }
         } else {
           console.error('[Sidebar] Query execution error:', response.error);
-          setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+          setMessage('sidebar.operationFailed', 'error');
           queryState.addToHistory(sql, false);
         }
       } catch (err) {
         console.error('Execute SQL error:', err);
-        setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+        setMessage('sidebar.operationFailed', 'error');
         queryState.addToHistory(sql, false);
       } finally {
         queryState.setQueryLoading(null);
       }
     } catch (err) {
       console.error('Failed to execute SQL from history:', err);
-      setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+      setMessage('sidebar.operationFailed', 'error');
     }
   };
 
@@ -124,7 +124,7 @@ export const Sidebar: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to insert SQL:', err);
-      setMessage('操作失败，请重试或查看控制台了解详情', 'error');
+      setMessage('sidebar.operationFailed', 'error');
     }
   };
 

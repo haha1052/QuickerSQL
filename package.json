@@ -27,7 +27,6 @@
     "@monaco-editor/react": "^4.6.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-
     "ag-grid-community": "^35.2.1",
     "ag-grid-react": "^35.2.1",
     "dayjs": "^1.11.13",
@@ -43,17 +42,18 @@
   "devDependencies": {
     "@playwright/test": "^1.61.0",
     "@tauri-apps/cli": "^2",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/lodash-es": "^4.17.12",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^3.2.7",
     "jsdom": "^29.1.1",
     "monaco-editor": "^0.55.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
-    "vitest": "^4.1.9"
+    "vitest": "^3.2.7"
   }
 }

@@ -540,7 +540,7 @@ export const TaskCenterPage: React.FC = () => {
               <button
                 style={styles.secondaryBtn}
                 onClick={() => loadTasks()}
-                title="刷新任务列表"
+                title={t('automation.refreshTaskList')}
                 disabled={loading}
               >
                 🔄 刷新
@@ -548,7 +548,7 @@ export const TaskCenterPage: React.FC = () => {
               <button
                 style={styles.primaryBtn}
                 onClick={handleCreateTask}
-                title="新建任务"
+                title={t('automation.newTask')}
               >
                 + 新建任务
               </button>

@@ -102,8 +102,13 @@ impl TrashService {
     }
 
     /// 将表移动到回收站（同步版本）
+    ///
+    /// 业务数据表在 DuckDB，回收站元数据在 SQLite（__trash_metadata）。
+    /// - sqlite_conn: 读写 __trash_metadata 元数据 + 读 settings
+    /// - duckdb_conn: 执行 ALTER TABLE RENAME 操作业务表
     pub fn move_to_trash_sync(
-        conn: &MutexGuardConnection<'_>,
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
         table_name: &str,
         row_count: u64,
     ) -> Result<TrashItem, String> {
@@ -113,9 +118,9 @@ impl TrashService {
         }
 
         // 检查回收站当前大小，如果超过限制则警告
-        let max_trash_size_mb = Self::get_max_trash_size_mb(conn);
+        let max_trash_size_mb = Self::get_max_trash_size_mb(sqlite_conn);
         let max_trash_bytes = max_trash_size_mb * 1024 * 1024;
-        if let Ok((_, current_size)) = Self::get_trash_stats(conn) {
+        if let Ok((_, current_size)) = Self::get_trash_stats(sqlite_conn) {
             if current_size > max_trash_bytes {
                 log::warn!(
                     "回收站当前大小（约 {:.2} MB）已超过设置的最大限制（{} MB），建议清理回收站",
@@ -126,7 +131,7 @@ impl TrashService {
         }
 
         // 确定策略（从 settings 读取阈值）
-        let strategy = Self::determine_strategy(conn, row_count);
+        let strategy = Self::determine_strategy(sqlite_conn, row_count);
         let safe_original = crate::database::SqlIdentifier::quote_identifier(table_name);
 
         // 生成唯一 ID
@@ -134,19 +139,20 @@ impl TrashService {
 
         match strategy {
             TrashStrategy::Rename => {
-                Self::move_by_rename(conn, &id, table_name, row_count, safe_original)
+                Self::move_by_rename(sqlite_conn, duckdb_conn, &id, table_name, row_count, safe_original)
             }
             TrashStrategy::Parquet => {
                 log::info!("表 {} 较大（{} 行），暂时使用重命名策略", table_name, row_count);
                 // TODO：Parquet 策略实现
-                Self::move_by_rename(conn, &id, table_name, row_count, safe_original)
+                Self::move_by_rename(sqlite_conn, duckdb_conn, &id, table_name, row_count, safe_original)
             }
         }
     }
 
-    /// 重命名策略实现
+    /// 重命名策略实现（DuckDB 重命名表 + SQLite 写元数据）
     fn move_by_rename(
-        conn: &MutexGuardConnection<'_>,
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
         id: &str,
         table_name: &str,
         row_count: u64,
@@ -157,21 +163,21 @@ impl TrashService {
         let trash_table_name = format!("__trash_{}", id.replace('-', "_"));
         let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table_name);
 
-        // 重命名表（表名通过 SqlIdentifier::quote_identifier 安全引用，可保留 format!）
+        // 在 DuckDB 上重命名业务表（表名通过 SqlIdentifier::quote_identifier 安全引用）
         let rename_sql = format!("ALTER TABLE {} RENAME TO {}", safe_original, safe_trash);
-        conn.execute(&rename_sql, &[])
+        duckdb_conn.execute(&rename_sql, &[])
             .map_err(|e| format!("重命名表失败：{}", e))?;
 
         log::debug!("已将表 {} 重命名为 {}（回收站）", table_name, trash_table_name);
 
-        // 插入元数据：参数化查询，避免 format! + replace 单引号转义
+        // 在 SQLite 上插入元数据：参数化查询
         let insert_sql = "INSERT INTO __trash_metadata (id, original_table_name, trash_table_name, row_count, strategy) VALUES (?, ?, ?, ?, 'Rename');";
         let row_count_i64 = row_count as i64;
         let insert_params: [&dyn ToSql; 4] = [
             &id, &table_name, &trash_table_name, &row_count_i64,
         ];
 
-        conn.execute(insert_sql, &insert_params)
+        sqlite_conn.execute(insert_sql, &insert_params)
             .map_err(|e| format!("插入元数据失败：{}", e))?;
 
         Ok(TrashItem {
@@ -188,21 +194,21 @@ impl TrashService {
 
     /// 从回收站恢复表（同步版本）
     ///
-    /// 恢复前会先查询目标表名是否已存在（避免 `ALTER TABLE ... RENAME TO`
-    /// 在目标表已存在时抛出底层错误）。元数据查询、目标表存在性检查与
-    /// 删除元数据均使用参数化查询；ALTER TABLE 中的表名通过
-    /// `SqlIdentifier::quote_identifier` 安全引用。
+    /// 业务数据表在 DuckDB，回收站元数据在 SQLite。
+    /// - sqlite_conn: 读写 __trash_metadata 元数据
+    /// - duckdb_conn: 检查目标表存在性 + 执行 ALTER TABLE RENAME
     pub fn restore_from_trash_sync(
-        conn: &MutexGuardConnection<'_>,
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
         trash_id: &str,
     ) -> Result<String, String> {
         use crate::database::traits::ToSql;
 
-        // 查找回收站项（参数化查询）
+        // 从 SQLite 查找回收站项（参数化查询）
         let select_sql = "SELECT original_table_name, trash_table_name, strategy FROM __trash_metadata WHERE id = ?;";
         let select_params: [&dyn ToSql; 1] = [&trash_id];
 
-        let result = conn.query(select_sql, &select_params)
+        let result = sqlite_conn.query(select_sql, &select_params)
             .map_err(|e| format!("查询回收站失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -233,10 +239,10 @@ impl TrashService {
             log::info!("使用 Rename 策略恢复表");
             if let Some(trash_table) = trash_table_name_owned {
                 if crate::database::SqlIdentifier::is_safe_identifier(&trash_table) {
-                    // P2-7: 恢复前检查目标表名是否已存在
-                    let exists_check_sql = "SELECT name FROM sqlite_master WHERE type='table' AND name = ?;";
+                    // 恢复前检查目标表名是否已存在（DuckDB information_schema）
+                    let exists_check_sql = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_name = ?;";
                     let exists_params: [&dyn ToSql; 1] = [&original_name];
-                    let exists_result = conn.query(exists_check_sql, &exists_params)
+                    let exists_result = duckdb_conn.query(exists_check_sql, &exists_params)
                         .map_err(|e| format!("检查目标表是否存在失败：{}", e))?;
                     if !exists_result.rows.is_empty() {
                         return Err(format!(
@@ -249,15 +255,15 @@ impl TrashService {
                     let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table);
 
                     log::info!("执行重命名: {} -> {}", safe_trash, safe_original);
-                    // ALTER TABLE 中的表名通过 SqlIdentifier::quote_identifier 安全引用
+                    // 在 DuckDB 上恢复表名
                     let restore_sql = format!("ALTER TABLE {} RENAME TO {}", safe_trash, safe_original);
-                    conn.execute(&restore_sql, &[])
+                    duckdb_conn.execute(&restore_sql, &[])
                         .map_err(|e| format!("恢复表失败：{}", e))?;
 
-                    // 删除元数据（参数化查询）
+                    // 从 SQLite 删除元数据
                     let delete_sql = "DELETE FROM __trash_metadata WHERE id = ?;";
                     let delete_params: [&dyn ToSql; 1] = [&trash_id];
-                    conn.execute(delete_sql, &delete_params)
+                    sqlite_conn.execute(delete_sql, &delete_params)
                         .map_err(|e| format!("删除元数据失败：{}", e))?;
 
                     return Ok(format!("已恢复表：{}", original_name));
@@ -273,17 +279,21 @@ impl TrashService {
     }
 
     /// 永久删除回收站项（同步版本）
+    ///
+    /// - sqlite_conn: 读写 __trash_metadata 元数据
+    /// - duckdb_conn: 执行 DROP TABLE 删除业务表
     pub fn permanent_delete_sync(
-        conn: &MutexGuardConnection<'_>,
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
         trash_id: &str,
     ) -> Result<String, String> {
         use crate::database::traits::ToSql;
 
-        // 查找回收站项（参数化查询）
+        // 从 SQLite 查找回收站项
         let select_sql = "SELECT trash_table_name, strategy FROM __trash_metadata WHERE id = ?;";
         let select_params: [&dyn ToSql; 1] = [&trash_id];
 
-        let result = conn.query(select_sql, &select_params)
+        let result = sqlite_conn.query(select_sql, &select_params)
             .map_err(|e| format!("查询回收站失败：{}", e))?;
 
         if result.rows.is_empty() {
@@ -305,18 +315,18 @@ impl TrashService {
             if let Some(trash_table) = trash_table_name_owned {
                 if crate::database::SqlIdentifier::is_safe_identifier(&trash_table) {
                     let safe_trash = crate::database::SqlIdentifier::quote_identifier(&trash_table);
-                    // DROP TABLE 中的表名通过 SqlIdentifier::quote_identifier 安全引用
+                    // 在 DuckDB 上删除表
                     let drop_sql = format!("DROP TABLE IF EXISTS {}", safe_trash);
-                    conn.execute(&drop_sql, &[])
+                    duckdb_conn.execute(&drop_sql, &[])
                         .map_err(|e| format!("删除表失败：{}", e))?;
                 }
             }
         }
 
-        // 删除元数据（参数化查询）
+        // 从 SQLite 删除元数据
         let delete_sql = "DELETE FROM __trash_metadata WHERE id = ?;";
         let delete_params: [&dyn ToSql; 1] = [&trash_id];
-        conn.execute(delete_sql, &delete_params)
+        sqlite_conn.execute(delete_sql, &delete_params)
             .map_err(|e| format!("删除元数据失败：{}", e))?;
 
         Ok(format!("已永久删除回收站项：{}", trash_id))

@@ -68,6 +68,8 @@ pub struct SavedChart {
     pub description: String,
     pub thumbnail: Option<String>,
     pub config: Option<serde_json::Value>,
+    #[serde(rename = "visualConfig")]
+    pub visual_config: Option<serde_json::Value>,
     /// 授权范围: "all" = 所有仪表盘可用; "restricted" = 仅指定仪表盘可用
     pub visibility: String,
     /// visibility = "restricted" 时生效，记录允许使用的仪表盘 ID
@@ -191,6 +193,9 @@ pub struct SavedChartLite {
     /// 修复：启动聚合必须带回该字段，否则前端 ChartLibraryPanel 会因 authorizedDashboardIds=[]
     /// 误判 restricted 图表不可添加到任何仪表盘（导致"添加图表失败"现象）
     pub authorized_dashboard_ids: Vec<String>,
+    /// 视觉配置 JSON（启动聚合时带回到前端，保证图表首次渲染就能应用视觉设置）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visual_config: Option<serde_json::Value>,
     pub created_at: i64,
     pub updated_at: i64,
 }

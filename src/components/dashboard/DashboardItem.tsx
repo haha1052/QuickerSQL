@@ -6,6 +6,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useLocale } from '../../context/LocaleContext';
 import { useDashboardStore } from '../../store';
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
+import { pickChartResultStatement } from '../../utils/chartResult';
+import { applyVisualConfig } from '../../utils/chartVisual';
 import { applyFiltersToSql, hasActiveFilters } from '../../utils/filterSql';
 import type { DashboardItem as DashboardItemType, SavedChart, DashboardFilter } from '../../types/dashboard';
 import type { ChartConfig } from '../../types/chart';
@@ -37,7 +39,9 @@ async function renderWithSql(
       throw new Error(`执行查询失败: ${execResponse.error || '未知错误'}`);
     }
 
-    const firstResult = execResponse.data.results?.[0];
+    // 多语句 SQL：挑出列完整包含 x/y 轴的结果段（勿盲目取 results[0]，
+    // 前置探索语句的列往往不含图表的聚合列，会导致「找不到Y轴列」而渲染失败）
+    const firstResult = pickChartResultStatement(execResponse.data.results, savedChart.xAxis, savedChart.yAxis);
     if (!firstResult || !firstResult.columns || !firstResult.rows) {
       throw new Error('查询结果为空');
     }
@@ -276,15 +280,16 @@ function optimizeConfigForSize(
  */
 const ChartCanvas: React.FC<{
   chartConfig: ChartConfig | null;
-  /** 编辑模式下禁用 ECharts 的鼠标交互，让拖拽事件能穿透到外层卡片 */
+  visualConfig?: import('../../types/chart').VisualConfig | null;
   interactive: boolean;
-}> = ({ chartConfig, interactive }) => {
+}> = ({ chartConfig, visualConfig, interactive }) => {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<ECharts | null>(null);
   const echartsModuleRef = useRef<{ init: (el: HTMLDivElement) => ECharts } | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const lastAppliedConfigRef = useRef<Record<string, unknown> | null>(null);
 
   // 防抖 resize
   const debouncedResize = () => {
@@ -303,6 +308,19 @@ const ChartCanvas: React.FC<{
   // optimizeConfigForSize 已提取为模块级函数（见上方 P2-9/P2-11 注释）：
   // - 使用 structuredClone 替代 JSON.parse(JSON.stringify())
   // - WeakMap + sizeBucket 缓存避免重复深拷贝
+
+  const applyVisualToInstance = (config: Record<string, unknown>) => {
+    if (!chartInstanceRef.current) return;
+    const w = containerSizeRef.current.width || 800;
+    const h = containerSizeRef.current.height || 400;
+    const optimized = optimizeConfigForSize(config, w, h);
+    if (visualConfig && Object.keys(visualConfig).length > 0) {
+      const final = applyVisualConfig(optimized, visualConfig) as Record<string, unknown>;
+      chartInstanceRef.current.setOption(final, true);
+    } else {
+      chartInstanceRef.current.setOption(optimized, true);
+    }
+  };
 
   useEffect(() => {
     if (!chartConfig || !chartRef.current) return;
@@ -333,29 +351,25 @@ const ChartCanvas: React.FC<{
         const normalized = normalizeEChartsConfig(chartConfig);
         if (!normalized) return;
 
-        // 根据容器尺寸优化配置
+        lastAppliedConfigRef.current = normalized;
+
         const rect = containerEl.getBoundingClientRect();
         containerSizeRef.current = { width: rect.width, height: rect.height };
-        const optimizedConfig = optimizeConfigForSize(normalized, rect.width, rect.height);
+        applyVisualToInstance(normalized);
 
-        localInstance.setOption(optimizedConfig, true);
-
-        // 使用 ResizeObserver 监听容器尺寸变化
         if (typeof ResizeObserver !== 'undefined') {
+          if (resizeObserverRef.current) {
+            resizeObserverRef.current.disconnect();
+          }
           resizeObserverRef.current = new ResizeObserver((entries) => {
             for (const entry of entries) {
               const { width, height } = entry.contentRect;
               const oldSize = containerSizeRef.current;
               if (Math.abs(width - oldSize.width) > 1 || Math.abs(height - oldSize.height) > 1) {
                 containerSizeRef.current = { width, height };
-
-                // 更新图表配置以适应新尺寸
-                if (chartInstanceRef.current) {
-                  const currentOption = chartInstanceRef.current.getOption();
-                  const reOptimized = optimizeConfigForSize(currentOption, width, height);
-                  chartInstanceRef.current.setOption(reOptimized, { notMerge: false, lazyUpdate: true });
+                if (chartInstanceRef.current && lastAppliedConfigRef.current) {
+                  applyVisualToInstance(lastAppliedConfigRef.current);
                 }
-
                 debouncedResize();
               }
             }
@@ -386,16 +400,15 @@ const ChartCanvas: React.FC<{
         resizeObserverRef.current.disconnect();
         resizeObserverRef.current = null;
       }
-      if (chartInstanceRef.current) {
-        try {
-          chartInstanceRef.current.dispose();
-        } catch {
-          /* ignore */
-        }
-        chartInstanceRef.current = null;
-      }
     };
   }, [chartConfig]);
+
+  // effect 2: visualConfig 变化时实时应用（不销毁实例）
+  useEffect(() => {
+    if (!chartInstanceRef.current) return;
+    if (!lastAppliedConfigRef.current) return;
+    applyVisualToInstance(lastAppliedConfigRef.current);
+  }, [visualConfig]);
 
   return (
     <div
@@ -428,6 +441,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const clickTimeRef = useRef<number>(0);
   const lastExecutedRefreshVersionRef = useRef<number>(0);
+  const chartConfigStrRef = useRef<string>('');
   // P1-13：用 useShallow 选择器仅订阅本组件关心的字段，避免 store 任意字段变更引发重渲染
   // savedCharts 通过 reference 相等性比较（数组引用变化才会触发更新）
   const {
@@ -438,6 +452,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     filterValues,
     dashboards,
     refreshChartsVersion,
+    previewVisualConfigs,
   } = useDashboardStore(
     useShallow((s) => ({
       savedCharts: s.savedCharts,
@@ -447,6 +462,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
       filterValues: s.filterValues,
       dashboards: s.dashboards,
       refreshChartsVersion: s.refreshChartsVersion,
+      previewVisualConfigs: s.previewVisualConfigs,
     }))
   );
   const isSelected = selectedChartId === item.chartId;
@@ -456,6 +472,16 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     () => savedCharts.find(c => c.id === item.chartId),
     [savedCharts, item.chartId]
   );
+
+  // 视觉配置预览草稿优先（2026-10-23）：编辑侧边栏的未保存改动实时反映到仪表盘，
+  // 但不写入 savedCharts，避免污染持久化数据与 hasChanges 判定。
+  const effectiveVisualConfig = useMemo(() => {
+    const draft = previewVisualConfigs[item.chartId];
+    if (draft && Object.keys(draft).length > 0) {
+      return draft as import('../../types/chart').VisualConfig;
+    }
+    return savedChart?.visualConfig;
+  }, [previewVisualConfigs, item.chartId, savedChart?.visualConfig]);
 
   // P2-1 筛选器联动：获取当前仪表盘的筛选器定义
   const dashboardFilters: DashboardFilter[] = (() => {
@@ -473,6 +499,14 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
 
     const renderChart = async () => {
       if (cancelled) return;
+
+      const applyChartConfig = (cfg: ChartConfig | Record<string, unknown> | null | ((prev: ChartConfig | null) => ChartConfig | null)) => {
+        if (!cfg || typeof cfg === 'function') return;
+        const newStr = JSON.stringify(cfg);
+        if (newStr === chartConfigStrRef.current) return;
+        chartConfigStrRef.current = newStr;
+        setChartConfig(cfg as ChartConfig);
+      };
 
       const hasLiteData = savedCharts.length > 0 && savedCharts.every(c => !c.sql || c.sql.trim().length === 0);
       if (savedCharts.length === 0 || hasLiteData) {
@@ -514,7 +548,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
             });
             if (chartResponse.success && chartResponse.data) {
               if (cancelled) return;
-              setChartConfig(chartResponse.data);
+              applyChartConfig(chartResponse.data);
               setLoading(false);
               return;
             }
@@ -532,7 +566,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
 
         if (hasSeries || hasAxis) {
           if (cancelled) return;
-          setChartConfig(savedChart.config);
+          applyChartConfig(savedChart.config);
           setLoading(false);
           return;
         }
@@ -548,7 +582,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
           ? applyFiltersToSql(savedChart.sql, JSON.parse(filterValuesKey), dashboardFilters)
           : savedChart.sql;
         try {
-          await renderWithSql(effectiveSql, savedChart, (cfg) => { if (!cancelled) setChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
+          await renderWithSql(effectiveSql, savedChart, (cfg) => { if (!cancelled) applyChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
           return;
         } catch (e) {
           console.error('[DashboardItem] SQL 渲染失败，继续尝试回退:', e);
@@ -565,7 +599,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
               ? applyFiltersToSql(queryResponse.data.sql, JSON.parse(filterValuesKey), dashboardFilters)
               : queryResponse.data.sql;
             if (savedChart.xAxis && savedChart.yAxis?.length > 0) {
-              await renderWithSql(fallbackSql, savedChart, (cfg) => { if (!cancelled) setChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
+              await renderWithSql(fallbackSql, savedChart, (cfg) => { if (!cancelled) applyChartConfig(cfg); }, (err) => { if (!cancelled) setError(err); }, (loading) => { if (!cancelled) setLoading(loading); });
               return;
             }
           }
@@ -593,7 +627,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [savedChart, item.chartId, retryKey, filterValuesKey, filtersActive, refreshChartsVersion]);
+  }, [savedChart?.sql, savedChart?.xAxis, savedChart?.yAxis, savedChart?.chartType, savedChart?.config, savedChart?.lastResult, savedChart?.queryId, item.chartId, retryKey, filterValuesKey, filtersActive, refreshChartsVersion]);
 
   /**
    * P0-1 修复：拖拽启动逻辑
@@ -848,6 +882,7 @@ export const DashboardItem: React.FC<DashboardItemProps> = ({
                 ) : chartConfig ? (
                   <ChartCanvas
                     chartConfig={chartConfig}
+                    visualConfig={effectiveVisualConfig}
                     interactive={!isEditing}
                   />
                 ) : (
@@ -918,8 +953,10 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
+    gap: '8px',
     marginBottom: '8px',
     position: 'relative',
+    overflow: 'hidden',
   },
   itemEditing: {
     border: '2px dashed var(--primary)',
@@ -956,20 +993,18 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // 简化编辑提示：改为更隐蔽的 UI
+  // 简化编辑提示：紧跟标题右侧显示，避免与标题重叠（原 absolute left:4px 会覆盖标题）
   editHintBar: {
-    position: 'absolute',
-    top: '4px',
-    left: '4px',
     display: 'flex',
     alignItems: 'center',
     gap: '4px',
+    flexShrink: 0,
+    marginLeft: '8px',
     padding: '2px 8px',
     background: 'rgba(59, 130, 246, 0.1)',
     borderRadius: '4px',
     fontSize: '11px',
     color: 'var(--primary)',
-    zIndex: 50,
     pointerEvents: 'none',
   },
   editHintIcon: { fontSize: '12px' },
@@ -979,6 +1014,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     color: 'var(--text-primary)',
     flex: 1,
+    minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',

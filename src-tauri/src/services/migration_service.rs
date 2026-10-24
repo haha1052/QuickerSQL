@@ -475,6 +475,180 @@ impl MigrationService {
         .map_err(|e| format!("重建 idx_task_deps_upstream 失败: {}", e))?;
         Ok(())
     }
+
+    // ============================================================
+    // 架构迁移：业务数据从 SQLite 迁移到 DuckDB
+    // ============================================================
+
+    /// 将旧项目中存储在 SQLite（meta.db）的用户业务表迁移到 DuckDB（data.duckdb）。
+    ///
+    /// 背景：旧版架构将所有数据（系统表 + 业务表）都存储在 SQLite 中。
+    /// 新版架构中，系统表（__前缀）保留在 SQLite，业务表迁移到 DuckDB。
+    ///
+    /// 迁移策略：
+    /// 1. 从 SQLite 列出所有非系统表（不以 `__` 或 `sqlite_` 开头）
+    /// 2. 对每张表：读取列定义（PRAGMA table_info）→ 在 DuckDB 创建同结构表 → 拷贝数据
+    /// 3. 迁移成功后从 SQLite 删除该业务表（释放空间）
+    ///
+    /// 幂等性：若 DuckDB 中已存在同名表则跳过（避免重复迁移）。
+    ///
+    /// 类型映射：SQLite 类型 → DuckDB 类型（TEXT/INTEGER/REAL/BLOB 直接对应，
+    /// 其他类型映射为 VARCHAR）。
+    pub fn migrate_user_tables_to_duckdb(
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
+    ) -> Result<usize, String> {
+        // 1. 列出 SQLite 中的用户表（排除系统表）
+        let tables_result = sqlite_conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+                 AND name NOT LIKE '\\_\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY name",
+                &[],
+            )
+            .map_err(|e| format!("查询 SQLite 用户表列表失败: {}", e))?;
+
+        let user_tables: Vec<String> = tables_result
+            .rows
+            .into_iter()
+            .filter(|r| !r.is_empty())
+            .map(|r| r[0].clone())
+            .collect();
+
+        if user_tables.is_empty() {
+            log::info!("[迁移] SQLite 中无用户业务表，无需迁移到 DuckDB");
+            return Ok(0);
+        }
+
+        log::info!("[迁移] 发现 {} 张 SQLite 用户表待迁移到 DuckDB", user_tables.len());
+
+        let mut migrated_count = 0usize;
+        for table_name in &user_tables {
+            match Self::migrate_single_table(sqlite_conn, duckdb_conn, table_name) {
+                Ok(true) => migrated_count += 1,
+                Ok(false) => {
+                    log::info!("[迁移] 表 '{}' 在 DuckDB 中已存在，跳过", table_name);
+                }
+                Err(e) => {
+                    log::error!("[迁移] 表 '{}' 迁移失败: {}", table_name, e);
+                    return Err(format!("表 '{}' 迁移失败: {}", table_name, e));
+                }
+            }
+        }
+
+        log::info!("[迁移] 业务数据迁移完成，共迁移 {} 张表到 DuckDB", migrated_count);
+        Ok(migrated_count)
+    }
+
+    /// 迁移单张表：SQLite → DuckDB。
+    ///
+    /// 返回 `Ok(true)` 表示迁移成功，`Ok(false)` 表示已存在跳过。
+    fn migrate_single_table(
+        sqlite_conn: &MutexGuardConnection<'_>,
+        duckdb_conn: &MutexGuardConnection<'_>,
+        table_name: &str,
+    ) -> Result<bool, String> {
+        // 检查 DuckDB 中是否已存在该表（幂等）
+        let exists_check = duckdb_conn
+            .query(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_name = ?",
+                &[&table_name],
+            )
+            .map_err(|e| format!("检查 DuckDB 表是否存在失败: {}", e))?;
+        if !exists_check.rows.is_empty() {
+            return Ok(false);
+        }
+
+        // 1) 读取 SQLite 表的列定义
+        let table_ident = crate::database::SqlIdentifier::new(table_name)
+            .map_err(|e| format!("表名校验失败 '{}': {}", table_name, e))?;
+        let pragma_sql = format!("PRAGMA table_info({})", table_ident.quoted());
+        let columns_result = sqlite_conn
+            .query(&pragma_sql, &[])
+            .map_err(|e| format!("读取列定义失败 '{}': {}", table_name, e))?;
+
+        if columns_result.rows.is_empty() {
+            log::warn!("[迁移] 表 '{}' 无列定义，跳过", table_name);
+            return Ok(false);
+        }
+
+        // 解析列定义并构造 CREATE TABLE 语句
+        let mut col_defs: Vec<String> = Vec::with_capacity(columns_result.rows.len());
+        let mut col_names: Vec<String> = Vec::with_capacity(columns_result.rows.len());
+        for row in &columns_result.rows {
+            // PRAGMA table_info: cid | name | type | notnull | dflt_value | pk
+            if row.len() < 3 {
+                continue;
+            }
+            let col_name = row[1].clone();
+            let col_type = Self::map_sqlite_type_to_duckdb(&row[2]);
+            let col_ident = crate::database::SqlIdentifier::new(&col_name)
+                .map_err(|e| format!("列名校验失败 '{}': {}", col_name, e))?;
+            col_defs.push(format!("{} {}", col_ident.quoted(), col_type));
+            col_names.push(col_name);
+        }
+
+        let create_sql = format!("CREATE TABLE {} ({})", table_ident.quoted(), col_defs.join(", "));
+        duckdb_conn
+            .execute(&create_sql, &[])
+            .map_err(|e| format!("DuckDB 创建表失败 '{}': {}", table_name, e))?;
+
+        // 2) 从 SQLite 读取数据并批量插入 DuckDB
+        let select_sql = format!("SELECT * FROM {}", table_ident.quoted());
+        let data_result = sqlite_conn
+            .query(&select_sql, &[])
+            .map_err(|e| format!("读取 SQLite 表数据失败 '{}': {}", table_name, e))?;
+
+        if data_result.rows.is_empty() {
+            log::info!("[迁移] 表 '{}' 为空表，仅创建结构", table_name);
+        } else {
+            // 使用 batch_insert 批量写入 DuckDB
+            let col_slices: Vec<&str> = col_names.iter().map(|s| s.as_str()).collect();
+            let total = data_result.rows.len();
+            let batch_size = 500usize;
+            let mut inserted = 0u64;
+            for chunk in data_result.rows.chunks(batch_size) {
+                inserted += duckdb_conn
+                    .batch_insert(&table_ident, &col_slices, chunk, batch_size)
+                    .map_err(|e| format!("DuckDB 批量插入失败 '{}': {}", table_name, e))?;
+            }
+            log::info!(
+                "[迁移] 表 '{}' 数据拷贝完成: {} 行（期望 {} 行）",
+                table_name, inserted, total
+            );
+        }
+
+        // 3) 从 SQLite 删除已迁移的业务表（释放空间）
+        let drop_sql = format!("DROP TABLE {}", table_ident.quoted());
+        sqlite_conn
+            .execute(&drop_sql, &[])
+            .map_err(|e| format!("从 SQLite 删除已迁移表失败 '{}': {}", table_name, e))?;
+
+        Ok(true)
+    }
+
+    /// 将 SQLite 类型名映射到 DuckDB 类型名。
+    ///
+    /// SQLite 的类型是动态的（type affinity），此处按声明类型做合理映射：
+    /// - INT/INTEGER → BIGINT
+    /// - REAL/FLOAT/DOUBLE → DOUBLE
+    /// - BLOB → BLOB
+    /// - 其他（TEXT/VARCHAR/CHAR/空/未知）→ VARCHAR
+    fn map_sqlite_type_to_duckdb(sqlite_type: &str) -> &'static str {
+        let upper = sqlite_type.trim().to_uppercase();
+        if upper.is_empty() {
+            return "VARCHAR";
+        }
+        if upper.contains("INT") {
+            "BIGINT"
+        } else if upper.contains("REAL") || upper.contains("FLOAT") || upper.contains("DOUBLE") {
+            "DOUBLE"
+        } else if upper.contains("BLOB") {
+            "BLOB"
+        } else {
+            "VARCHAR"
+        }
+    }
 }
 
 #[cfg(test)]

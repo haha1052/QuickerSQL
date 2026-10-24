@@ -29,6 +29,21 @@ interface DashboardStore {
   // 图表选择状态
   selectedChartId: string | null; // 当前选中的图表（用于侧边编辑）
 
+  /**
+   * 视觉配置「预览通道」（2026-10-23 新增，修复视觉样式保存不生效）。
+   *
+   * 背景：编辑侧边栏改动视觉样式时需要仪表盘图表实时预览，但绝不能污染持久化数据，
+   * 否则会与「是否有未保存修改」的判定冲突（旧实现直接写 savedCharts.visualConfig，
+   * 导致 hasChanges 恒为 false，保存后又被 updatedAt 变化触发的重置 effect 清空）。
+   *
+   * 语义：key = chartId，value = 未保存的 visualConfig 草稿。
+   * 读取方（DashboardItem）优先取草稿，回退到已持久化的 savedChart.visualConfig。
+   * 保存成功（updateSavedChart）或关闭编辑器（clearVisualConfigPreview）时清除草稿。
+   */
+  previewVisualConfigs: Record<string, Record<string, unknown>>;
+  setVisualConfigPreview: (chartId: string, config: Record<string, unknown>) => void;
+  clearVisualConfigPreview: (chartId: string) => void;
+
   // Phase 4: 筛选器状态
   filterValues: Record<string, string | string[]>;
   isFullscreen: boolean;
@@ -39,6 +54,7 @@ interface DashboardStore {
   updateSavedChart: (params: { id: string; updates: Partial<SavedChart> }) => Promise<SavedChart | null>;
   deleteSavedChart: (id: string) => Promise<void>;
   setSelectedChartId: (id: string | null) => void;
+  updateSavedChartLocal: (id: string, updates: Partial<SavedChart>) => void;
 
   // Dashboard actions
   loadDashboards: () => Promise<void>;
@@ -50,7 +66,7 @@ interface DashboardStore {
 
   // v3 启动优化：直接消费 get_startup_status 缓存的数据，避免独立 IPC
   setDashboardsFromStartup: (dashboards: Array<{ id: string; name: string; description: string; isDefault: boolean; refreshIntervalSecs: number; createdAt: number; updatedAt: number; }>) => void;
-  setSavedChartsFromStartup: (charts: Array<{ id: string; name: string; chartType: string; xAxis: string; yAxis: string[]; title: string; tags: string[]; description: string; visibility: string; authorizedDashboardIds: string[]; createdAt: number; updatedAt: number; }>) => void;
+  setSavedChartsFromStartup: (charts: Array<{ id: string; name: string; chartType: string; xAxis: string; yAxis: string[]; title: string; tags: string[]; description: string; visibility: string; authorizedDashboardIds: string[]; visualConfig?: Record<string, unknown> | null; createdAt: number; updatedAt: number; }>) => void;
 
   // DashboardItem actions
   addChartToDashboard: (dashboardId: string, chartId: string, position: GridPosition) => Promise<boolean>;
@@ -88,9 +104,25 @@ export const useDashboardStore = create<DashboardStore>()(
     loadingAction: null,
     loadingDashboardId: null,
     selectedChartId: null,
+    previewVisualConfigs: {},
     filterValues: {},
     isFullscreen: false,
     refreshChartsVersion: 0,
+
+    // 视觉配置预览通道 actions
+    setVisualConfigPreview: (chartId, config) => {
+      set((state) => ({
+        previewVisualConfigs: { ...state.previewVisualConfigs, [chartId]: config },
+      }));
+    },
+    clearVisualConfigPreview: (chartId) => {
+      set((state) => {
+        if (!(chartId in state.previewVisualConfigs)) return state;
+        const next = { ...state.previewVisualConfigs };
+        delete next[chartId];
+        return { previewVisualConfigs: next };
+      });
+    },
 
     // SavedChart actions
     loadSavedCharts: async (queryId?: string, tags?: string[]) => {
@@ -102,7 +134,7 @@ export const useDashboardStore = create<DashboardStore>()(
           set({ savedCharts: response.data, loading: false, loadingAction: null });
         } else {
           // P2-16：error 始终配对 errorKey，便于组件层翻译
-          set({ error: response.error || '加载保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.load_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.saved_chart.load_failed', loading: false, loadingAction: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.saved_chart.load_failed', loading: false, loadingAction: null });
@@ -125,7 +157,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '创建保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.create_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.saved_chart.create_failed', loading: false, loadingAction: null });
           return null;
         }
       } catch (e) {
@@ -149,17 +181,23 @@ export const useDashboardStore = create<DashboardStore>()(
         if (updates.visibility !== undefined) cleaned.visibility = updates.visibility;
         if (updates.authorizedDashboardIds !== undefined) cleaned.authorizedDashboardIds = updates.authorizedDashboardIds;
         if (updates.sql !== undefined) cleaned.sql = updates.sql;
+        if (updates.visualConfig !== undefined) cleaned.visualConfig = updates.visualConfig;
 
         const response = await tauriService.updateSavedChart(cleaned as Parameters<typeof tauriService.updateSavedChart>[0]);
         if (response.success && response.data) {
           set((state) => ({
-            savedCharts: state.savedCharts.map((c) => (c.id === id ? response.data! : c)),
+            savedCharts: state.savedCharts.map((c) => {
+              if (c.id === id) {
+                return response.data!;
+              }
+              return c;
+            }),
             loading: false,
             loadingAction: null,
           }));
           return response.data;
         } else {
-          set({ error: response.error || '更新图表失败', errorKey: response.error ? null : 'error.saved_chart.update_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.saved_chart.update_failed', loading: false, loadingAction: null });
           return null;
         }
       } catch (e) {
@@ -179,11 +217,19 @@ export const useDashboardStore = create<DashboardStore>()(
             loadingAction: null,
           }));
         } else {
-          set({ error: response.error || '删除保存的图表失败', errorKey: response.error ? null : 'error.saved_chart.delete_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.saved_chart.delete_failed', loading: false, loadingAction: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.saved_chart.delete_failed', loading: false, loadingAction: null });
       }
+    },
+
+    updateSavedChartLocal: (id, updates) => {
+      set((state) => ({
+        savedCharts: state.savedCharts.map((c) =>
+          c.id === id ? { ...c, ...updates } : c
+        ),
+      }));
     },
 
     // Dashboard actions
@@ -194,7 +240,7 @@ export const useDashboardStore = create<DashboardStore>()(
         if (response.success && response.data) {
           set({ dashboards: response.data, loading: false, loadingAction: null });
         } else {
-          set({ error: response.error || '加载仪表盘列表失败', errorKey: response.error ? null : 'error.dashboard.load_list_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.load_list_failed', loading: false, loadingAction: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.dashboard.load_list_failed', loading: false, loadingAction: null });
@@ -213,7 +259,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '创建仪表盘失败', errorKey: response.error ? null : 'error.dashboard.create_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.create_failed', loading: false, loadingAction: null });
           return null;
         }
       } catch (e) {
@@ -236,7 +282,7 @@ export const useDashboardStore = create<DashboardStore>()(
             loadingDashboardId: null,
           }));
         } else {
-          set({ error: response.error || '更新仪表盘失败', errorKey: response.error ? null : 'error.dashboard.update_failed', loading: false, loadingAction: null, loadingDashboardId: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.update_failed', loading: false, loadingAction: null, loadingDashboardId: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.dashboard.update_failed', loading: false, loadingAction: null, loadingDashboardId: null });
@@ -257,7 +303,7 @@ export const useDashboardStore = create<DashboardStore>()(
             loadingDashboardId: null,
           }));
         } else {
-          set({ error: response.error || '删除仪表盘失败', errorKey: response.error ? null : 'error.dashboard.delete_failed', loading: false, loadingAction: null, loadingDashboardId: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.delete_failed', loading: false, loadingAction: null, loadingDashboardId: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.dashboard.delete_failed', loading: false, loadingAction: null, loadingDashboardId: null });
@@ -274,6 +320,8 @@ export const useDashboardStore = create<DashboardStore>()(
         savedCharts: [],
         activeDashboardId: null,
         selectedChartId: null,
+        // 切换项目时清空视觉配置预览草稿，避免不同项目的图表 id 碰撞导致样式串味
+        previewVisualConfigs: {},
         filterValues: {},
         isFullscreen: false,
         loading: false,
@@ -313,7 +361,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }
           // 二次 getDashboard 失败：返回 false，并保留错误信息提示用户手动刷新
           set({
-            error: dashResponse.error || '添加成功但刷新失败，请手动刷新',
+            error: dashResponse.error || '',
             errorKey: dashResponse.error ? null : 'error.dashboard.add_chart_refresh_failed',
             loading: false,
             loadingAction: null,
@@ -321,7 +369,7 @@ export const useDashboardStore = create<DashboardStore>()(
           });
           return false;
         } else {
-          set({ error: response.error || '添加图表到仪表盘失败', errorKey: response.error ? null : 'error.dashboard.add_chart_failed', loading: false, loadingAction: null, loadingDashboardId: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.add_chart_failed', loading: false, loadingAction: null, loadingDashboardId: null });
           return false;
         }
       } catch (e) {
@@ -355,7 +403,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }
           set({ loading: false, loadingAction: null });
         } else {
-          set({ error: response.error || '更新仪表盘项目失败', errorKey: response.error ? null : 'error.dashboard.update_item_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.update_item_failed', loading: false, loadingAction: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.dashboard.update_item_failed', loading: false, loadingAction: null });
@@ -387,7 +435,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }
           set({ loading: false, loadingAction: null });
         } else {
-          set({ error: response.error || '从仪表盘移除图表失败', errorKey: response.error ? null : 'error.dashboard.remove_chart_failed', loading: false, loadingAction: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.remove_chart_failed', loading: false, loadingAction: null });
         }
       } catch (e) {
         set({ error: String(e), errorKey: 'error.dashboard.remove_chart_failed', loading: false, loadingAction: null });
@@ -450,7 +498,7 @@ export const useDashboardStore = create<DashboardStore>()(
           }));
           return response.data;
         } else {
-          set({ error: response.error || '保存仪表盘布局失败', errorKey: response.error ? null : 'error.dashboard.save_layout_failed', loading: false, loadingAction: null, loadingDashboardId: null });
+          set({ error: response.error || '', errorKey: response.error ? null : 'error.dashboard.save_layout_failed', loading: false, loadingAction: null, loadingDashboardId: null });
           return null;
         }
       } catch (e) {
@@ -523,6 +571,7 @@ export const useDashboardStore = create<DashboardStore>()(
         description: c.description,
         thumbnail: null,
         config: null,
+        visualConfig: (c.visualConfig && Object.keys(c.visualConfig).length > 0) ? c.visualConfig : null,
         visibility: c.visibility as SavedChart['visibility'],
         authorizedDashboardIds: c.authorizedDashboardIds || [],
         lastResult: null,

@@ -78,6 +78,7 @@ pub async fn create_saved_chart(
     tags: Option<Vec<String>>,
     description: Option<String>,
     config: Option<String>,
+    visual_config: Option<String>,
     visibility: Option<String>,
     authorized_dashboard_ids: Option<Vec<String>>,
 ) -> Result<SavedChart, String> {
@@ -101,6 +102,8 @@ pub async fn create_saved_chart(
     let y_axis_vec: Vec<String> = serde_json::from_str(&y_axis).unwrap_or_else(|_| Vec::new());
     let config_value: Option<serde_json::Value> = config
         .and_then(|c| serde_json::from_str(&c).ok());
+    let visual_config_value: Option<serde_json::Value> = visual_config
+        .and_then(|c| serde_json::from_str(&c).ok());
 
     DashboardService::create_saved_chart(
         &conn,
@@ -114,6 +117,7 @@ pub async fn create_saved_chart(
         tags,
         description,
         config_value,
+        visual_config_value,
         visibility,
         authorized_dashboard_ids,
     )
@@ -153,6 +157,7 @@ pub async fn update_saved_chart(
     tags: Option<Vec<String>>,
     description: Option<String>,
     config: Option<String>, // JSON
+    visual_config: Option<String>, // JSON
     visibility: Option<String>,
     authorized_dashboard_ids: Option<Vec<String>>,
     sql: Option<String>,
@@ -169,6 +174,18 @@ pub async fn update_saved_chart(
 
     let y_axis_vec = y_axis.and_then(|y| serde_json::from_str(&y).ok());
     let config_value = config.and_then(|c| serde_json::from_str(&c).ok());
+    log::warn!("[CMD] update_saved_chart: visual_config raw = {:?}", visual_config.as_ref().map(|s| s.chars().take(200).collect::<String>()));
+    let visual_config_value = visual_config.and_then(|c| {
+        match serde_json::from_str::<serde_json::Value>(&c) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("[CMD] visual_config JSON parse FAILED: {}", e);
+                None
+            }
+        }
+    });
+    log::warn!("[CMD] update_saved_chart: visual_config_value.is_some = {}", visual_config_value.is_some());
+    log::warn!("[CMD] update_saved_chart: visual_config_value keys = {:?}", visual_config_value.as_ref().map(|v| v.as_object().map(|o| o.keys().collect::<Vec<_>>())));
 
     DashboardService::update_saved_chart(
         &conn,
@@ -181,6 +198,7 @@ pub async fn update_saved_chart(
         tags,
         description,
         config_value,
+        visual_config_value,
         visibility,
         authorized_dashboard_ids,
         sql,

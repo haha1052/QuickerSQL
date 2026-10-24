@@ -74,11 +74,11 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
       if (response.success && response.data) {
         setSnippets(response.data);
       } else {
-        setError(response.error || '加载片段失败');
+        setError(response.error || t('error.snippets.loadFailed'));
       }
     } catch (err) {
       console.error('Failed to load snippets:', err);
-      setError(`加载片段失败: ${err}`);
+      setError(t('error.snippets.loadFailedWithErr', { err: String(err) }));
     } finally {
       setLoading(false);
     }
@@ -95,18 +95,18 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
           s.id === snippet.id ? { ...s, isFavorite: !s.isFavorite } : s
         ));
       } else {
-        setMessage(response.error || '操作失败', 'error');
+        setMessage(response.error || 'common.operationFailed', 'error');
       }
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
-      setMessage('操作失败', 'error');
+      setMessage('common.operationFailed', 'error');
     }
   };
 
   const handleInsert = (snippet: SqlSnippet) => {
     if (onInsertSql) {
       onInsertSql(snippet.sql);
-      setMessage('已插入到编辑器', 'success');
+      setMessage('common.insertedToEditor', 'success');
     }
   };
 
@@ -125,7 +125,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
 
   const handleDelete = async (snippet: SqlSnippet, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm(`确定要删除片段「${snippet.name}」吗？`)) {
+    if (!confirm(t('common.confirmDeleteName', { name: snippet.name }))) {
       return;
     }
 
@@ -134,14 +134,14 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
       const response = await tauriService.deleteSqlSnippet(snippet.id);
 
       if (response.success) {
-        setMessage('删除成功', 'success');
+        setMessage('common.deleteSuccess', 'success');
         await loadSnippets();
       } else {
-        setMessage(`错误: ${response.error}`, 'error');
+        setMessage({ key: 'common.errorWithMsg', vars: { msg: response.error || '' } }, 'error');
       }
     } catch (err) {
       console.error('Failed to delete snippet:', err);
-      setMessage(`错误: ${err}`, 'error');
+      setMessage({ key: 'common.errorWithMsg', vars: { msg: String(err) } }, 'error');
     }
   };
 
@@ -153,11 +153,11 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
 
   const handleSave = async () => {
     if (!formData.name.trim()) {
-      setMessage('请输入片段名称', 'error');
+      setMessage('请输入片段名称', 'error'); // i18n:skip — 待 LocaleContext 新增 snippets.nameRequired 键
       return;
     }
     if (!formData.sql.trim()) {
-      setMessage('请输入 SQL 内容', 'error');
+      setMessage('请输入 SQL 内容', 'error'); // i18n:skip — 待 LocaleContext 新增 snippets.sqlRequired 键
       return;
     }
 
@@ -175,11 +175,11 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
         });
 
         if (response.success) {
-          setMessage('更新成功', 'success');
+          setMessage('更新成功', 'success'); // i18n:skip — 待 LocaleContext 新增 snippets.updateSuccess 键
           setShowDialog(false);
           await loadSnippets();
         } else {
-          setMessage(`错误: ${response.error}`, 'error');
+          setMessage({ key: 'common.errorWithMsg', vars: { msg: response.error || '' } }, 'error');
         }
       } else {
         const response = await tauriService.createSqlSnippet({
@@ -191,16 +191,16 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
         });
 
         if (response.success) {
-          setMessage('创建成功', 'success');
+          setMessage('创建成功', 'success'); // i18n:skip — 待 LocaleContext 新增 snippets.createSuccess 键
           setShowDialog(false);
           await loadSnippets();
         } else {
-          setMessage(`错误: ${response.error}`, 'error');
+          setMessage({ key: 'common.errorWithMsg', vars: { msg: response.error || '' } }, 'error');
         }
       }
     } catch (err) {
       console.error('Failed to save snippet:', err);
-      setMessage(`错误: ${err}`, 'error');
+      setMessage({ key: 'common.errorWithMsg', vars: { msg: String(err) } }, 'error');
     }
   };
 
@@ -223,14 +223,14 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
         <div style={styles.searchBox}>
           <input
             type="text"
-            placeholder="搜索片段..."
+            placeholder={t('snippets.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={styles.searchInput}
           />
         </div>
         <button style={styles.newBtn} onClick={handleNewSnippet}>
-          + 新建
+          + {t('toolbar.new')}
         </button>
       </div>
 
@@ -240,8 +240,8 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
           onChange={(e) => setCategoryFilter(e.target.value)}
           style={styles.filterSelect}
         >
-          <option value="all">全部</option>
-          <option value="favorites">收藏</option>
+          <option value="all">{t('filter.all')}</option>
+          <option value="favorites">{t('queryHistory.favorite')}</option>
           {categories.map(cat => (
             <option key={cat} value={cat}>{cat}</option>
           ))}
@@ -252,7 +252,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
 
       <div style={styles.content}>
         {loading && filteredSnippets.length === 0 && (
-          <div style={styles.emptyState}>加载中...</div>
+          <div style={styles.emptyState}>{t('common.loading')}</div>
         )}
 
         {!loading && filteredSnippets.length === 0 && (
@@ -301,7 +301,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
                     <button
                       style={{ ...styles.actionBtn, color: 'var(--error)' }}
                       onClick={(e) => handleDelete(snippet, e)}
-                      title="删除"
+                      title={t('common.delete')}
                     >
                       🗑️
                     </button>
@@ -320,19 +320,19 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
                   <div style={styles.snippetDetails}>
                     {snippet.description && (
                       <div style={styles.detailRow}>
-                        <span style={styles.detailLabel}>描述:</span>
+                        <span style={styles.detailLabel}>{t('snippets.label.description')}:</span>
                         <span style={styles.detailValue}>{snippet.description}</span>
                       </div>
                     )}
                     {snippet.category && (
                       <div style={styles.detailRow}>
-                        <span style={styles.detailLabel}>分类:</span>
+                        <span style={styles.detailLabel}>{t('snippets.label.category')}:</span>
                         <span style={styles.detailTag}>{snippet.category}</span>
                       </div>
                     )}
                     {snippet.tags && (
                       <div style={styles.detailRow}>
-                        <span style={styles.detailLabel}>标签:</span>
+                        <span style={styles.detailLabel}>{t('snippets.label.tags')}:</span>
                         <div style={styles.tagsContainer}>
                           {snippet.tags.split(',').map((tag, i) => (
                             <span key={i} style={styles.tag}>{tag.trim()}</span>
@@ -341,13 +341,11 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
                       </div>
                     )}
                     <div style={styles.detailRow}>
-                      <span style={styles.detailLabel}>SQL:</span>
+                      <span style={styles.detailLabel}>{t('snippets.label.sql')}:</span>
                     </div>
                     <pre style={styles.sqlFull}>{snippet.sql}</pre>
                     <div style={styles.detailRow}>
-                      <span style={styles.detailMeta}>
-                        创建于 {new Date(snippet.createdAt).toLocaleString()}
-                      </span>
+                      <span style={styles.detailMeta}>{/* i18n:skip */}创建于 {new Date(snippet.createdAt).toLocaleString()}</span>
                     </div>
                   </div>
                 )}
@@ -362,25 +360,25 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
           <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
             <div style={styles.dialogHeader}>
               <h3 style={styles.dialogTitle}>
-                {editingSnippet ? '编辑 SQL 片段' : '新建 SQL 片段'}
+                {editingSnippet ? '编辑 SQL 片段' : '新建 SQL 片段' /* i18n:skip — 待 LocaleContext 新增 snippets.editTitle/newTitle 键 */}
               </h3>
               <button style={styles.dialogClose} onClick={() => setShowDialog(false)}>✕</button>
             </div>
 
             <div style={styles.dialogBody}>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>名称 *</label>
+                <label style={styles.formLabel}>{t('snippets.label.name')} *</label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
                   style={styles.formInput}
-                  placeholder="输入片段名称"
+                  placeholder={t('snippets.namePlaceholder')}
                 />
               </div>
 
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>SQL *</label>
+                <label style={styles.formLabel}>{t('snippets.label.sql')} *</label>
                 <textarea
                   value={formData.sql}
                   onChange={(e) => setFormData(prev => ({ ...prev, sql: e.target.value }))}
@@ -391,7 +389,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
               </div>
 
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>描述</label>
+                <label style={styles.formLabel}>{t('snippets.label.description')}</label>
                 <input
                   type="text"
                   value={formData.description}
@@ -403,7 +401,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
 
               <div style={styles.formRow}>
                 <div style={{ ...styles.formGroup, flex: 1 }}>
-                  <label style={styles.formLabel}>分类</label>
+                  <label style={styles.formLabel}>{t('snippets.label.category')}</label>
                   <input
                     type="text"
                     value={formData.category}
@@ -415,7 +413,7 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
               </div>
 
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>标签（逗号分隔）</label>
+                <label style={styles.formLabel}>{t('snippets.label.tags')}（逗号分隔）{/* i18n:skip */}</label>
                 <input
                   type="text"
                   value={formData.tags}
@@ -428,10 +426,10 @@ export const SnippetsPanel: React.FC<SnippetsPanelProps> = ({ onInsertSql }) => 
 
             <div style={styles.dialogFooter}>
               <button style={styles.cancelBtn} onClick={() => setShowDialog(false)}>
-                取消
+                {t('snippets.button.cancel')}
               </button>
               <button style={styles.saveBtn} onClick={handleSave}>
-                保存
+                {t('snippets.button.save')}
               </button>
             </div>
           </div>

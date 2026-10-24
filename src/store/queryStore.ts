@@ -30,7 +30,7 @@ export const useQueryStore = create<QueryState>()(
       sqlQueries: [
         { 
           id: '1', 
-          name: '查询 1', 
+          name: '',
           sql: 'SELECT * FROM my_table', // safe_sql: 默认 SQL 示例文案（用户首次打开查询页的初始内容）
           result: null, 
           batchResults: null 
@@ -45,15 +45,14 @@ export const useQueryStore = create<QueryState>()(
       
       addSqlQuery: () => set((state) => {
         const newId = Date.now().toString();
-        const queryNumber = state.sqlQueries.length + 1;
         const newQueries = [
           ...state.sqlQueries,
-          { 
-            id: newId, 
-            name: `查询 ${queryNumber}`, 
-            sql: '', 
-            result: null, 
-            batchResults: null 
+          {
+            id: newId,
+            name: '',
+            sql: '',
+            result: null,
+            batchResults: null
           }
         ];
         return { 

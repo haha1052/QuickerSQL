@@ -75,7 +75,7 @@ export const DependencyEditorModal: React.FC<DependencyEditorModalProps> = ({
             >
               {(Object.keys(DEPENDENCY_TYPE_LABELS) as DependencyType[]).map((key) => (
                 <option key={key} value={key}>
-                  {DEPENDENCY_TYPE_LABELS[key]}
+                  {t(DEPENDENCY_TYPE_LABELS[key])}
                 </option>
               ))}
             </select>
@@ -97,8 +97,8 @@ export const DependencyEditorModal: React.FC<DependencyEditorModalProps> = ({
                     } as TimeIntervalConfig);
                   }}
                 />
-                <select style={formStyles.select} value="秒" disabled>
-                  <option value="秒">{t('dep.seconds')}</option>
+                <select style={formStyles.select} value="seconds" disabled>
+                  <option value="seconds">{t('dep.seconds')}</option>
                 </select>
               </div>
               <div style={formStyles.quickIntervalRow}>
@@ -179,7 +179,7 @@ export const DependencyEditorModal: React.FC<DependencyEditorModalProps> = ({
                   <option value="">{t('dep.selectPreset')}</option>
                   {CRON_PRESETS.map((p) => (
                     <option key={p.value} value={p.value}>
-                      {p.label}（{p.value}）
+                      {t(p.label)}（{p.value}）
                     </option>
                   ))}
                 </select>

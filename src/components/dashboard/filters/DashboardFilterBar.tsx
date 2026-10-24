@@ -45,7 +45,7 @@ export const DashboardFilterBar: React.FC<DashboardFilterBarProps> = ({
           style={styles.toggleBtn}
           onClick={() => setIsCollapsed((v) => !v)}
         >
-          {isCollapsed ? '展开 ▼' : '折叠 ▲'}
+          {isCollapsed ? t('dashboard.expand') : t('dashboard.collapse')}
         </button>
       </div>
 

@@ -133,7 +133,7 @@ impl DatabaseConnection for DuckDbConnection {
             }
         }
 
-        Ok(QueryResult { columns: column_names, rows })
+        Ok(QueryResult { columns: column_names, rows, affected_rows: None })
     }
 
     fn begin_transaction(&self) -> Result<()> {

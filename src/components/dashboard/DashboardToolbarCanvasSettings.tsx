@@ -69,7 +69,7 @@ export const DashboardToolbarCanvasSettings: React.FC<DashboardToolbarCanvasSett
             <input type="text" value={bgImage} onChange={(e) => setBgImage(e.target.value)} placeholder="https://..." style={{ ...styles.input, flex: 1 }} />
           </div>
 
-          <div style={sectionTitle('布局设置')}>布局设置</div>
+          <div style={sectionTitle('4px')}>{t('dashboard.layoutSettings')}</div>
           <div style={styles.settingRow}>
             <label style={styles.settingLabel}>图表间距 (px)</label>
             <input type="range" min="0" max="32" value={gridGap} onChange={(e) => setGridGap(parseInt(e.target.value))} style={styles.slider} />
@@ -86,7 +86,7 @@ export const DashboardToolbarCanvasSettings: React.FC<DashboardToolbarCanvasSett
             </label>
           </div>
 
-          <div style={sectionTitle('画布尺寸')}>画布尺寸</div>
+          <div style={sectionTitle('4px')}>{t('dashboard.canvasSize')}</div>
           <div style={styles.settingRow}>
             <label style={styles.settingLabel}>内边距 (px)</label>
             <input type="range" min="0" max="48" value={padding} onChange={(e) => setPadding(parseInt(e.target.value))} style={styles.slider} />

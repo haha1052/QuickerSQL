@@ -31,11 +31,11 @@ export const ParameterPanel: React.FC<ParameterPanelProps> = ({ sql }) => {
   const getTypeLabel = (type: SqlParameter['type']): string => {
     switch (type) {
       case 'numeric':
-        return '数字';
+        return t('query.parameter.number');
       case 'named':
-        return '命名';
+        return t('query.parameter.named');
       case 'template':
-        return '模板';
+        return t('query.parameter.template');
       default:
         return '';
     }
@@ -116,7 +116,7 @@ export const ParameterPanel: React.FC<ParameterPanelProps> = ({ sql }) => {
                   style={styles.input}
                   value={values[param.name] || ''}
                   onChange={(e) => handleValueChange(param.name, e.target.value)}
-                  placeholder={`输入 ${param.raw} 的值`}
+                  placeholder={t('query.parameter.inputPlaceholder', { raw: param.raw })}
                 />
               </div>
             ))}

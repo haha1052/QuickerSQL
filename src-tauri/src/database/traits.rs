@@ -57,6 +57,8 @@ pub type Result<T> = std::result::Result<T, DatabaseError>;
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    /// 写操作影响的行数（INSERT/UPDATE/DELETE 等）；查询结果为 None
+    pub affected_rows: Option<i64>,
 }
 
 pub trait DatabaseConnection: Send + Sync + 'static {

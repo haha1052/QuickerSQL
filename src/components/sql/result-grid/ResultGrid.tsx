@@ -564,69 +564,69 @@ export const ResultGrid: React.FC<ResultGridProps> = ({
       copyItems.push({ label: '', separatorBefore: true });
 
       const rowsChildren: MenuItem[] = [
-        { label: 'TSV（无表头）', action: 'copySelectedRowsAsTsv', onClick: createMenuClick('copySelectedRowsAsTsv') },
-        { label: 'TSV（含表头）', action: 'copySelectedRowsAsTsvWithHeader', onClick: createMenuClick('copySelectedRowsAsTsvWithHeader') },
-        { label: 'CSV（无表头）', action: 'copySelectedRowsAsCsv', onClick: createMenuClick('copySelectedRowsAsCsv') },
-        { label: 'CSV（含表头）', action: 'copySelectedRowsAsCsvWithHeader', onClick: createMenuClick('copySelectedRowsAsCsvWithHeader') },
-        { label: 'Markdown（无表头）', action: 'copySelectedRowsAsMd', onClick: createMenuClick('copySelectedRowsAsMd') },
-        { label: 'Markdown（含表头）', action: 'copySelectedRowsAsMdWithHeader', onClick: createMenuClick('copySelectedRowsAsMdWithHeader') },
+        { label: t('grid.menu.tsvNoHeader'), action: 'copySelectedRowsAsTsv', onClick: createMenuClick('copySelectedRowsAsTsv') },
+        { label: t('grid.menu.tsvWithHeader'), action: 'copySelectedRowsAsTsvWithHeader', onClick: createMenuClick('copySelectedRowsAsTsvWithHeader') },
+        { label: t('grid.menu.csvNoHeader'), action: 'copySelectedRowsAsCsv', onClick: createMenuClick('copySelectedRowsAsCsv') },
+        { label: t('grid.menu.csvWithHeader'), action: 'copySelectedRowsAsCsvWithHeader', onClick: createMenuClick('copySelectedRowsAsCsvWithHeader') },
+        { label: t('grid.menu.mdNoHeader'), action: 'copySelectedRowsAsMd', onClick: createMenuClick('copySelectedRowsAsMd') },
+        { label: t('grid.menu.mdWithHeader'), action: 'copySelectedRowsAsMdWithHeader', onClick: createMenuClick('copySelectedRowsAsMdWithHeader') },
         { label: 'JSON', action: 'copySelectedRowsAsJson', onClick: createMenuClick('copySelectedRowsAsJson') },
         { label: 'SQL INSERT', action: 'copySelectedRowsAsSqlInsert', onClick: createMenuClick('copySelectedRowsAsSqlInsert') },
       ];
       copyItems.push({
-        label: '📋 复制选中行',
+        label: t('grid.menu.copySelectedRowsLabel'),
         children: rowsChildren,
         recommended: isRowHeaderTrigger,
         disabled: !hasSelection,
       });
 
       const colsChildren: MenuItem[] = [
-        { label: 'TSV（无表头）', action: 'copySelectedColsAsTsv', onClick: createMenuClick('copySelectedColsAsTsv') },
-        { label: 'TSV（含表头）', action: 'copySelectedColsAsTsvWithHeader', onClick: createMenuClick('copySelectedColsAsTsvWithHeader') },
-        { label: 'CSV（无表头）', action: 'copySelectedColsAsCsv', onClick: createMenuClick('copySelectedColsAsCsv') },
-        { label: 'CSV（含表头）', action: 'copySelectedColsAsCsvWithHeader', onClick: createMenuClick('copySelectedColsAsCsvWithHeader') },
-        { label: 'Markdown（无表头）', action: 'copySelectedColsAsMd', onClick: createMenuClick('copySelectedColsAsMd') },
-        { label: 'Markdown（含表头）', action: 'copySelectedColsAsMdWithHeader', onClick: createMenuClick('copySelectedColsAsMdWithHeader') },
+        { label: t('grid.menu.tsvNoHeader'), action: 'copySelectedColsAsTsv', onClick: createMenuClick('copySelectedColsAsTsv') },
+        { label: t('grid.menu.tsvWithHeader'), action: 'copySelectedColsAsTsvWithHeader', onClick: createMenuClick('copySelectedColsAsTsvWithHeader') },
+        { label: t('grid.menu.csvNoHeader'), action: 'copySelectedColsAsCsv', onClick: createMenuClick('copySelectedColsAsCsv') },
+        { label: t('grid.menu.csvWithHeader'), action: 'copySelectedColsAsCsvWithHeader', onClick: createMenuClick('copySelectedColsAsCsvWithHeader') },
+        { label: t('grid.menu.mdNoHeader'), action: 'copySelectedColsAsMd', onClick: createMenuClick('copySelectedColsAsMd') },
+        { label: t('grid.menu.mdWithHeader'), action: 'copySelectedColsAsMdWithHeader', onClick: createMenuClick('copySelectedColsAsMdWithHeader') },
         { label: 'JSON', action: 'copySelectedColsAsJson', onClick: createMenuClick('copySelectedColsAsJson') },
         { label: 'SQL INSERT', action: 'copySelectedColsAsSqlInsert', onClick: createMenuClick('copySelectedColsAsSqlInsert') },
       ];
       copyItems.push({
-        label: '📋 复制选中列',
+        label: t('grid.menu.copySelectedColsLabel'),
         children: colsChildren,
         recommended: isColumnHeaderTrigger,
         disabled: !hasSelection,
       });
     } else {
       const rowsChildren: MenuItem[] = [
-        { label: 'TSV（无表头）', disabled: true, action: 'copySelectedRowsAsTsv', onClick: createMenuClick('copySelectedRowsAsTsv') },
-        { label: 'TSV（含表头）', disabled: true, action: 'copySelectedRowsAsTsvWithHeader', onClick: createMenuClick('copySelectedRowsAsTsvWithHeader') },
-        { label: 'CSV（无表头）', disabled: true, action: 'copySelectedRowsAsCsv', onClick: createMenuClick('copySelectedRowsAsCsv') },
-        { label: 'CSV（含表头）', disabled: true, action: 'copySelectedRowsAsCsvWithHeader', onClick: createMenuClick('copySelectedRowsAsCsvWithHeader') },
-        { label: 'Markdown（无表头）', disabled: true, action: 'copySelectedRowsAsMd', onClick: createMenuClick('copySelectedRowsAsMd') },
-        { label: 'Markdown（含表头）', disabled: true, action: 'copySelectedRowsAsMdWithHeader', onClick: createMenuClick('copySelectedRowsAsMdWithHeader') },
+        { label: t('grid.menu.tsvNoHeader'), disabled: true, action: 'copySelectedRowsAsTsv', onClick: createMenuClick('copySelectedRowsAsTsv') },
+        { label: t('grid.menu.tsvWithHeader'), disabled: true, action: 'copySelectedRowsAsTsvWithHeader', onClick: createMenuClick('copySelectedRowsAsTsvWithHeader') },
+        { label: t('grid.menu.csvNoHeader'), disabled: true, action: 'copySelectedRowsAsCsv', onClick: createMenuClick('copySelectedRowsAsCsv') },
+        { label: t('grid.menu.csvWithHeader'), disabled: true, action: 'copySelectedRowsAsCsvWithHeader', onClick: createMenuClick('copySelectedRowsAsCsvWithHeader') },
+        { label: t('grid.menu.mdNoHeader'), disabled: true, action: 'copySelectedRowsAsMd', onClick: createMenuClick('copySelectedRowsAsMd') },
+        { label: t('grid.menu.mdWithHeader'), disabled: true, action: 'copySelectedRowsAsMdWithHeader', onClick: createMenuClick('copySelectedRowsAsMdWithHeader') },
         { label: 'JSON', disabled: true, action: 'copySelectedRowsAsJson', onClick: createMenuClick('copySelectedRowsAsJson') },
         { label: 'SQL INSERT', disabled: true, action: 'copySelectedRowsAsSqlInsert', onClick: createMenuClick('copySelectedRowsAsSqlInsert') },
       ];
       copyItems.push({ label: '', separatorBefore: true });
       copyItems.push({
-        label: '📋 复制选中行',
+        label: t('grid.menu.copySelectedRowsLabel'),
         children: rowsChildren,
         disabled: true,
         recommended: isRowHeaderTrigger,
       });
 
       const colsChildren: MenuItem[] = [
-        { label: 'TSV（无表头）', disabled: true, action: 'copySelectedColsAsTsv', onClick: createMenuClick('copySelectedColsAsTsv') },
-        { label: 'TSV（含表头）', disabled: true, action: 'copySelectedColsAsTsvWithHeader', onClick: createMenuClick('copySelectedColsAsTsvWithHeader') },
-        { label: 'CSV（无表头）', disabled: true, action: 'copySelectedColsAsCsv', onClick: createMenuClick('copySelectedColsAsCsv') },
-        { label: 'CSV（含表头）', disabled: true, action: 'copySelectedColsAsCsvWithHeader', onClick: createMenuClick('copySelectedColsAsCsvWithHeader') },
-        { label: 'Markdown（无表头）', disabled: true, action: 'copySelectedColsAsMd', onClick: createMenuClick('copySelectedColsAsMd') },
-        { label: 'Markdown（含表头）', disabled: true, action: 'copySelectedColsAsMdWithHeader', onClick: createMenuClick('copySelectedColsAsMdWithHeader') },
+        { label: t('grid.menu.tsvNoHeader'), disabled: true, action: 'copySelectedColsAsTsv', onClick: createMenuClick('copySelectedColsAsTsv') },
+        { label: t('grid.menu.tsvWithHeader'), disabled: true, action: 'copySelectedColsAsTsvWithHeader', onClick: createMenuClick('copySelectedColsAsTsvWithHeader') },
+        { label: t('grid.menu.csvNoHeader'), disabled: true, action: 'copySelectedColsAsCsv', onClick: createMenuClick('copySelectedColsAsCsv') },
+        { label: t('grid.menu.csvWithHeader'), disabled: true, action: 'copySelectedColsAsCsvWithHeader', onClick: createMenuClick('copySelectedColsAsCsvWithHeader') },
+        { label: t('grid.menu.mdNoHeader'), disabled: true, action: 'copySelectedColsAsMd', onClick: createMenuClick('copySelectedColsAsMd') },
+        { label: t('grid.menu.mdWithHeader'), disabled: true, action: 'copySelectedColsAsMdWithHeader', onClick: createMenuClick('copySelectedColsAsMdWithHeader') },
         { label: 'JSON', disabled: true, action: 'copySelectedColsAsJson', onClick: createMenuClick('copySelectedColsAsJson') },
         { label: 'SQL INSERT', disabled: true, action: 'copySelectedColsAsSqlInsert', onClick: createMenuClick('copySelectedColsAsSqlInsert') },
       ];
       copyItems.push({
-        label: '📋 复制选中列',
+        label: t('grid.menu.copySelectedColsLabel'),
         children: colsChildren,
         disabled: true,
         recommended: isColumnHeaderTrigger,

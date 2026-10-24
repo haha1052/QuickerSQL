@@ -6,7 +6,7 @@ use crate::models::trash::*;
 use tauri::State;
 use log;
 
-/// 获取回收站列表
+/// 获取回收站列表（仅访问 SQLite 的 __trash_metadata）
 #[tauri::command]
 pub fn get_trash_list(state: State<'_, TauriAppState>) -> Result<TrashListResponse, String> {
     if !state.db_manager.is_connected() {
@@ -21,9 +21,13 @@ pub fn get_trash_list(state: State<'_, TauriAppState>) -> Result<TrashListRespon
 }
 
 /// 将表移动到回收站
+///
+/// 业务数据表在 DuckDB，回收站元数据在 SQLite。
+/// - sqlite_conn: 读写 __trash_metadata + settings + audit log
+/// - duckdb_conn: 查询行数 + ALTER TABLE RENAME
 #[tauri::command]
 pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Result<TrashItem, String> {
-    if !state.db_manager.is_connected() {
+    if !state.db_manager.is_connected() || !state.duckdb_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
 
@@ -32,18 +36,23 @@ pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Res
         return Err(format!("系统表 '{}' 不允许删除或修改", table_name));
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| {
-        log::error!("[trash] 获取数据库连接失败: error={}", e);
+    let sqlite_conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 SQLite 连接失败: error={}", e);
         "数据库连接异常，请重新打开数据库".to_string()
     })?;
 
-    // 获取行数
-    let row_count = TrashService::get_table_row_count(&conn, &table_name)?;
+    let duckdb_conn = state.duckdb_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 DuckDB 连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
+
+    // 从 DuckDB 获取行数
+    let row_count = TrashService::get_table_row_count(&duckdb_conn, &table_name)?;
 
     log::info!("准备将表 {} ({} 行) 移动到回收站", table_name, row_count);
 
-    // 移动到回收站
-    let result = TrashService::move_to_trash_sync(&conn, &table_name, row_count);
+    // 移动到回收站（DuckDB 重命名表 + SQLite 写元数据）
+    let result = TrashService::move_to_trash_sync(&sqlite_conn, &duckdb_conn, &table_name, row_count);
 
     if result.is_ok() {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -54,16 +63,7 @@ pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Res
             duration_ms: None,
             details: None,
         };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
-    }
-
-    // 清理 DuckDB 中的 VIEW
-    if result.is_ok() {
-        if let Ok(duckdb_conn) = state.get_duckdb_connection() {
-            if let Ok(conn_inner) = duckdb_conn.lock() {
-                let _ = crate::services::ViewService::drop_single_view(&**conn_inner, &table_name);
-            }
-        }
+        let _ = crate::services::AuditLogService::record_audit_log(&sqlite_conn, audit_request);
     }
 
     result
@@ -72,15 +72,20 @@ pub fn move_to_trash(state: State<'_, TauriAppState>, table_name: String) -> Res
 /// 从回收站恢复表
 #[tauri::command]
 pub fn restore_from_trash(state: State<'_, TauriAppState>, trash_id: String) -> Result<String, String> {
-    if !state.db_manager.is_connected() {
+    if !state.db_manager.is_connected() || !state.duckdb_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| {
-        log::error!("[trash] 获取数据库连接失败: error={}", e);
+    let sqlite_conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 SQLite 连接失败: error={}", e);
         "数据库连接异常，请重新打开数据库".to_string()
     })?;
-    let result = TrashService::restore_from_trash_sync(&conn, &trash_id);
+    let duckdb_conn = state.duckdb_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 DuckDB 连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
+
+    let result = TrashService::restore_from_trash_sync(&sqlite_conn, &duckdb_conn, &trash_id);
 
     if result.is_ok() {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -91,7 +96,7 @@ pub fn restore_from_trash(state: State<'_, TauriAppState>, trash_id: String) -> 
             duration_ms: None,
             details: None,
         };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+        let _ = crate::services::AuditLogService::record_audit_log(&sqlite_conn, audit_request);
     }
 
     result
@@ -100,15 +105,20 @@ pub fn restore_from_trash(state: State<'_, TauriAppState>, trash_id: String) -> 
 /// 永久删除回收站项
 #[tauri::command]
 pub fn permanent_delete(state: State<'_, TauriAppState>, trash_id: String) -> Result<String, String> {
-    if !state.db_manager.is_connected() {
+    if !state.db_manager.is_connected() || !state.duckdb_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
 
-    let conn = state.db_manager.get_connection().map_err(|e| {
-        log::error!("[trash] 获取数据库连接失败: error={}", e);
+    let sqlite_conn = state.db_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 SQLite 连接失败: error={}", e);
         "数据库连接异常，请重新打开数据库".to_string()
     })?;
-    let result = TrashService::permanent_delete_sync(&conn, &trash_id);
+    let duckdb_conn = state.duckdb_manager.get_connection().map_err(|e| {
+        log::error!("[trash] 获取 DuckDB 连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
+
+    let result = TrashService::permanent_delete_sync(&sqlite_conn, &duckdb_conn, &trash_id);
 
     if result.is_ok() {
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
@@ -119,7 +129,7 @@ pub fn permanent_delete(state: State<'_, TauriAppState>, trash_id: String) -> Re
             duration_ms: None,
             details: None,
         };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+        let _ = crate::services::AuditLogService::record_audit_log(&sqlite_conn, audit_request);
     }
 
     result

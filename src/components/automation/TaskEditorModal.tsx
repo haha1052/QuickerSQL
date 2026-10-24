@@ -322,7 +322,7 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
               >
                 {TASK_TYPE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>
-                    {o.label}
+                    {t(o.label)}
                   </option>
                 ))}
               </select>
@@ -353,7 +353,7 @@ export const TaskEditorModal: React.FC<TaskEditorModalProps> = ({
                   <div key={index} style={formStyles.depItem}>
                     <div style={formStyles.depItemLeft}>
                       <span style={formStyles.depTypeTag}>
-                        {DEPENDENCY_TYPE_LABELS[dep.dependencyType]}
+                        {t(DEPENDENCY_TYPE_LABELS[dep.dependencyType])}
                       </span>
                       <span style={formStyles.depDesc}>
                         {getDependencyDescription(dep, allTasks)}

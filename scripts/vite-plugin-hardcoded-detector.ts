@@ -47,6 +47,8 @@ interface PluginOptions {
 export default function hardcodedDetector(options: PluginOptions = {}): Plugin {
   const { strict = false, baseline = 0 } = options;
   const fileHits = new Map<string, { line: number; content: string }[]>();
+  // dev 模式实时报告去重：记录已报告的 file:line，避免重复 warn
+  const reportedKeys = new Set<string>();
 
   function scanSource(id: string, code: string): void {
     if (!id.endsWith('.tsx') && !id.endsWith('.ts')) return;
@@ -94,6 +96,17 @@ export default function hardcodedDetector(options: PluginOptions = {}): Plugin {
     }
 
     fileHits.set(id, hits);
+
+    // dev 模式实时报告（去重）：发现硬编码立即 warn，便于开发时发现新增
+    const rel = id.replace(process.cwd() + '\\', '').replace(process.cwd() + '/', '');
+    for (const h of hits) {
+      const key = `${rel}:${h.line}`;
+      if (!reportedKeys.has(key)) {
+        reportedKeys.add(key);
+        const preview = h.content.length > 100 ? h.content.slice(0, 100) + '...' : h.content;
+        console.warn(`[i18n] ${rel} L${h.line}: ${preview}`);
+      }
+    }
   }
 
   function printReport(): void {

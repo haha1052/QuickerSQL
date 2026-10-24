@@ -252,7 +252,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
 
       const response = await tauriService.listAutomationTasks(fs, ft, kw);
       if (!response.success) {
-        throw new Error(response.error || '加载任务列表失败');
+        throw new Error(response.error || 'error.task.loadListFailed');
       }
       const data = response.data as TaskListResponse;
       set({
@@ -286,7 +286,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.createAutomationTask(payload);
       if (!response.success || !response.data) {
-        throw new Error(response.error || '创建任务失败');
+        throw new Error(response.error || 'error.task.createFailed');
       }
       useToastStore.getState().addToast({ key: 'task.created', vars: { name: response.data.name } }, 'success');
       await get().loadTasks();
@@ -306,7 +306,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.updateAutomationTask(id, patch);
       if (!response.success || !response.data) {
-        throw new Error(response.error || '更新任务失败');
+        throw new Error(response.error || 'error.task.updateFailed');
       }
       await get().loadTasks();
       return response.data;
@@ -325,7 +325,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.deleteAutomationTask(id);
       if (!response.success) {
-        throw new Error(response.error || '删除任务失败');
+        throw new Error(response.error || 'error.task.deleteFailed');
       }
       useToastStore.getState().addToast({ key: 'task.deleted' }, 'success');
       if (get().selectedTaskId === id) {
@@ -348,7 +348,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.enableAutomationTask(id);
       if (!response.success || !response.data) {
-        throw new Error(response.error || '启用任务失败');
+        throw new Error(response.error || 'error.task.enableFailed');
       }
       useToastStore.getState().addToast({ key: 'task.enabled_short' }, 'success');
       await get().loadTasks();
@@ -368,7 +368,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.disableAutomationTask(id);
       if (!response.success || !response.data) {
-        throw new Error(response.error || '禁用任务失败');
+        throw new Error(response.error || 'error.task.disableFailed');
       }
       useToastStore.getState().addToast({ key: 'task.disabled_short' }, 'success');
       await get().loadTasks();
@@ -388,7 +388,7 @@ export const useTaskStore = create<TaskStoreState>()((set, get) => ({
     try {
       const response = await tauriService.runAutomationTaskNow(id);
       if (!response.success || !response.data) {
-        throw new Error(response.error || '执行任务失败');
+        throw new Error(response.error || 'error.task.runFailed');
       }
       useToastStore.getState().addToast({ key: 'task.executed' }, 'success');
       await get().loadTasks();

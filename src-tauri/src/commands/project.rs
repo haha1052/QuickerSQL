@@ -15,7 +15,6 @@ use crate::models::ProjectInfo;
 use crate::services::ProjectService;
 use std::path::{Path, PathBuf};
 use tauri::State;
-use tauri::Emitter;
 
 // ==================== 内部辅助函数 ====================
 
@@ -220,7 +219,7 @@ pub fn delete_project(state: State<'_, TauriAppState>, project_id: String) -> Re
 #[tauri::command]
 pub fn switch_project(
     state: State<'_, TauriAppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     project_id: String,
 ) -> Result<ProjectInfo, String> {
     // 1. 调用 Service 更新 last_opened_at 并获取项目信息
@@ -267,132 +266,8 @@ pub fn switch_project(
         let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
     }
 
-    // 7. 异步触发 DuckDB 重新初始化（参考 preload_duckdb 命令的实现）
-    {
-        let db_manager = state.db_manager.clone();
-        let db_path_for_duckdb = db_path.clone();
-        let duckdb_conn = state.duckdb_conn.clone();
-        let app_handle = app.clone();
-
-        std::thread::spawn(move || {
-            let t0 = std::time::Instant::now();
-            log::info!("[DuckDB] 预加载开始（switch_project 触发）");
-
-            let table_names = match db_manager.get_connection() {
-                Ok(sqlite_conn) => {
-                    match crate::database::meta::list_user_table_names(&sqlite_conn) {
-                        Ok(names) => names,
-                        Err(e) => {
-                            log::warn!("[DuckDB] 从 SQLite 获取表名失败: {}", e);
-                            Vec::new()
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[DuckDB] 获取 SQLite 连接失败: {}", e);
-                    Vec::new()
-                }
-            };
-
-            log::info!(
-                "[DuckDB] 预加载：从 SQLite 获取到 {} 个用户表",
-                table_names.len()
-            );
-
-            let driver = crate::database::duckdb::DuckDbDriver::new();
-
-            match driver.connect_memory() {
-                Ok(conn) => {
-                    let _ = conn.execute("LOAD sqlite;", &[]);
-
-                    let sqlite_path_str = db_path_for_duckdb
-                        .to_string_lossy()
-                        .replace("'", "''");
-                    let attach_sql = format!(
-                        "ATTACH '{}' AS sqlite_db (TYPE SQLITE);",
-                        sqlite_path_str
-                    );
-
-                    if conn.execute(&attach_sql, &[]).is_ok() {
-                        let mut success_count = 0;
-                        for table_name in &table_names {
-                            if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
-                                let create_view_sql = if let Ok(sqlite_conn) = db_manager.get_connection() {
-                                    build_view_sql_with_type_casts(&sqlite_conn, table_name)
-                                } else {
-                                    let quoted_table =
-                                        crate::database::SqlIdentifier::quote_identifier(table_name);
-                                    format!(
-                                        "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
-                                        quoted_table, quoted_table
-                                    )
-                                };
-                                if conn.execute(&create_view_sql, &[]).is_ok() {
-                                    success_count += 1;
-                                }
-                            }
-                        }
-
-                        let _ = conn.execute("SET preserve_insertion_order = false;", &[]);
-
-                        if let Ok(mut guard) = duckdb_conn.lock() {
-                            *guard = Some(std::sync::Arc::new(std::sync::Mutex::new(conn)));
-                            let duration_ms = t0.elapsed().as_millis() as i64;
-                            log::info!(
-                                "[DuckDB] 预加载完成（switch_project），已创建 {}/{} 个 VIEW，耗时 {}ms",
-                                success_count,
-                                table_names.len(),
-                                duration_ms
-                            );
-                            
-                            let status = crate::models::DuckDbInitStatus {
-                                success: true,
-                                view_count: success_count,
-                                total_tables: table_names.len() as i32,
-                                duration_ms,
-                                trigger: "switch_project".to_string(),
-                            };
-                            let _ = app_handle.emit("duckdb_init_completed", status);
-                        } else {
-                            log::warn!("[DuckDB] 预加载完成，但无法保存连接（Mutex poison）");
-                            
-                            let status = crate::models::DuckDbInitStatus {
-                                success: false,
-                                view_count: 0,
-                                total_tables: table_names.len() as i32,
-                                duration_ms: t0.elapsed().as_millis() as i64,
-                                trigger: "switch_project".to_string(),
-                            };
-                            let _ = app_handle.emit("duckdb_init_completed", status);
-                        }
-                    } else {
-                        log::warn!("[DuckDB] 预加载失败：ATTACH SQLite 失败");
-                        
-                        let status = crate::models::DuckDbInitStatus {
-                            success: false,
-                            view_count: 0,
-                            total_tables: table_names.len() as i32,
-                            duration_ms: t0.elapsed().as_millis() as i64,
-                            trigger: "switch_project".to_string(),
-                        };
-                        let _ = app_handle.emit("duckdb_init_completed", status);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[DuckDB] 预加载失败：创建内存连接失败: {}", e);
-                    
-                    let status = crate::models::DuckDbInitStatus {
-                        success: false,
-                        view_count: 0,
-                        total_tables: table_names.len() as i32,
-                        duration_ms: t0.elapsed().as_millis() as i64,
-                        trigger: "switch_project".to_string(),
-                    };
-                    let _ = app_handle.emit("duckdb_init_completed", status);
-                }
-            }
-        });
-    }
+    // 7. DuckDB 连接已由 set_db_path 自动连接到 data.duckdb，无需额外预加载
+    log::info!("[switch_project] DuckDB 已自动连接到 data.duckdb");
 
     Ok(project_info)
 }
@@ -679,6 +554,7 @@ pub fn export_selected_projects(
     Ok(exported_paths)
 }
 
+#[allow(dead_code)]
 fn build_view_sql_with_type_casts(
     sqlite_conn: &crate::database::MutexGuardConnection,
     table_name: &str,
@@ -714,6 +590,7 @@ fn build_view_sql_with_type_casts(
     )
 }
 
+#[allow(dead_code)]
 fn duckdb_cast_type(sqlite_type: &str) -> Option<&'static str> {
     let t = sqlite_type.to_uppercase();
     match t.as_str() {

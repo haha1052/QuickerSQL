@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useLocale } from '../../../context/LocaleContext';
 import type { DraftState } from './shared';
 import { formStyles } from './shared';
 
@@ -14,6 +15,7 @@ export const RefreshDashboardTaskForm: React.FC<RefreshDashboardTaskFormProps> =
   form,
   updateForm,
 }) => {
+  const { t } = useLocale();
   return (
     <div style={formStyles.field}>
       <label style={formStyles.label}>dashboardId *</label>
@@ -21,7 +23,7 @@ export const RefreshDashboardTaskForm: React.FC<RefreshDashboardTaskFormProps> =
         style={formStyles.input}
         value={form.dashboardId}
         onChange={(e) => updateForm({ dashboardId: e.target.value })}
-        placeholder="仪表盘 ID"
+        placeholder={t('automation.placeholder.dashboardId')}
       />
     </div>
   );

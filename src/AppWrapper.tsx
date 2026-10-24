@@ -68,6 +68,7 @@ export interface StartupData {
     description: string;
     visibility: string;
     authorizedDashboardIds: string[];
+    visualConfig?: Record<string, unknown> | null;
     createdAt: number;
     updatedAt: number;
   }>;
@@ -212,8 +213,10 @@ const AppWrapper: React.FC = () => {
   const duckDbCancelledRef = useRef(false);
 
   // v12: 启动计时状态（React 内部计时，不渲染到 UI，由 index.html splash 显示计时）
+  // AppWrapper 在 LocaleProvider 之外，setStageText 启动文案仅 React 内部状态，
+  // 不会渲染到用户可见 UI（启动视觉由 index.html splash 负责），保留原文加 i18n:skip
   const [, setRuntimeMs] = useState<number>(0);
-  const [, setStageText] = useState<string>('正在初始化...');
+  const [, setStageText] = useState<string>('正在初始化...'); // i18n:skip
 
   // v9.3: 仅在 isLoading=true 期间动态刷新计时；一旦加载完成，停止刷新
   useEffect(() => {
@@ -221,10 +224,10 @@ const AppWrapper: React.FC = () => {
     const timer = setInterval(() => {
       const nowMs = performance.now();
       setRuntimeMs(nowMs);
-      if (nowMs < 300) setStageText('正在初始化...');
-      else if (nowMs < 700) setStageText('正在加载资源...');
-      else if (nowMs < 1100) setStageText('正在读取数据...');
-      else setStageText('即将完成...');
+      if (nowMs < 300) setStageText('正在初始化...'); // i18n:skip
+      else if (nowMs < 700) setStageText('正在加载资源...'); // i18n:skip
+      else if (nowMs < 1100) setStageText('正在读取数据...'); // i18n:skip
+      else setStageText('即将完成...'); // i18n:skip
     }, 50);
     return () => clearInterval(timer);
   }, [isLoading]);
@@ -238,13 +241,13 @@ const AppWrapper: React.FC = () => {
       if (duckDbCancelledRef.current) return;
       if (status.success) {
         useToastStore.getState().addToast(
-          `DuckDB 初始化完成，已同步 ${status.view_count} 个表（耗时 ${status.duration_ms}ms）`,
+          { key: 'toast.duckdbInitSuccess', vars: { count: status.view_count, ms: status.duration_ms } },
           'success',
           3000
         );
       } else {
         useToastStore.getState().addToast(
-          'DuckDB 初始化失败',
+          'toast.duckdbInitFailed',
           'error',
           5000
         );
@@ -434,7 +437,7 @@ const AppWrapper: React.FC = () => {
           const rustMs = data.timing?.rustAppInitMs ?? 0;
           const ipcMs = Math.max(1, Math.round(ipcEndMs - jsStartMs));
           useToastStore.getState().addToast(
-            `启动完成 ${totalMs}ms · Rust ${rustMs}ms / IPC ${ipcMs}ms`,
+            { key: 'toast.startupComplete', vars: { total: totalMs, rust: rustMs, ipc: ipcMs } },
             'info',
             3000
           );
@@ -442,7 +445,7 @@ const AppWrapper: React.FC = () => {
           if (data.hasLaunched) {
             tauriService.updateAppState(
               'welcome', 'last_launched_at',
-              new Date().toISOString(), '上次启动时间'
+              new Date().toISOString(), '上次启动时间' // i18n:skip
             ).catch(() => {});
             setState('workspace');
           } else {
@@ -468,9 +471,9 @@ const AppWrapper: React.FC = () => {
   const handleGetStarted = async () => {
     // 标记为已启动（写入后端数据库）
     try {
-      await tauriService.updateAppState('welcome', 'has_launched', 'true', '是否已启动过');
+      await tauriService.updateAppState('welcome', 'has_launched', 'true', '是否已启动过'); // i18n:skip
       await tauriService.updateAppState('welcome', 'first_launch_at',
-        new Date().toISOString(), '首次启动时间');
+        new Date().toISOString(), '首次启动时间'); // i18n:skip
     } catch {
       // 即使失败也允许继续
     }

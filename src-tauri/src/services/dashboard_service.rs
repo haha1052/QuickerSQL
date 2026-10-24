@@ -65,6 +65,7 @@ impl DashboardService {
                 description TEXT NOT NULL DEFAULT '',
                 thumbnail TEXT,
                 config TEXT,
+                visual_config TEXT,
                 visibility TEXT NOT NULL DEFAULT 'all',
                 authorized_dashboard_ids TEXT NOT NULL DEFAULT '[]',
                 created_by TEXT NOT NULL DEFAULT '',
@@ -107,6 +108,12 @@ impl DashboardService {
         let add_auth_dashboards_column_sql = "ALTER TABLE __saved_charts ADD COLUMN authorized_dashboard_ids TEXT NOT NULL DEFAULT '[]';";
         if let Err(e) = conn.execute(add_auth_dashboards_column_sql, &[]) {
             log::debug!("__saved_charts.authorized_dashboard_ids 列可能已存在: {}", e);
+        }
+
+        // 视觉配置列：存储用户自定义的图表视觉样式 JSON
+        let add_visual_config_column_sql = "ALTER TABLE __saved_charts ADD COLUMN visual_config TEXT;";
+        if let Err(e) = conn.execute(add_visual_config_column_sql, &[]) {
+            log::debug!("__saved_charts.visual_config 列可能已存在: {}", e);
         }
 
         // 关键修复：回填旧图表的 sql 字段 —— 从 __saved_queries 表同步 SQL
@@ -242,6 +249,7 @@ impl DashboardService {
         tags: Option<Vec<String>>,
         description: Option<String>,
         config: Option<serde_json::Value>,
+        visual_config: Option<serde_json::Value>,
         visibility: Option<String>,
         authorized_dashboard_ids: Option<Vec<String>>,
     ) -> Result<SavedChart, String> {
@@ -279,18 +287,27 @@ impl DashboardService {
         }
 
         // 创建图表记录（核心：SQL直接保存到图表记录中；同时记录授权范围）
-        // 参数化插入：config 可能为 NULL，分两种 SQL 模板
+        // 参数化插入：config / visual_config 可能为 NULL，分四种 SQL 模板
         // 列顺序：id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags,
-        //        description, thumbnail(NULL), config(?/NULL), visibility, authorized_dashboard_ids,
-        //        created_by(''), created_at, updated_at
-        let insert_sql = if config_json.is_some() {
-            "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, '', ?, ?);"
-        } else {
-            "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, '', ?, ?);"
+        //        description, thumbnail(NULL), config(?/NULL), visual_config(?/NULL),
+        //        visibility, authorized_dashboard_ids, created_by(''), created_at, updated_at
+        let visual_config_json = visual_config.and_then(|v| serde_json::to_string(&v).ok());
+        let insert_sql = match (config_json.is_some(), visual_config_json.is_some()) {
+            (true, true) => {
+                "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, '', ?, ?);"
+            }
+            (true, false) => {
+                "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, '', ?, ?);"
+            }
+            (false, true) => {
+                "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, '', ?, ?);"
+            }
+            (false, false) => {
+                "INSERT INTO __saved_charts (id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, '', ?, ?);"
+            }
         };
 
-        // 统一参数顺序（不含 config，由模板决定是否占位）
-        let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(17);
+        let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(19);
         params.push(Box::new(id.clone()));
         params.push(Box::new(name));
         params.push(Box::new(query_id));
@@ -304,6 +321,9 @@ impl DashboardService {
         params.push(Box::new(description));
         if let Some(c) = config_json {
             params.push(Box::new(c));
+        }
+        if let Some(vc) = &visual_config_json {
+            params.push(Box::new(vc));
         }
         params.push(Box::new(visibility));
         params.push(Box::new(auth_ids_json));
@@ -329,9 +349,9 @@ impl DashboardService {
         // 注意：sql 列对图表的自洽渲染至关重要；visibility / authorized_dashboard_ids 控制图表授权范围
         // last_result / last_run_at 由自动化任务刷新图表时写入，供前端跳过查询直接使用缓存
         let select_sql = if query_id.is_some() {
-            "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts WHERE query_id = ? ORDER BY updated_at DESC;"
+            "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts WHERE query_id = ? ORDER BY updated_at DESC;"
         } else {
-            "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts ORDER BY updated_at DESC;"
+            "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts ORDER BY updated_at DESC;"
         };
 
         let result = if let Some(qid) = query_id {
@@ -363,7 +383,7 @@ impl DashboardService {
     pub fn get_saved_chart(conn: &MutexGuardConnection<'_>, id: &str) -> Result<SavedChart, String> {
         use crate::database::traits::ToSql;
 
-        let select_sql = "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts WHERE id = ?;";
+        let select_sql = "SELECT id, name, query_id, sql, chart_type, x_axis, y_axis, title, filters, tags, description, thumbnail, config, visual_config, visibility, authorized_dashboard_ids, last_result, last_run_at, created_by, created_at, updated_at FROM __saved_charts WHERE id = ?;";
         let params: [&dyn ToSql; 1] = [&id];
 
         let result = conn.query(select_sql, &params)
@@ -405,6 +425,7 @@ impl DashboardService {
         tags: Option<Vec<String>>,
         description: Option<String>,
         config: Option<serde_json::Value>,
+        visual_config: Option<serde_json::Value>,
         visibility: Option<String>,
         authorized_dashboard_ids: Option<Vec<String>>,
         // 同时允许更新 SQL（若前端重新生成了结果，需要同步保存）
@@ -451,6 +472,14 @@ impl DashboardService {
             updates.push("config = ?".into());
             params.push(Box::new(cfg_json));
         }
+        if let Some(vcfg) = visual_config {
+            let vcfg_json = serde_json::to_string(&vcfg).unwrap_or_else(|_| "{}".to_string());
+            log::warn!("[SVC UPDATE] visual_config received from cmd: {:?}", vcfg_json.chars().take(120).collect::<String>());
+            updates.push("visual_config = ?".into());
+            params.push(Box::new(vcfg_json));
+        } else {
+            log::warn!("[SVC UPDATE] visual_config is None — SKIPPING UPDATE for this column!");
+        }
         if let Some(vis) = visibility {
             updates.push("visibility = ?".into());
             params.push(Box::new(vis));
@@ -475,7 +504,12 @@ impl DashboardService {
         conn.execute(&update_sql, params_refs.as_slice())
             .map_err(|e| format!("更新保存的图表失败：{}", e))?;
 
-        Self::get_saved_chart(conn, id)
+        log::warn!("[SVC UPDATE] UPDATE executed SQL columns: {}", updates.join(", "));
+
+        let result = Self::get_saved_chart(conn, id)?;
+        log::warn!("[SVC UPDATE] After re-fetch, visual_config = {:?}", 
+            result.visual_config.as_ref().map(|v| format!("{}", v).chars().take(120).collect::<String>()));
+        Ok(result)
     }
 
     /// 刷新图表查询结果（供自动化任务 refresh_chart 调用）
@@ -577,6 +611,12 @@ impl DashboardService {
             serde_json::from_str(&get("tags")).unwrap_or_default();
         let config: Option<serde_json::Value> = get_opt("config")
             .and_then(|s| serde_json::from_str(&s).ok());
+        let visual_config: Option<serde_json::Value> = get_opt("visual_config")
+            .and_then(|s| {
+                log::warn!("[ROW PARSE] visual_config raw string from DB = {:?}", s.chars().take(120).collect::<String>());
+                serde_json::from_str(&s).ok()
+            });
+        log::warn!("[ROW PARSE] visual_config final = {:?}", visual_config);
         // 授权范围: "all" = 所有仪表盘可用; "restricted" = 仅指定仪表盘
         let visibility = get("visibility");
         let visibility = if visibility.is_empty() { "all".to_string() } else { visibility };
@@ -601,6 +641,7 @@ impl DashboardService {
             description: get("description"),
             thumbnail: get_opt("thumbnail"),
             config,
+            visual_config,
             visibility,
             authorized_dashboard_ids,
             last_result,
@@ -1311,17 +1352,22 @@ impl DashboardService {
         use crate::database::traits::ToSql;
         let empty_params: [&dyn ToSql; 0] = [];
         let rows = conn.query(
-            "SELECT id, name, chart_type, x_axis, y_axis, title, tags, description, visibility, authorized_dashboard_ids, created_at, updated_at
+            "SELECT id, name, chart_type, x_axis, y_axis, title, tags, description, visibility, authorized_dashboard_ids, visual_config, created_at, updated_at
              FROM __saved_charts ORDER BY updated_at DESC",
             &empty_params
         ).map_err(|e| format!("获取图表精简列表失败: {}", e))?;
 
         let mut result = Vec::new();
         for row in rows.rows {
-            if row.len() < 12 { continue; }
+            if row.len() < 13 { continue; }
             let y_axis: Vec<String> = serde_json::from_str(&row[4]).unwrap_or_default();
             let tags: Vec<String> = serde_json::from_str(&row[6]).unwrap_or_default();
             let authorized_dashboard_ids: Vec<String> = serde_json::from_str(&row[9]).unwrap_or_default();
+            let visual_config: Option<serde_json::Value> = if row[10].is_empty() {
+                None
+            } else {
+                serde_json::from_str(&row[10]).ok()
+            };
             result.push(SavedChartLite {
                 id: row[0].clone(),
                 name: row[1].clone(),
@@ -1333,8 +1379,9 @@ impl DashboardService {
                 description: row[7].clone(),
                 visibility: row[8].clone(),
                 authorized_dashboard_ids,
-                created_at: row[10].parse().unwrap_or(0),
-                updated_at: row[11].parse().unwrap_or(0),
+                visual_config,
+                created_at: row[11].parse().unwrap_or(0),
+                updated_at: row[12].parse().unwrap_or(0),
             });
         }
         Ok(result)
@@ -1575,6 +1622,7 @@ mod tests {
             description: String::new(),
             visibility: "all".to_string(),
             authorized_dashboard_ids: vec![],
+            visual_config: None,
             created_at: 1,
             updated_at: 2,
         };

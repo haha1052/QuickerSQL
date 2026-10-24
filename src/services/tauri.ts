@@ -154,7 +154,7 @@ class TauriService {
     if (!isTauriEnv()) {
       return {
         success: false,
-        error: '当前为浏览器预览模式，IPC 不可用。请在 Tauri 应用中运行以使用完整功能。',
+        error: 'tauri.browserPreviewError',
       };
     }
 
@@ -1000,6 +1000,7 @@ class TauriService {
     tags?: string[];
     description?: string;
     config?: Record<string, unknown>;
+    visualConfig?: Record<string, unknown>;
     visibility?: 'all' | 'restricted';
     authorizedDashboardIds?: string[];
   }): Promise<ApiResponse<SavedChart>> {
@@ -1021,6 +1022,9 @@ class TauriService {
           return value;
         })
         : null,
+      visualConfig: params.visualConfig && Object.keys(params.visualConfig).length > 0
+        ? JSON.stringify(params.visualConfig)
+        : null,
       visibility: params.visibility || 'all',
       authorizedDashboardIds: params.authorizedDashboardIds || [],
     };
@@ -1029,6 +1033,11 @@ class TauriService {
 
   /**
    * Update a saved chart（编辑图表配置、类型、坐标轴、SQL、授权范围等）
+   * 注意：Tauri v2 #[tauri::command] 会自动将 Rust 的 snake_case 参数名转换为 camelCase，
+   * 因此前端必须传递 camelCase 参数名（如 chartType/xAxis/visualConfig）。
+   * 历史上此处误传 snake_case（chart_type/x_axis/visual_config...），单词参数因两种命名
+   * 恰好一致而侥幸通过，多词参数被 serde 静默丢弃 —— 表现为「视觉样式保存不生效」
+   * （后端收到 visual_config = None，服务层跳过该列，DB 保留旧值）。
    */
   async updateSavedChart(params: {
     id: string;
@@ -1040,6 +1049,7 @@ class TauriService {
     tags?: string[];
     description?: string;
     config?: Record<string, unknown>;
+    visualConfig?: Record<string, unknown>;
     visibility?: 'all' | 'restricted';
     authorizedDashboardIds?: string[];
     sql?: string;
@@ -1061,6 +1071,9 @@ class TauriService {
           return value;
         })
         : null;
+    }
+    if (params.visualConfig !== undefined) {
+      args.visualConfig = JSON.stringify(params.visualConfig);
     }
     if (params.visibility !== undefined) args.visibility = params.visibility;
     if (params.authorizedDashboardIds !== undefined) {

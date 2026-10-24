@@ -215,7 +215,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         multiple: true,
         filters: [
           {
-            name: '数据文件',
+            name: t('toolbar.dataFiles'),
             extensions: ['csv', 'xlsx', 'xls'],
           },
         ],
@@ -436,10 +436,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   };
 
   const layoutOptions = [
-    { label: '100% 编辑器', editorSize: 100, resultsSize: 0 },
-    { label: '80% 编辑器 / 20% 结果', editorSize: 80, resultsSize: 20 },
-    { label: '50% 编辑器 / 50% 结果', editorSize: 50, resultsSize: 50 },
-    { label: '20% 编辑器 / 80% 结果', editorSize: 20, resultsSize: 80 },
+    { label: t('toolbar.layout.fullEditor'), editorSize: 100, resultsSize: 0 },
+    { label: t('toolbar.layout.editor80Results20'), editorSize: 80, resultsSize: 20 },
+    { label: t('toolbar.layout.editor50Results50'), editorSize: 50, resultsSize: 50 },
+    { label: t('toolbar.layout.editor20Results80'), editorSize: 20, resultsSize: 80 },
   ];
 
   if (activeTab === 'csv') {

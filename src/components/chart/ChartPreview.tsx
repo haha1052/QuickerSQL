@@ -1,18 +1,19 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-// P0-2 启动优化：将 echarts 改为运行时动态加载，避免启动时同步加载大库
 import { normalizeEChartsConfig } from '../../utils/echartsNormalize';
+import { applyVisualConfig } from '../../utils/chartVisual';
 import { useSetting } from '../../context/SettingsContext';
+import type { VisualConfig } from '../../types/chart';
 
 interface ChartPreviewProps {
-  /** 已保存的 ECharts 配置 */
   config: Record<string, unknown> | null;
-  /** 预览高度（px），默认 160 */
+  visualConfig?: VisualConfig | null;
   height?: number;
 }
 
-export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160 }) => {
+export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, visualConfig, height = 160 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<any>(null);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [echartsModule, setEchartsModule] = useState<any>(null);
 
   const [showGridStr] = useSetting('visualization', 'showGrid');
@@ -36,14 +37,34 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160
   }, []);
 
   useEffect(() => {
-    const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0;
-    if (!hasConfig || !containerRef.current || !echartsModule) return;
-
-    const normalized = normalizeEChartsConfig(config, vizOptions);
-    if (!normalized) return;
+    if (!echartsModule || !containerRef.current) return;
 
     if (!chartInstanceRef.current) {
       chartInstanceRef.current = echartsModule.init(containerRef.current);
+    }
+
+    const handleResize = () => chartInstanceRef.current?.resize();
+    window.addEventListener('resize', handleResize);
+    resizeTimerRef.current = setTimeout(() => chartInstanceRef.current?.resize(), 120);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    };
+  }, [echartsModule]);
+
+  useEffect(() => {
+    if (!chartInstanceRef.current) return;
+
+    const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0;
+    if (!hasConfig) return;
+
+    let normalized = normalizeEChartsConfig(config, vizOptions);
+    if (!normalized) return;
+
+    const hasVisualConfig = visualConfig && Object.keys(visualConfig).length > 0;
+    if (hasVisualConfig) {
+      normalized = applyVisualConfig(normalized, visualConfig!) as Record<string, unknown>;
     }
 
     try {
@@ -51,18 +72,7 @@ export const ChartPreview: React.FC<ChartPreviewProps> = ({ config, height = 160
     } catch (e) {
       console.error('[ChartPreview] ECharts 渲染失败:', e);
     }
-
-    const handleResize = () => chartInstanceRef.current?.resize();
-    window.addEventListener('resize', handleResize);
-    const timer = setTimeout(() => chartInstanceRef.current?.resize(), 120);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      clearTimeout(timer);
-      chartInstanceRef.current?.dispose();
-      chartInstanceRef.current = null;
-    };
-  }, [config, echartsModule, vizOptions]);
+  }, [config, vizOptions, visualConfig]);
 
   const hasConfig = config && typeof config === 'object' && Object.keys(config).length > 0;
   if (!hasConfig) {

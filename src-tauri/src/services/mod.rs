@@ -1,7 +1,6 @@
 //! Services 模块
 //! 包含业务逻辑相关的服务
 pub mod database_service;
-pub mod view_service;
 pub mod trash_service;
 pub mod query_history_service;
 pub mod chart_service;
@@ -18,7 +17,6 @@ pub mod profile_service;
 pub mod sql_snippet_service;
 
 pub use database_service::DatabaseService;
-pub use view_service::ViewService;
 pub use trash_service::TrashService;
 pub use query_history_service::QueryHistoryService;
 pub use chart_service::ChartService;

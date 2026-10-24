@@ -40,7 +40,7 @@ export const DashboardToolbarModals: React.FC<DashboardToolbarModalsProps> = ({
         onClose={onScheduleClose}
         initialTaskType="refresh_dashboard"
         initialPayload={{ dashboardId: (dashboard?.id || '').toString() }}
-        initialName={'定时刷新仪表盘: ' + (dashboard?.name || '')}
+        initialName={t('automation.scheduledRefreshPrefix', { name: dashboard?.name || '' })}
       />
 
       {/* 新建仪表盘弹窗 */}

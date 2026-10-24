@@ -10,7 +10,6 @@ pub mod utils;
 use services::ProjectService;
 use database::{DatabaseManager, SqliteDriver, DuckDbDriver, DatabaseError, SharedDatabaseManager};
 use tauri::Manager;
-use tauri::Emitter;
 use tokio::sync::Semaphore;
 
 // 类型从 models/database.rs 导入
@@ -19,8 +18,16 @@ pub use models::database::{DatabaseStatus, SqlStatementResult, BatchExecuteResul
 /// 系统表 ensure 函数签名：接收数据库连接，返回 Result<(), String>
 type EnsureFn = fn(&crate::database::MutexGuardConnection<'_>) -> Result<(), String>;
 
-/// DuckDB 连接的共享句柄类型（外层 Option 表示懒加载，None=尚未初始化）
-type DuckDbConnHandle = Arc<Mutex<Option<Arc<Mutex<Box<dyn database::DatabaseConnection>>>>>>;
+/// DuckDB 业务数据文件名（与 meta.db 同目录）
+const DUCKDB_DATA_FILENAME: &str = "data.duckdb";
+
+/// 根据 meta.db 路径推导同目录下的 data.duckdb 路径
+fn derive_duckdb_path(meta_db_path: &Path) -> PathBuf {
+    meta_db_path
+        .parent()
+        .map(|dir| dir.join(DUCKDB_DATA_FILENAME))
+        .unwrap_or_else(|| PathBuf::from(DUCKDB_DATA_FILENAME))
+}
 
 /// 包装函数：确保 __projects_registry 表存在（位于独立的 projects.db）
 ///
@@ -62,8 +69,8 @@ const SYSTEM_TABLE_ENSURE_FNS: &[(EnsureFn, &str)] = &[
 
 pub struct TauriAppState {
     pub db_manager: SharedDatabaseManager,
+    pub duckdb_manager: SharedDatabaseManager,
     db_path: Mutex<PathBuf>,
-    duckdb_conn: DuckDbConnHandle,
     pub init_timestamp_ms: i64,
     // v9.3: Rust 初始化各阶段耗时（毫秒，Option<f64>，None = 未记录）
     pub app_init_ms: Mutex<Option<f64>>,          // TauriAppState::new() 总耗时
@@ -84,6 +91,11 @@ impl TauriAppState {
         &self.db_manager
     }
 
+    /// 暴露内部 duckdb_manager（业务数据连接，用于 commands 层）
+    pub fn duckdb_manager(&self) -> &SharedDatabaseManager {
+        &self.duckdb_manager
+    }
+
     /// 暴露内部 db_path（用于需要路径信息的场景）
     pub fn db_path(&self) -> &Mutex<PathBuf> {
         &self.db_path
@@ -95,6 +107,8 @@ impl TauriAppState {
         let t0 = std::time::Instant::now();
         let mut db_manager = DatabaseManager::new();
         db_manager.register_driver(Box::new(SqliteDriver::new()));
+        let mut duckdb_manager = DatabaseManager::new();
+        duckdb_manager.register_driver(Box::new(DuckDbDriver::new()));
         let t1 = std::time::Instant::now();
 
         // 旧版项目目录迁移（升级时自动执行，幂等）
@@ -120,6 +134,7 @@ impl TauriAppState {
         let t2 = std::time::Instant::now();
 
         let manager = Arc::new(db_manager);
+        let duckdb_manager_arc = Arc::new(duckdb_manager);
         let query_cache = Arc::new(crate::services::QueryCacheService::new());
         
         // Phase 16: 并发控制信号量初始化
@@ -130,8 +145,8 @@ impl TauriAppState {
         
         let state = TauriAppState {
             db_manager: manager.clone(),
+            duckdb_manager: duckdb_manager_arc.clone(),
             db_path: Mutex::new(db_path.clone()),
-            duckdb_conn: Arc::new(Mutex::new(None)),
             init_timestamp_ms: chrono::Utc::now().timestamp_millis(),
             app_init_ms: Mutex::new(None),
             system_tables_init_ms: Mutex::new(None),
@@ -144,10 +159,17 @@ impl TauriAppState {
 
         // 处理 Mutex poison：如果 db_path 被 poison，回退到 poison 前的值继续初始化
         let _ = match state.db_path.lock() {
-            Ok(guard) => Self::connect_default_db(&manager, &guard),
+            Ok(guard) => {
+                let _ = Self::connect_default_db(&manager, &guard);
+                let duckdb_path = derive_duckdb_path(&guard);
+                let _ = Self::connect_default_duckdb(&duckdb_manager_arc, &duckdb_path);
+            }
             Err(poisoned) => {
                 log::warn!("db_path Mutex 已 poison，使用 poison 前的值继续初始化");
-                Self::connect_default_db(&manager, &poisoned.into_inner())
+                let path = poisoned.into_inner();
+                let _ = Self::connect_default_db(&manager, &path);
+                let duckdb_path = derive_duckdb_path(&path);
+                let _ = Self::connect_default_duckdb(&duckdb_manager_arc, &duckdb_path);
             }
         };
         let t3 = std::time::Instant::now();
@@ -191,6 +213,14 @@ impl TauriAppState {
             // 注意：必须在系统表初始化完成后调用，否则索引创建会失败
             if let Err(e) = crate::services::MigrationService::apply_optimization_indexes(&conn) {
                 log::warn!("M7.2 索引优化执行失败（不影响核心功能）：{}", e);
+            }
+
+            // 架构迁移：将旧项目中存储在 SQLite 的用户业务表迁移到 DuckDB
+            // 新版架构中系统表在 SQLite、业务表在 DuckDB，旧项目需一次性迁移
+            if let Ok(duckdb_conn) = state.duckdb_manager.get_connection() {
+                if let Err(e) = crate::services::MigrationService::migrate_user_tables_to_duckdb(&conn, &duckdb_conn) {
+                    log::warn!("业务数据迁移（SQLite → DuckDB）失败（不影响启动）：{}", e);
+                }
             }
         }
 
@@ -309,7 +339,7 @@ impl TauriAppState {
             (t3 - t2).as_secs_f64() * 1000.0,
             (t4 - t3).as_secs_f64() * 1000.0
         );
-        log::info!("[启动计时] DuckDB 已推迟到首次使用时懒加载（用户首次 SQL 时才启动）");
+        log::info!("[启动计时] DuckDB 已通过文件连接直接初始化（data.duckdb），无需 ATTACH/VIEW 预加载");
         log::info!(
             "[查询缓存] 默认已启用：capacity={}, ttl={}s（可通过 settings 项 cache.enabled/cache.capacity/cache.ttl 调整）",
             query_cache.stats().capacity,
@@ -329,171 +359,33 @@ impl TauriAppState {
         }
     }
 
-    fn set_db_path(&self, new_path: PathBuf) -> Result<(), String> {
-        // 1. 清理旧的 DuckDB 连接（内存模式，直接丢弃即可）
-        {
-            let mut duckdb_guard = self.duckdb_conn.lock()
-                .map_err(|e| format!("获取连接锁失败: {}", e))?;
-            *duckdb_guard = None;
+    /// 连接（或创建）项目的 DuckDB 业务数据文件（data.duckdb）
+    fn connect_default_duckdb(duckdb_manager: &SharedDatabaseManager, duckdb_path: &Path) -> Result<(), String> {
+        match duckdb_manager.connect("duckdb", duckdb_path) {
+            Ok(_) => Ok(()),
+            Err(DatabaseError::FileNotFound) => {
+                duckdb_manager.create_and_connect("duckdb", duckdb_path).map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
         }
-        
-        // 2. 更新路径
+    }
+
+    fn set_db_path(&self, new_path: PathBuf) -> Result<(), String> {
+        // 1. 更新路径
         let mut path = self.db_path.lock().map_err(|e| format!("获取路径锁失败: {}", e))?;
         *path = new_path.clone();
         drop(path);
 
-        // 3. 初始化新连接（懒加载，这里不立即初始化，首次查询时才初始化）
+        // 2. 重新连接 SQLite（meta.db）
+        Self::connect_default_db(&self.db_manager, &new_path)
+            .map_err(|e| format!("连接 SQLite 失败: {}", e))?;
+
+        // 3. 重新连接 DuckDB（data.duckdb）
+        let duckdb_path = derive_duckdb_path(&new_path);
+        Self::connect_default_duckdb(&self.duckdb_manager, &duckdb_path)
+            .map_err(|e| format!("连接 DuckDB 失败: {}", e))?;
+
         Ok(())
-    }
-
-    fn init_duckdb(&self, sqlite_path: &Path, table_names: &[String]) -> Result<(), String> {
-        let driver = DuckDbDriver::new();
-
-        // 使用内存模式（数据通过 ATTACH 从 SQLite 读取，不需要持久化）
-        let conn = driver.connect_memory()
-            .map_err(|e| format!("创建 DuckDB 内存连接失败: {}", e))?;
-
-        // 0. 加载 SQLite 扩展（DuckDB 1.x 需要显式加载才能 ATTACH SQLite）
-        // 注意：INSTALL/LOAD 命令可能返回结果，使用 query 而不是 execute
-        if conn.execute("LOAD sqlite;", &[]).is_err() {
-            log::info!("[DuckDB] 直接 LOAD sqlite 失败，尝试 INSTALL...");
-            
-            // INSTALL 可能返回结果，使用 query 并忽略结果
-            let _ = conn.query("INSTALL sqlite;", &[]);
-            
-            // LOAD 也可能返回结果
-            let _ = conn.query("LOAD sqlite;", &[]);
-        }
-
-        // 1. ATTACH SQLite 数据库（P2-2: 使用参数化查询，避免 format! 拼接路径）
-        // 之前用 format!("ATTACH '{}' AS ...", path.replace("'", "''")) 拼接路径，
-        // 存在转义遗漏风险。改为 ATTACH ? 绑定参数，由 DuckDB 安全处理。
-        let sqlite_path_str = sqlite_path.to_string_lossy().to_string();
-        conn.execute(
-            "ATTACH ? AS sqlite_db (TYPE SQLITE);",
-            &[&sqlite_path_str as &dyn crate::database::ToSql],
-        )
-            .map_err(|e| format!("ATTACH SQLite 失败: {}", e))?;
-
-        // 3. 为每个表创建 VIEW（P2-3: 包裹在事务内，任一失败则回滚全部）
-        // 之前逐个创建且失败仅 warn，可能导致部分 VIEW 缺失而后续查询报错。
-        // 现改为事务式创建：全部成功才 COMMIT，否则 ROLLBACK 并返回错误。
-        use crate::database::SqlIdentifier;
-        conn.begin_transaction()
-            .map_err(|e| format!("[DuckDB] 开启 VIEW 创建事务失败: {}", e))?;
-
-        let mut created_count = 0u32;
-        for table_name in table_names {
-            // 验证表名安全
-            if !SqlIdentifier::is_safe_identifier(table_name) {
-                log::warn!("[DuckDB] 跳过不安全的表名: {}", table_name);
-                continue;
-            }
-
-            // 创建 VIEW 的 SQL（表名经 SqlIdentifier::quote_identifier 安全拼装，属于标识符范畴）
-            let quoted_table = SqlIdentifier::quote_identifier(table_name);
-            let create_view_sql = format!(
-                "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
-                quoted_table,
-                quoted_table
-            );
-
-            // 执行创建 VIEW — 失败则回滚事务并返回错误
-            if let Err(e) = conn.execute(&create_view_sql, &[]) {
-                let rollback_msg = match conn.rollback_transaction() {
-                    Ok(_) => "已回滚".to_string(),
-                    Err(re) => format!("回滚也失败: {}", re),
-                };
-                return Err(format!(
-                    "[DuckDB] 为表 '{}' 创建 VIEW 失败（{}）: {}",
-                    table_name, rollback_msg, e
-                ));
-            }
-            log::debug!("[DuckDB] 为表 '{}' 成功创建 VIEW", table_name);
-            created_count += 1;
-        }
-
-        // 所有 VIEW 创建成功，提交事务
-        conn.commit_transaction()
-            .map_err(|e| {
-                let _ = conn.rollback_transaction();
-                format!("[DuckDB] 提交 VIEW 创建事务失败: {}", e)
-            })?;
-
-        let success_count = created_count;
-
-        // 4. 设置其他配置
-        conn.execute("SET preserve_insertion_order = false;", &[])
-            .map_err(|e| format!("设置 DuckDB 配置失败: {}", e))?;
-
-        // 5. 保存连接（内存模式不需要临时文件）
-        *self.duckdb_conn.lock().map_err(|e| format!("获取锁失败: {}", e))? = Some(Arc::new(Mutex::new(conn)));
-
-        log::info!(
-            "[DuckDB] 初始化完成（内存模式），已 ATTACH SQLite 并创建 {}/{} 个 VIEW: {}",
-            success_count, table_names.len(), sqlite_path.display()
-        );
-        Ok(())
-    }
-
-    fn get_duckdb_connection(&self) -> Result<Arc<Mutex<Box<dyn database::DatabaseConnection>>>, String> {
-        // P0 优化：懒加载。只有当用户实际需要 DuckDB 时才初始化
-        let needs_init = {
-            let duckdb_opt = self.duckdb_conn.lock()
-                .map_err(|e| format!("获取锁失败: {}", e))?;
-            duckdb_opt.is_none()
-        };
-
-        if needs_init {
-            let t0 = std::time::Instant::now();
-            let db_path_guard = self.db_path.lock()
-                .map_err(|e| format!("获取 db_path 锁失败: {}", e))?;
-            let current_path = db_path_guard.clone();
-            drop(db_path_guard);
-
-            log::info!("[DuckDB] 首次使用，开始懒初始化...");
-
-            // 从 SQLite 获取表名（不依赖 DuckDB 的元数据系统）
-            let table_names = match self.db_manager.get_connection() {
-                Ok(sqlite_conn) => {
-                    match crate::database::meta::list_user_table_names(&sqlite_conn) {
-                        Ok(names) => names,
-                        Err(e) => {
-                            log::warn!("[DuckDB] 从 SQLite 获取表名失败: {}", e);
-                            Vec::new()
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("[DuckDB] 获取 SQLite 连接失败: {}", e);
-                    Vec::new()
-                }
-            };
-
-            log::info!("[DuckDB] 从 SQLite 获取到 {} 个用户表", table_names.len());
-
-            self.init_duckdb(&current_path, &table_names)
-                .map_err(|e| format!("DuckDB 懒初始化失败: {}", e))?;
-            let elapsed = t0.elapsed();
-            let duration_ms = elapsed.as_millis() as i64;
-            log::info!("[DuckDB] 懒初始化完成，耗时 {}ms", duration_ms);
-
-            let app_handle_opt = self.app_handle.lock().ok().and_then(|g| g.clone());
-            if let Some(app_handle) = app_handle_opt {
-                let status = crate::models::DuckDbInitStatus {
-                    success: true,
-                    view_count: table_names.len() as i32,
-                    total_tables: table_names.len() as i32,
-                    duration_ms,
-                    trigger: "lazy_load".to_string(),
-                };
-                let _ = app_handle.emit("duckdb_init_completed", status);
-            }
-        }
-
-        let duckdb_opt = self.duckdb_conn.lock()
-            .map_err(|e| format!("获取锁失败: {}", e))?;
-        duckdb_opt.clone().ok_or_else(|| "DuckDB 连接未初始化".into())
     }
 }
 

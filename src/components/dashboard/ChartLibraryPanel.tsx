@@ -38,6 +38,63 @@ const getChartIcon = (chartType: string) => {
   }
 };
 
+interface ChartPreviewWithConfigFallbackProps {
+  chart: SavedChart;
+  height?: number;
+}
+
+const ChartPreviewWithConfigFallback: React.FC<ChartPreviewWithConfigFallbackProps> = ({ chart, height = 180 }) => {
+  const [dynamicConfig, setDynamicConfig] = React.useState<Record<string, unknown> | null>(null);
+
+  React.useEffect(() => {
+    if (chart.config && Object.keys(chart.config).length > 0) {
+      setDynamicConfig(null);
+      return;
+    }
+
+    if (!chart.lastResult || !chart.lastResult.columns || !chart.lastResult.rows) {
+      setDynamicConfig(null);
+      return;
+    }
+
+    const cols = chart.lastResult.columns;
+    const rows = chart.lastResult.rows;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { tauriService } = await import('../../services');
+        const response = await tauriService.generateChartConfig({
+          columns: cols,
+          rows,
+          chart_type: chart.chartType,
+          x_axis_column: chart.xAxis,
+          y_axis_columns: chart.yAxis,
+        });
+        if (!cancelled && response.success && response.data) {
+          setDynamicConfig(response.data as Record<string, unknown>);
+        }
+      } catch {
+        if (!cancelled) setDynamicConfig(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [chart.id, chart.config, chart.lastResult, chart.chartType, chart.xAxis, chart.yAxis]);
+
+  const effectiveConfig = (chart.config && Object.keys(chart.config).length > 0)
+    ? chart.config
+    : dynamicConfig;
+
+  return (
+    <ChartPreview
+      config={effectiveConfig}
+      visualConfig={chart.visualConfig}
+      height={height}
+    />
+  );
+};
+
 /**
  * 图表库面板组件
  *
@@ -403,7 +460,7 @@ export const ChartLibraryPanel: React.FC<ChartLibraryPanelProps> = ({ open, onCl
                     </div>
                     {isSelected && (
                       <div className="clp-preview-wrapper">
-                        <ChartPreview config={chart.config} height={180} />
+                        <ChartPreviewWithConfigFallback chart={chart} height={180} />
                       </div>
                     )}
                   </div>

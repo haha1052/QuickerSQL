@@ -279,6 +279,7 @@ mod query_result_tests {
             rows: (0..rows)
                 .map(|r| (0..cols).map(|c| format!("r{}c{}", r, c)).collect())
                 .collect(),
+            affected_rows: None,
         }
     }
 

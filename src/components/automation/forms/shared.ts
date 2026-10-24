@@ -52,28 +52,28 @@ export interface InitialPayload {
 }
 
 export const TASK_TYPE_OPTIONS: { value: TaskType; label: string }[] = [
-  { value: 'sql', label: 'SQL 执行' },
-  { value: 'refresh_chart', label: '刷新图表' },
-  { value: 'refresh_dashboard', label: '刷新仪表盘' },
-  { value: 'export_csv', label: '导出 CSV' },
+  { value: 'sql', label: 'automation.taskType.sql' },
+  { value: 'refresh_chart', label: 'automation.taskType.refreshChart' },
+  { value: 'refresh_dashboard', label: 'automation.taskType.refreshDashboard' },
+  { value: 'export_csv', label: 'automation.taskType.exportCsv' },
 ];
 
 export const CRON_PRESETS: { label: string; value: string }[] = [
-  { label: '每分钟', value: '* * * * *' },
-  { label: '每 5 分钟', value: '*/5 * * * *' },
-  { label: '每小时', value: '0 * * * *' },
-  { label: '每天 0 点', value: '0 0 * * *' },
-  { label: '每天 9 点', value: '0 9 * * *' },
-  { label: '工作日 9 点', value: '0 9 * * 1-5' },
-  { label: '每周一 9 点', value: '0 9 * * 1' },
-  { label: '每月 1 号 0 点', value: '0 0 1 * *' },
+  { label: 'automation.cron.everyMinute', value: '* * * * *' },
+  { label: 'automation.cron.every5Minutes', value: '*/5 * * * *' },
+  { label: 'automation.cron.hourly', value: '0 * * * *' },
+  { label: 'automation.cron.dailyMidnight', value: '0 0 * * *' },
+  { label: 'automation.cron.daily9am', value: '0 9 * * *' },
+  { label: 'automation.cron.weekday9am', value: '0 9 * * 1-5' },
+  { label: 'automation.cron.monday9am', value: '0 9 * * 1' },
+  { label: 'automation.cron.monthly1stMidnight', value: '0 0 1 * *' },
 ];
 
 export const DEPENDENCY_TYPE_LABELS: Record<DependencyType, string> = {
-  time_interval: '时间间隔',
-  cron: 'Cron 表达式',
-  task_success: '前置任务成功',
-  task_completed: '前置任务完成',
+  time_interval: 'automation.dependency.timeInterval',
+  cron: 'automation.dependency.cron',
+  task_success: 'automation.dependency.taskSuccess',
+  task_completed: 'automation.dependency.taskCompleted',
 };
 
 /** 读取自动化默认设置（失败重试次数、超时秒数） */
@@ -228,11 +228,11 @@ export const migrateScheduleToDeps = (scheduleMode: ScheduleMode, scheduleValue:
 /** 生成触发条件的人类可读描述 */
 export const getDependencyDescription = (dep: DraftDependency, allTasks: Task[]): string => {
   const config = parseDependencyConfig(dep.dependencyConfig);
-  if (!config) return '无效配置';
+  if (!config) return '无效配置'; // i18n:skip 动态描述文案，LocaleContext 无对应 key
   switch (dep.dependencyType) {
     case 'time_interval': {
       const c = config as TimeIntervalConfig;
-      return `每 ${c.intervalSeconds} 秒`;
+      return `每 ${c.intervalSeconds} 秒`; // i18n:skip 动态描述文案，LocaleContext 无对应 key
     }
     case 'cron': {
       const c = config as CronConfig;
@@ -242,15 +242,15 @@ export const getDependencyDescription = (dep: DraftDependency, allTasks: Task[])
       const c = config as TaskSuccessConfig;
       const task = allTasks.find((t) => t.id === c.upstreamTaskId);
       const taskName = task ? task.name : c.upstreamTaskId;
-      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : '';
-      return `${taskName} 成功后${delay}`;
+      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : ''; // i18n:skip 动态描述文案，LocaleContext 无对应 key
+      return `${taskName} 成功后${delay}`; // i18n:skip 动态描述文案，LocaleContext 无对应 key
     }
     case 'task_completed': {
       const c = config as TaskCompletedConfig;
       const task = allTasks.find((t) => t.id === c.upstreamTaskId);
       const taskName = task ? task.name : c.upstreamTaskId;
-      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : '';
-      return `${taskName} 完成后${delay}`;
+      const delay = c.delaySeconds && c.delaySeconds > 0 ? `（延迟 ${c.delaySeconds} 秒）` : ''; // i18n:skip 动态描述文案，LocaleContext 无对应 key
+      return `${taskName} 完成后${delay}`; // i18n:skip 动态描述文案，LocaleContext 无对应 key
     }
   }
 };

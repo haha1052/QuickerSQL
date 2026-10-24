@@ -7,20 +7,22 @@ use tauri::State;
 
 /// 对指定数据表执行数据探查
 /// `force_full_scan` 为 true 时，即使超过 5 万行也不启用采样。
+///
+/// 业务数据表在 DuckDB，探查操作走 duckdb_manager。
 #[tauri::command]
 pub async fn profile_table(
     state: State<'_, TauriAppState>,
     table_name: String,
     force_full_scan: Option<bool>,
 ) -> Result<ProfileResult, String> {
-    if !state.db_manager.is_connected() {
+    if !state.duckdb_manager.is_connected() {
         return Err("未连接到数据库".to_string());
     }
     let conn = state
-        .db_manager
+        .duckdb_manager
         .get_connection()
         .map_err(|e| {
-            log::error!("[profile_table] 获取数据库连接失败: error={}", e);
+            log::error!("[profile_table] 获取 DuckDB 连接失败: error={}", e);
             "数据库连接异常，请重新打开数据库".to_string()
         })?;
 

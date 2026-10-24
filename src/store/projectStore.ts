@@ -224,7 +224,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
       console.error('[importDataV2] failed:', response.error);
       useToastStore.getState().addToast({ key: 'error.project.import_failed' }, 'error');
-      set({ error: response.error || '导入失败' });
+      set({ error: response.error || 'error.project.importFailed' });
       return false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

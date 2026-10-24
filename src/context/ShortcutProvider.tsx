@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useRef } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import shortcutManager, { parseShortcut } from '../utils/shortcutManager';
 import { useSetting } from './SettingsContext';
+import { useLocale } from './LocaleContext';
 import { useSettingsStore, useAppStore, useWorkspaceStore, useQueryStore, useProjectStore, useImportStore } from '../store';
 import type { WorkspaceTabType } from '../types';
 import { tauriService } from '../services';
@@ -120,6 +121,7 @@ const PASS_THROUGH_COMMANDS = new Set([
 export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { openSettingsModal } = useSettingsStore();
   const { setMessage } = useAppStore();
+  const { t } = useLocale();
   const [formatOnSave] = useSetting('sql', 'formatOnSave');
   const [trimTrailingWhitespace] = useSetting('editor', 'trimTrailingWhitespace');
   const [enableExplainPlan] = useSetting('database', 'enableExplainPlan');
@@ -299,7 +301,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             };
           });
           addImportItems(newItems);
-          setMessage(`已添加 ${paths.length} 个文件，请在导入面板中继续操作`, 'info');
+          setMessage({ key: 'toast.addedFilesHint', vars: { count: paths.length } }, 'info');
         }
       } catch (e) {
         setMessage(`Error: ${String(e)}`, 'error');
@@ -313,7 +315,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
 
         if (!activeQuery || !activeQuery.sql) {
-          setMessage('没有可导出的 SQL', 'warning');
+          setMessage('toast.noExportableSQL', 'warning');
           return;
         }
 
@@ -327,7 +329,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         if (filePath) {
           await tauriService.writeTextFile(filePath, activeQuery.sql);
-          setMessage(`已导出: ${filePath}`, 'success');
+          setMessage({ key: 'toast.exportedTo', vars: { path: filePath } }, 'success');
         }
       } catch (e) {
         setMessage(`Error: ${String(e)}`, 'error');
@@ -338,7 +340,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       try {
         // 检查 enableExplainPlan 设置
         if (enableExplainPlan === 'false') {
-          setMessage('执行计划功能已禁用，请在设置中启用', 'warning');
+          setMessage('toast.explainDisabled', 'warning');
           return;
         }
 
@@ -347,14 +349,14 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const activeQuery = sqlQueries.find((q) => q.id === activeQueryId);
 
         if (!activeQuery || !activeQuery.sql) {
-          setMessage('没有可分析执行计划的 SQL', 'warning');
+          setMessage('toast.noExplainSQL', 'warning');
           return;
         }
 
         // 获取 SQL 内容并添加 EXPLAIN
         const sql = activeQuery.sql.trim();
         if (!sql) {
-          setMessage('没有可分析执行计划的 SQL', 'warning');
+          setMessage('toast.noExplainSQL', 'warning');
           return;
         }
 
@@ -373,14 +375,14 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           if (results.length > 0 && results[0].rows) {
             // 将结果格式化显示
             const formatted = results[0].rows.map(row => row.join(' | ')).join('\n');
-            setMessage(`执行计划:\n${formatted}`, 'info');
+            setMessage({ key: 'toast.explainResult', vars: { result: formatted } }, 'info');
           } else if (results.length > 0 && results[0].error) {
-            setMessage(`执行计划分析失败: ${results[0].error}`, 'error');
+            setMessage({ key: 'toast.explainFailed', vars: { error: results[0].error } }, 'error');
           } else {
-            setMessage('执行计划为空', 'warning');
+            setMessage('common.queryResultEmpty', 'warning');
           }
         } else {
-          setMessage(`执行计划分析失败: ${response.error || '未知错误'}`, 'error');
+          setMessage({ key: 'toast.explainFailed', vars: { error: response.error || t('common.unknownError') } }, 'error');
         }
       } catch (e) {
         setMessage(`Error: ${String(e)}`, 'error');
@@ -454,7 +456,7 @@ export const ShortcutProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
       registeredCommandsRef.current.clear();
     };
-  }, [openSettingsModal, setMessage, enableExplainPlan]);
+  }, [openSettingsModal, setMessage, enableExplainPlan, t]);
 
   useEffect(() => {
     for (const key of GLOBAL_SHORTCUT_KEYS) {

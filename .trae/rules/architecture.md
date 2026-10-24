@@ -202,10 +202,11 @@ types/（类型定义，禁止逻辑）
 2. `.trae/rules/security.md`（安全规则最高）
 3. `.trae/rules/architecture.md`（架构分层）
 4. `.trae/rules/coding.md`（代码风格）
-5. `.trae/rules/test.md`（测试要求）
-6. `.trae/rules/file-lock.md`（文件锁，并行修改冲突解决）
-7. 根目录 `AGENTS.md`（历史兼容）
-8. `docs/架构现状.md`（参考性文档，不替代规则）
+5. `.trae/rules/i18n.md`（国际化 i18n）
+6. `.trae/rules/test.md`（测试要求）
+7. `.trae/rules/file-lock.md`（文件锁，并行修改冲突解决）
+8. 根目录 `AGENTS.md`（历史兼容）
+9. `docs/架构现状.md`（参考性文档，不替代规则）
 
 **冲突消解原则：**
 - 若上层规则与下层规则冲突，以上层为准
@@ -241,6 +242,7 @@ V002__add_created_at_column.sql
 | 文件锁 / 核心文件 | [file-lock.md](file:///e:/LA_DUCK/la-duck/.trae/rules/file-lock.md) |
 | MCP 工具使用 | [mcp.md](file:///e:/LA_DUCK/la-duck/.trae/rules/mcp.md) |
 | 发布 / 依赖管理 | [release.md](file:///e:/LA_DUCK/la-duck/.trae/rules/release.md) |
+| 国际化 / i18n | [i18n.md](file:///e:/LA_DUCK/la-duck/.trae/rules/i18n.md) |
 | 完整规则入口 | [AGENTS.md](file:///e:/LA_DUCK/la-duck/AGENTS.md) |
 
 ---

@@ -121,6 +121,7 @@ impl ProfileService {
         let fake = DbQueryResult {
             columns: columns.to_vec(),
             rows: rows.to_vec(),
+            affected_rows: None,
         };
 
         let summaries = Self::summarize_columns(columns, &col_types, &fake);

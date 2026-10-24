@@ -3,6 +3,7 @@ import { useDashboardStore, useToastStore } from '../../store';
 import { calculateNextPosition } from '../../utils/gridLayout';
 import { useLocale } from '../../context/LocaleContext';
 import type { SavedChart } from '../../types/dashboard';
+import type { VisualConfig } from '../../types/chart';
 
 interface SaveChartModalProps {
   queryId: string;
@@ -11,6 +12,7 @@ interface SaveChartModalProps {
   xAxis: string;
   yAxis: string[];
   chartConfig: Record<string, unknown>;
+  visualConfig?: VisualConfig;
   onSave: (savedChart: SavedChart) => void;
   onClose: () => void;
 }
@@ -22,6 +24,7 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
   xAxis,
   yAxis,
   chartConfig,
+  visualConfig,
   onSave,
   onClose,
 }) => {
@@ -95,6 +98,9 @@ export const SaveChartModal: React.FC<SaveChartModalProps> = ({
         description: description.trim(),
         tags,
         config: sanitizedConfig,
+        visualConfig: visualConfig && Object.keys(visualConfig).length > 0
+          ? (visualConfig as unknown as Record<string, unknown>)
+          : undefined,
         visibility,
         authorizedDashboardIds: effectiveAuthIds,
       });

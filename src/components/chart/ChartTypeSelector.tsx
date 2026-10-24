@@ -31,9 +31,9 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
     },
     {
       type: 'horizontalBar',
-      label: '条形图',
+      label: t('chart.horizontalBar'),
       icon: '📊',
-      description: '适合类别名称较长的对比分析',
+      description: t('chart.horizontalBar.desc'),
     },
     {
       type: 'line',
@@ -55,9 +55,9 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
     },
     {
       type: 'doughnut',
-      label: '环形图',
+      label: t('chart.doughnut'),
       icon: '🍩',
-      description: '占比分析，视觉更现代',
+      description: t('chart.doughnut.desc'),
     },
     {
       type: 'stackedBar',
@@ -67,9 +67,9 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
     },
     {
       type: 'dualAxis',
-      label: '双轴图',
+      label: t('chart.dualAxis'),
       icon: '📏',
-      description: '不同量级数据对比',
+      description: t('chart.dualAxis.desc'),
     },
     {
       type: 'scatter',
@@ -79,21 +79,21 @@ export const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({
     },
     {
       type: 'radar',
-      label: '雷达图',
+      label: t('chart.radar'),
       icon: '🎯',
-      description: '多维指标对比分析',
+      description: t('chart.radar.desc'),
     },
     {
       type: 'funnel',
-      label: '漏斗图',
+      label: '漏斗图', // i18n:skip
       icon: '🔻',
-      description: '转化流程分析',
+      description: '转化流程分析', // i18n:skip
     },
     {
       type: 'gauge',
-      label: '仪表盘',
+      label: '仪表盘', // i18n:skip
       icon: '⏱️',
-      description: 'KPI 单指标展示',
+      description: 'KPI 单指标展示', // i18n:skip
     },
   ];
 

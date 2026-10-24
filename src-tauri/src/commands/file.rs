@@ -10,7 +10,6 @@ use tauri::State;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use tokio::time::{timeout, Duration};
 
 const MAX_EXCEL_FILE_SIZE: u64 = 50 * 1024 * 1024;
@@ -806,41 +805,12 @@ pub fn load_parquet(
         return Err("文件不存在，请检查文件路径".to_string());
     }
 
-    let duckdb_conn = match state.duckdb_conn.lock() {
-        Ok(mut guard) => {
-            if guard.is_none() {
-                log::info!("DuckDB 未初始化，创建临时内存连接");
-                let driver = crate::database::DuckDbDriver::new();
-                let conn = driver.connect_memory()
-                    .map_err(|e| {
-                        log::error!("[load_parquet] 创建 DuckDB 内存连接失败: error={}", e);
-                        "查询引擎初始化失败，请重试".to_string()
-                    })?;
-                *guard = Some(Arc::new(Mutex::new(conn)));
-            }
-            guard.clone()
-        }
-        Err(e) => {
-            log::warn!("[load_parquet] 获取 DuckDB 连接锁失败，创建临时连接: error={}", e);
-            let driver = crate::database::DuckDbDriver::new();
-            let conn = driver.connect_memory()
-                .map_err(|e| {
-                    log::error!("[load_parquet] 创建 DuckDB 内存连接失败: error={}", e);
-                    "查询引擎初始化失败，请重试".to_string()
-                })?;
-            Some(Arc::new(Mutex::new(conn)))
-        }
-    };
+    let duckdb_conn = state.duckdb_manager.get_connection().map_err(|e| {
+        log::error!("[load_parquet] 获取 DuckDB 连接失败: error={}", e);
+        "数据库连接异常，请重新打开数据库".to_string()
+    })?;
 
-    let duckdb_conn = duckdb_conn.ok_or("无法获取 DuckDB 连接")?;
-
-    let conn_guard = duckdb_conn.lock()
-        .map_err(|e| {
-            log::error!("[load_parquet] 获取 DuckDB 连接锁失败: error={}", e);
-            "查询引擎状态异常，请重试".to_string()
-        })?;
-
-    let preview = DatabaseService::preview_parquet_file(&**conn_guard, &file_path, MAX_PREVIEW_ROWS)?;
+    let preview = DatabaseService::preview_parquet_file(&duckdb_conn, &file_path, MAX_PREVIEW_ROWS)?;
 
     log::info!("成功加载 Parquet 文件预览，共 {} 行", preview.rows.len());
     Ok(preview)
@@ -1020,11 +990,9 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
         import_timeout.as_secs(), file_size / (1024 * 1024));
 
     // 克隆必要的 Arc 引用，以便在 spawn_blocking 内使用
-    let db_manager = state.db_manager.clone();
-    let duckdb_conn_opt = state.duckdb_conn.lock().map_err(|e| {
-        log::error!("[import_data_v2] 获取 DuckDB 连接失败: error={}", e);
-        "查询引擎状态异常，请重试".to_string()
-    })?.clone();
+    // 业务数据表存储在 DuckDB，导入操作统一走 duckdb_manager
+    let duckdb_manager = state.duckdb_manager.clone();
+    let sqlite_manager = state.db_manager.clone();
     
     // 克隆文件路径用于超时错误日志（request 会在 spawn_blocking 中被移动）
     let file_path_for_timeout_log = request.file_path.clone();
@@ -1034,13 +1002,13 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
         let blocking_start = Instant::now();
         log::info!("进入 spawn_blocking，开始阻塞 IO 操作");
 
-        // 获取连接（在 spawn_blocking 内）
-        let conn = db_manager.get_connection().map_err(|e| {
-            log::error!("[import_data_v2] spawn_blocking 内获取数据库连接失败: error={}", e);
+        // 获取 DuckDB 连接（在 spawn_blocking 内）
+        let conn = duckdb_manager.get_connection().map_err(|e| {
+            log::error!("[import_data_v2] spawn_blocking 内获取 DuckDB 连接失败: error={}", e);
             "数据库连接异常，请重新打开数据库".to_string()
         })?;
         let lock_acquire_time = blocking_start.elapsed();
-        log::info!("数据库连接获取耗时: {}ms", lock_acquire_time.as_millis());
+        log::info!("DuckDB 连接获取耗时: {}ms", lock_acquire_time.as_millis());
 
         // DB 操作下沉到 DatabaseService
         let drop_create_start = Instant::now();
@@ -1152,14 +1120,8 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
             }
         }
 
-        // 刷新 VIEW（仅在 DuckDB 可用时）
-        if let Some(duckdb_conn) = duckdb_conn_opt {
-            if let Ok(guard) = duckdb_conn.lock() {
-                let _ = crate::services::ViewService::refresh_single_view_with_type_casts(&**guard, &conn, &safe_table_name);
-            }
-        }
-
-        // 记录审计日志
+        // 记录审计日志（系统表在 SQLite，使用 sqlite_manager）
+        let audit_conn = sqlite_manager.get_connection().ok();
         let audit_request = crate::models::audit_log::RecordAuditLogRequest {
             module: "import".to_string(),
             action: "import_data_v2".to_string(),
@@ -1168,7 +1130,9 @@ pub async fn import_data_v2(state: State<'_, TauriAppState>, request: ImportRequ
             duration_ms: Some(overall_start.elapsed().as_millis() as i64),
             details: Some(format!("table_name={}, row_count={}", safe_table_name, count)),
         };
-        let _ = crate::services::AuditLogService::record_audit_log(&conn, audit_request);
+        if let Some(audit_conn) = audit_conn {
+            let _ = crate::services::AuditLogService::record_audit_log(&audit_conn, audit_request);
+        }
 
         log::info!("spawn_blocking 总耗时: {}ms", blocking_start.elapsed().as_millis());
 

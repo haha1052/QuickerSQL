@@ -4,12 +4,12 @@ import { ChartRenderer } from './ChartRenderer';
 import { ChartTypeSelector, ChartType } from './ChartTypeSelector';
 import { ChartConfigPanel } from './ChartConfigPanel';
 import { SaveChartModal } from './SaveChartModal';
-// P0-2 启动优化：移除同步的 import * as echarts from 'echarts'
-// 实际渲染由 ChartRenderer 在需要时动态加载 echarts
+import { ChartStyleQuickBar } from './ChartStyleQuickBar';
+import { ChartStyleAdvancedPanel } from './ChartStyleAdvancedPanel';
 import { useSetting } from '../../context/SettingsContext';
 import { useLocale } from '../../context/LocaleContext';
 import { useQueryStore, useToastStore } from '../../store';
-import type { ChartConfig } from '../../types/chart';
+import type { ChartConfig, VisualConfig } from '../../types/chart';
 
 interface ChartPanelProps {
   queryResult: {
@@ -31,6 +31,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [visualConfig, setVisualConfig] = useState<VisualConfig>({});
   const chartInstanceRef = useRef<ECharts | null>(null);
 
   const { t } = useLocale();
@@ -227,7 +228,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
         ? queryResult.rows.slice(0, maxDataPoints)
         : queryResult.rows;
       const truncatedWarning = queryResult.rows.length > maxDataPoints
-        ? `（已截断至 ${maxDataPoints} 条数据）`
+        ? t('chart.truncated', { max: maxDataPoints })
         : '';
 
       const response = await tauriService.generateChartConfig({
@@ -242,7 +243,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
         setChartConfig(response.data as ChartConfig);
         setStage('preview');
         if (truncatedWarning) {
-          setError(`数据已截断${truncatedWarning}`);
+          setError(t('chart.dataTruncated', { warning: truncatedWarning }));
         }
       } else {
         setError(response.error || t('chart.generateFail'));
@@ -393,6 +394,12 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
       {/* 预览阶段 */}
       {stage === 'preview' && (
         <div style={styles.previewStage}>
+          {/* 视觉样式快捷栏 */}
+          <ChartStyleQuickBar
+            value={visualConfig}
+            onChange={setVisualConfig}
+          />
+
           {/* 图表预览 */}
           <div style={styles.chartContainer}>
             {chartConfig && (
@@ -402,10 +409,17 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
                   height="100%" 
                   chartRef={chartInstanceRef}
                   onChartReady={handleChartReady}
+                  visualConfig={visualConfig}
                 />
               </div>
             )}
           </div>
+
+          {/* 高级视觉样式面板 */}
+          <ChartStyleAdvancedPanel
+            value={visualConfig}
+            onChange={setVisualConfig}
+          />
 
           {/* 操作按钮 */}
           <div style={styles.actionButtons}>
@@ -440,6 +454,7 @@ export const ChartPanel: React.FC<ChartPanelProps> = ({ queryResult }) => {
           xAxis={xAxisColumn}
           yAxis={yAxisColumns}
           chartConfig={chartConfig || {}}
+          visualConfig={visualConfig}
           onSave={() => {
             setShowSaveModal(false);
           }}

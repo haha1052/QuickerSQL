@@ -46,10 +46,10 @@ const QueryResultItemInner: React.FC<QueryResultItemProps> = ({ result, index })
 
   const formatExecutionTime = useCallback((ms: number): string => {
     if (ms < 1000) {
-      return `耗时 ${ms.toFixed(0)} ms`;
+      return t('query.executionTimeMs', { ms: ms.toFixed(0) });
     }
-    return `耗时 ${(ms / 1000).toFixed(2)} s`;
-  }, []);
+    return t('query.executionTimeSec', { sec: (ms / 1000).toFixed(2) });
+  }, [t]);
 
   const displayStatement = result.statement.length > 50
     ? result.statement.substring(0, 47) + '...'

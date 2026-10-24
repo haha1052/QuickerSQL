@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import type { ECharts } from 'echarts';
-import type { ChartConfig, ChartConfigPayload } from '../../types/chart';
+import type { ChartConfig, ChartConfigPayload, VisualConfig } from '../../types/chart';
+import { applyVisualConfig } from '../../utils/chartVisual';
 import { useSetting } from '../../context/SettingsContext';
-// P0-2 启动优化：echarts 懒加载 —— 启动时不再 import * as echarts
-// 模块改为首次渲染时动态 import，降低首屏启动开销
+import { useLocale } from '../../context/LocaleContext';
 
 const COLOR_SCHEMES: Record<string, string[]> = {
   default: ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'],
@@ -20,6 +20,7 @@ interface ChartRendererProps {
   height?: number | string;
   onChartReady?: (chart: ECharts) => void;
   chartRef?: React.MutableRefObject<ECharts | null>;
+  visualConfig?: VisualConfig;
 }
 
 interface EChartsModule {
@@ -32,11 +33,13 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   height = 400,
   onChartReady,
   chartRef: externalChartRef,
+  visualConfig,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<ECharts | null>(null);
   const [echartsModule, setEchartsModule] = useState<EChartsModule | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const { t } = useLocale();
 
   const [showGridStr] = useSetting('visualization', 'showGrid');
   const [showLegendStr] = useSetting('visualization', 'showLegend');
@@ -88,9 +91,8 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
     };
   }, []);
 
-  // P2-3: 构建 ECharts 配置（提取公共逻辑，消除 init 和 update 两个 useEffect 中的重复代码）
   const buildEchartsConfig = React.useCallback(
-    (cfg: ChartConfig): Record<string, unknown> => {
+    (cfg: ChartConfig, vConfig?: VisualConfig): Record<string, unknown> => {
       const titleText = Array.isArray(cfg.title)
         ? (cfg.title as unknown as Array<{ text?: string }>)[0]?.text
         : (cfg.title as unknown as { text?: string })?.text;
@@ -98,7 +100,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       const userGrid = configPayload.grid as Record<string, unknown> | undefined;
       const userLegend = configPayload.legend as Record<string, unknown> | undefined;
 
-      const echartsConfig: Record<string, unknown> = {
+      let echartsConfig: Record<string, unknown> = {
         ...configPayload,
         grid: {
           left: '10%',
@@ -120,10 +122,10 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         echartsConfig.toolbox = {
           show: true,
           feature: {
-            saveAsImage: { title: '保存为图片' },
-            restore: { title: '还原' },
-            dataView: { title: '数据视图', lang: ['数据视图', '关闭', '刷新'] },
-            magicType: { type: ['line', 'bar', 'stack'], title: { line: '折线图', bar: '柱状图', stack: '堆积' } },
+            saveAsImage: { title: t('chart.toolbar.saveAsImage') },
+            restore: { title: t('chart.toolbar.restore') },
+            dataView: { title: t('chart.toolbar.dataView'), lang: [t('chart.toolbar.dataViewLang.view'), t('chart.toolbar.dataViewLang.close'), t('chart.toolbar.dataViewLang.refresh')] },
+            magicType: { type: ['line', 'bar', 'stack'], title: { line: t('chart.toolbar.magicTypeLine'), bar: t('chart.toolbar.magicTypeBar'), stack: t('chart.toolbar.magicTypeStack') } },
           },
           right: 20,
           top: 5,
@@ -147,24 +149,26 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
         echartsConfig.tooltip = configPayload.tooltip;
       }
 
+      if (vConfig) {
+        echartsConfig = applyVisualConfig(echartsConfig, vConfig);
+      }
+
       return echartsConfig;
     },
-    [showGrid, showLegend, animation, animationDuration, toolboxFeature, dataZoom, colorPalette, enableTooltip],
+    [showGrid, showLegend, animation, animationDuration, toolboxFeature, dataZoom, colorPalette, enableTooltip, t],
   );
 
   // 初始化图表（echarts 加载完成后执行）
   useEffect(() => {
     if (!echartsModule || !containerRef.current) return;
 
-    // P2-3: 根据 dataPoints 动态选择 svg/canvas 渲染器
     const chart = echartsModule.init(containerRef.current, undefined, { renderer });
     chartInstanceRef.current = chart;
     if (externalChartRef) externalChartRef.current = chart;
 
-    chart.setOption(buildEchartsConfig(config) as ChartConfig);
+    chart.setOption(buildEchartsConfig(config, visualConfig) as ChartConfig);
     if (onChartReady) onChartReady(chart);
 
-    // P2-3: resize 加 200ms debounce 减少高频触发
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const handleResize = () => {
       if (resizeTimer) clearTimeout(resizeTimer);
@@ -181,15 +185,15 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
       if (externalChartRef) externalChartRef.current = null;
       chartInstanceRef.current = null;
     };
-  }, [echartsModule, renderer, buildEchartsConfig]);
+  }, [echartsModule, renderer, buildEchartsConfig, config, visualConfig]);
 
   // 当配置或可视化设置变化时更新图表
   React.useEffect(() => {
     if (chartInstanceRef.current && config) {
-      chartInstanceRef.current.setOption(buildEchartsConfig(config) as ChartConfig, true);
+      chartInstanceRef.current.setOption(buildEchartsConfig(config, visualConfig) as ChartConfig, true);
       chartInstanceRef.current.resize();
     }
-  }, [config, buildEchartsConfig]);
+  }, [config, visualConfig, buildEchartsConfig]);
 
   // 加载骨架屏
   if (!echartsModule && !loadError) {

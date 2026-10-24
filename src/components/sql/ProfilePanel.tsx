@@ -55,11 +55,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
       } else if (targetTableName) {
         res = await tauriService.profileTable(targetTableName, forceFull);
       } else {
-        setError('请先选择表或运行 SQL 后再探查');
+        setError(t('profile.selectTableFirst'));
         return;
       }
       if (!res.success || !res.data) {
-        throw new Error(res.error || '探查失败');
+        throw new Error(res.error || t('error.profile.exploreFailed'));
       }
       setResult(res.data);
     } catch (e) {
@@ -84,7 +84,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
             onClick={() => run(false)}
             disabled={!hasTarget || loading}
           >
-            {loading ? '分析中...' : '开始探查'}
+            {loading ? t('profile.analyzing') : t('profile.startProfiling')}
           </button>
           {onClose && (
             <button style={styles.secondaryBtn} onClick={onClose}>
@@ -124,7 +124,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
 
       {isEmpty && !loading && (
         <div style={styles.empty}>
-          点击「开始探查」对 {targetTableName ? `表「${targetTableName}」` : '当前 SQL 结果'} 生成列级统计。
+          {t('profile.exploreHint', { target: targetTableName ? t('profile.exploreHintTable', { name: targetTableName }) : t('profile.exploreHintCurrentSql') })}
         </div>
       )}
 
@@ -140,6 +140,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
 };
 
 const ColumnCard: React.FC<{ summary: ProfileColumnSummary }> = ({ summary }) => {
+  const { t } = useLocale();
   const s = summary;
   return (
     <div style={styles.card}>
@@ -203,17 +204,17 @@ const ColumnCard: React.FC<{ summary: ProfileColumnSummary }> = ({ summary }) =>
       {s.topValues.length > 0 && (
         <div style={styles.topBox}>
           <div style={styles.topTitle}>Top {s.topValues.length} 高频值</div>
-          {s.topValues.map((t, i) => {
-            const widthPct = s.rowCount > 0 ? (t.count / s.rowCount) * 100 : 0;
+          {s.topValues.map((tv, i) => {
+            const widthPct = s.rowCount > 0 ? (tv.count / s.rowCount) * 100 : 0;
             return (
               <div key={i} style={styles.topRow}>
-                <div style={styles.topVal} title={t.value}>
-                  {t.value.length > 28 ? t.value.slice(0, 28) + '…' : t.value || '(空串)'}
+                <div style={styles.topVal} title={tv.value}>
+                  {tv.value.length > 28 ? tv.value.slice(0, 28) + '…' : tv.value || t('profile.emptyValue')}
                 </div>
                 <div style={styles.topBar}>
                   <div style={{ ...styles.topBarFill, width: `${Math.max(3, widthPct)}%` }} />
                 </div>
-                <div style={styles.topCount}>{t.count.toLocaleString()}</div>
+                <div style={styles.topCount}>{tv.count.toLocaleString()}</div>
               </div>
             );
           })}

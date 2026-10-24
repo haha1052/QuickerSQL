@@ -18,6 +18,7 @@ use uuid::Uuid;
 use chrono::Utc;
 
 use crate::models::database::ProjectInfo;
+use crate::database::traits::DatabaseDriver;
 
 /// 项目管理服务
 pub struct ProjectService;
@@ -30,6 +31,8 @@ const PROJECTS_SUBDIR: &str = "projects";
 const REGISTRY_DB_FILENAME: &str = "projects.db";
 /// 项目内部数据库文件名
 const PROJECT_DB_FILENAME: &str = "meta.db";
+/// 项目业务数据文件名（DuckDB，与 meta.db 同目录）
+pub const DUCKDB_DATA_FILENAME: &str = "data.duckdb";
 /// __project_info 当前 schema 版本
 const CURRENT_SCHEMA_VERSION: i32 = 1;
 
@@ -65,6 +68,14 @@ impl ProjectService {
     fn build_relative_db_path(uuid: &str) -> String {
         // 用 / 分隔，跨平台一致（不依赖 OS 路径分隔符）
         format!("{}/{}/{}", PROJECTS_SUBDIR, uuid, PROJECT_DB_FILENAME)
+    }
+
+    /// 根据 meta.db 路径推导同目录下的 data.duckdb 路径
+    pub fn derive_duckdb_path(meta_db_path: &Path) -> PathBuf {
+        meta_db_path
+            .parent()
+            .map(|dir| dir.join(DUCKDB_DATA_FILENAME))
+            .unwrap_or_else(|| PathBuf::from(DUCKDB_DATA_FILENAME))
     }
 
     // ==================== Schema 管理（P0-5 修复） ====================
@@ -214,6 +225,13 @@ impl ProjectService {
         let db_path = project_dir.join(PROJECT_DB_FILENAME);
         Self::init_database(&db_path)?;
 
+        // 4b. 创建 data.duckdb（DuckDB 业务数据文件，空库即可）
+        let duckdb_path = project_dir.join(DUCKDB_DATA_FILENAME);
+        let duckdb_driver = crate::database::DuckDbDriver::new();
+        let _duckdb_conn = duckdb_driver
+            .create_database(&duckdb_path)
+            .map_err(|e| format!("创建 data.duckdb 失败: {}", e))?;
+
         // 5. 写入 __project_info 一行
         {
             let conn = Connection::open(&db_path)
@@ -351,13 +369,29 @@ impl ProjectService {
 
         let new_db_path = new_project_dir.join(PROJECT_DB_FILENAME);
 
-        // 3. 文件级复制（保证数据一致性的原子操作）
+        // 3. 文件级复制 meta.db（保证数据一致性的原子操作）
         std::fs::copy(&source_db_path, &new_db_path)
             .map_err(|e| {
                 let msg = format!("复制项目数据库文件失败: {}", e);
                 log::error!("{}", msg);
                 msg
             })?;
+
+        // 3b. 文件级复制 data.duckdb（业务数据）
+        let source_duckdb_path = Self::derive_duckdb_path(&source_db_path);
+        let new_duckdb_path = new_project_dir.join(DUCKDB_DATA_FILENAME);
+        if source_duckdb_path.exists() {
+            std::fs::copy(&source_duckdb_path, &new_duckdb_path)
+                .map_err(|e| {
+                    let msg = format!("复制 data.duckdb 失败: {}", e);
+                    log::error!("{}", msg);
+                    msg
+                })?;
+        } else {
+            // 旧项目可能没有 data.duckdb，创建空库
+            let duckdb_driver = crate::database::DuckDbDriver::new();
+            let _ = duckdb_driver.create_database(&new_duckdb_path);
+        }
 
         // 4. 更新新库的 __project_info（确保表存在 → 清空旧记录 → 插入新记录）
         {
@@ -560,6 +594,25 @@ impl ProjectService {
                 msg
             })?;
 
+        // 2b. 如果源文件同目录存在 data.duckdb，也复制过来
+        let source_duckdb_path = source_file_path
+            .parent()
+            .map(|p| p.join(DUCKDB_DATA_FILENAME))
+            .unwrap_or_else(|| PathBuf::from(DUCKDB_DATA_FILENAME));
+        let new_duckdb_path = new_project_dir.join(DUCKDB_DATA_FILENAME);
+        if source_duckdb_path.exists() {
+            std::fs::copy(&source_duckdb_path, &new_duckdb_path)
+                .map_err(|e| {
+                    let msg = format!("复制 data.duckdb 失败: {}", e);
+                    log::error!("{}", msg);
+                    msg
+                })?;
+        } else {
+            // 没有 data.duckdb 则创建空库
+            let duckdb_driver = crate::database::DuckDbDriver::new();
+            let _ = duckdb_driver.create_database(&new_duckdb_path);
+        }
+
         // 3. 确保新库有 __project_info 表，写入新 id 和 name
         {
             let conn = Connection::open(&new_db_path)
@@ -620,6 +673,13 @@ impl ProjectService {
         }
 
         Self::export_database(&source_db_path, dest_path)?;
+
+        // 同时导出 data.duckdb（业务数据）到同目录
+        let source_duckdb_path = Self::derive_duckdb_path(&source_db_path);
+        if source_duckdb_path.exists() {
+            let dest_duckdb_path = dest_path.with_extension("duckdb");
+            let _ = Self::export_database(&source_duckdb_path, &dest_duckdb_path);
+        }
 
         log::info!(
             "项目已导出: id={}, dest={}",

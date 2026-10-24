@@ -67,7 +67,7 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
         }
       } catch (e) {
         console.error('[DataPreview] Failed to reload TXT preview:', e);
-        setMessage('重新加载预览失败', 'error');
+        setMessage('import.previewReloadFailed', 'error');
       }
     }, 300);
   };
@@ -173,60 +173,60 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
     const errorLower = rawError.toLowerCase();
     
     // 文件不存在或路径错误
-    if (errorLower.includes('no such file') || 
+    if (errorLower.includes('no such file') ||
         errorLower.includes('file not found') ||
         errorLower.includes('cannot find') ||
-        errorLower.includes('路径不存在')) {
+        errorLower.includes('路径不存在')) { // i18n:skip
       return t('import.errorFileNotFound');
     }
-    
+
     // 文件格式错误或损坏
     if (errorLower.includes('invalid format') ||
         errorLower.includes('corrupted') ||
         errorLower.includes('parse error') ||
-        errorLower.includes('格式错误')) {
+        errorLower.includes('格式错误')) { // i18n:skip
       return t('import.errorFileCorrupted');
     }
-    
+
     // 表名已存在
     if (errorLower.includes('table already exists') ||
         errorLower.includes('duplicate table') ||
-        errorLower.includes('表已存在')) {
+        errorLower.includes('表已存在')) { // i18n:skip
       return t('import.errorTableExists');
     }
-    
+
     // 权限错误
     if (errorLower.includes('permission denied') ||
         errorLower.includes('access denied') ||
-        errorLower.includes('权限不足')) {
+        errorLower.includes('权限不足')) { // i18n:skip
       return t('import.errorPermissionDenied');
     }
-    
+
     // 连接超时或网络错误
     if (errorLower.includes('timeout') ||
         errorLower.includes('timed out') ||
-        errorLower.includes('超时')) {
+        errorLower.includes('超时')) { // i18n:skip
       return t('import.errorTimeout');
     }
-    
+
     // 内存不足
     if (errorLower.includes('out of memory') ||
         errorLower.includes('memory allocation') ||
-        errorLower.includes('内存不足')) {
+        errorLower.includes('内存不足')) { // i18n:skip
       return t('import.errorOutOfMemory');
     }
-    
+
     // 文件过大
     if (errorLower.includes('file too large') ||
-        errorLower.includes('文件过大')) {
+        errorLower.includes('文件过大')) { // i18n:skip
       return t('import.errorFileTooLarge');
     }
-    
+
     // 编码错误
     if (errorLower.includes('encoding') ||
         errorLower.includes('utf') ||
         errorLower.includes('gbk') ||
-        errorLower.includes('编码')) {
+        errorLower.includes('编码')) { // i18n:skip
       return t('import.errorEncoding');
     }
     
@@ -241,7 +241,7 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
 
   const columnDefs = activeItem.fields.map((field, index) => ({
     field: `col_${index}`,
-    headerName: field.name || `列 ${index + 1}`,
+    headerName: field.name || `列 ${index + 1}`, // i18n:skip
     sortable: true,
     filter: true,
     resizable: true,
@@ -298,9 +298,9 @@ export const DataPreview: React.FC<DataPreviewProps> = ({ onImportComplete }) =>
                 value={activeItem.delimiter || ''}
                 onChange={(e) => handleDelimiterChange(e.target.value)}
                 style={styles.delimiterInput}
-                placeholder={t('import.delimiterPlaceholder') || '自动检测'}
+                placeholder={t('import.delimiterPlaceholder')}
               />
-              <span style={styles.delimiterHint}>例如：, 或 \t</span>
+              <span style={styles.delimiterHint}>{t('import.delimiterHint')}</span>
             </div>
           )}
 

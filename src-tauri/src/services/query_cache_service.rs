@@ -517,6 +517,7 @@ mod tests {
             rows: (0..rows_count)
                 .map(|i| vec![format!("v{}", i), format!("val{}", i)])
                 .collect(),
+            affected_rows: None,
         }
     }
 
@@ -708,6 +709,7 @@ mod tests {
             rows: (0..20)
                 .map(|i| (0..10).map(|j| format!("value_{}_{}", i, j)).collect())
                 .collect(),
+            affected_rows: None,
         };
         // 测试前提：单条应超过 1KB 上限
         let first_size = estimate_size(&big_result);
@@ -735,6 +737,7 @@ mod tests {
         let result = QueryResult {
             columns: vec!["c1".to_string()],
             rows: vec![vec!["hello".to_string()]],
+            affected_rows: None,
         };
         let expected_size = estimate_size(&result);
         inner.set("k1".to_string(), result);

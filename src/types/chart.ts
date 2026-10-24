@@ -6,6 +6,59 @@ import type { EChartsOption } from 'echarts';
 export type ChartType = 'line' | 'bar' | 'pie' | 'scatter' | 'area' | 'stackedBar' | 'horizontalBar' | 'doughnut' | 'dualAxis' | 'radar' | 'funnel' | 'gauge';
 
 /**
+ * 视觉配置：用户可自定义的图表视觉属性
+ * 与 ChartConfigPayload（后端生成的骨架配置）分离，由前端在渲染前合流
+ */
+export interface AxisVisualConfig {
+  title?: { text?: string; fontSize?: number; color?: string };
+  show?: boolean;
+  min?: number | 'auto';
+  max?: number | 'auto';
+  inverse?: boolean;
+  labelRotate?: number;
+  labelFontSize?: number;
+  labelColor?: string;
+  showGrid?: boolean;
+  showTick?: boolean;
+  numberFormat?: string;
+}
+
+export interface VisualConfig {
+  title?: {
+    text?: string;
+    position?: 'top' | 'bottom' | 'left' | 'right' | 'center';
+    align?: 'left' | 'center' | 'right';
+    verticalAlign?: 'top' | 'middle' | 'bottom';
+    fontSize?: number;
+    color?: string;
+    fontWeight?: 'normal' | 'bold';
+  };
+  legend?: {
+    show?: boolean;
+    position?: 'top' | 'bottom' | 'left' | 'right';
+    orient?: 'horizontal' | 'vertical';
+    fontSize?: number;
+  };
+  color?: {
+    scheme?: string;
+    customPalette?: string[];
+    seriesOverrides?: Record<string, { color?: string; opacity?: number }>;
+  };
+  xAxis?: AxisVisualConfig;
+  yAxis?: AxisVisualConfig;
+  label?: {
+    show?: boolean;
+    position?: 'top' | 'bottom' | 'left' | 'right' | 'inside' | 'outside' | 'center';
+    format?: Array<'name' | 'value' | 'percent'>;
+    fontSize?: number;
+    color?: string;
+  };
+  grid?: { show?: boolean; left?: string; right?: string; top?: string; bottom?: string };
+  animation?: { show?: boolean; duration?: number };
+  tooltip?: { show?: boolean; trigger?: 'item' | 'axis' | 'none' };
+}
+
+/**
  * 通用表格数据：二维字符串矩阵 + 列名数组
  */
 export interface ChartDataset {

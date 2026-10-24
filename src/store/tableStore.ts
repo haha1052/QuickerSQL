@@ -104,7 +104,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     try {
       const response = await tauriService.listTables();
       if (!response.success) {
-        throw new Error(response.error || '加载表列表失败');
+        throw new Error(response.error || 'error.table.loadListFailed');
       }
       set({ tables: response.data ?? [], error: null });
     } catch (err) {
@@ -168,7 +168,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     try {
       const response = await tauriService.moveToTrash(tableName);
       if (!response.success) {
-        throw new Error(response.error || '移到回收站失败');
+        throw new Error(response.error || 'error.table.trashFailed');
       }
       useToastStore.getState().addToast({ key: 'table.movedToTrash', vars: { name: tableName } }, 'success');
       // 刷新表列表
@@ -187,7 +187,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     try {
       const response = await tauriService.renameTable(oldTableName, newTableName);
       if (!response.success) {
-        throw new Error(response.error || '重命名表失败');
+        throw new Error(response.error || 'error.table.renameFailed');
       }
       useToastStore.getState().addToast({ key: 'table.renamed', vars: { name: newTableName } }, 'success');
       // 清除旧表名的缓存，并刷新表列表

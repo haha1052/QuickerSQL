@@ -78,7 +78,7 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
       const response = await tauriService.deleteQueryHistory(item.id);
 
       if (response.success) {
-        setMessage(t('queryHistory.deleted') || '删除成功', 'success');
+        setMessage('toast.deletedSuccess', 'success');
         await loadHistory();
       } else {
         setMessage(`${t('common.error')}: ${response.error}`, 'error');
@@ -196,7 +196,7 @@ const QueryHistory: React.FC<QueryHistoryProps> = ({ onBack, onExecuteSql }) => 
                         const copyBtn = menu.querySelector('button');
                         copyBtn?.addEventListener('click', async () => {
                           await navigator.clipboard.writeText(item.sql);
-                          setMessage(t('queryHistory.copied') || '已复制', 'success');
+                          setMessage('toast.copied', 'success');
                           menu.remove();
                         });
 

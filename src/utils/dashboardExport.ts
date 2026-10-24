@@ -43,10 +43,10 @@ const GRID = {
 export async function exportDashboardToPng(
   dashboard: Dashboard,
   canvasEl: HTMLElement | null,
-  filename: string = `仪表盘_${dashboard.name}`,
+  filename: string = `Dashboard_${dashboard.name}`,
 ): Promise<{ success: boolean; message: string }> {
   if (!canvasEl || dashboard.layout.length === 0) {
-    return { success: false, message: '仪表盘为空，无法导出' };
+    return { success: false, message: 'dashboardExport.empty' };
   }
 
   try {
@@ -72,7 +72,7 @@ export async function exportDashboardToPng(
     outputCanvas.height = canvasHeight * scale;
     const ctx = outputCanvas.getContext('2d');
     if (!ctx) {
-      return { success: false, message: '无法创建画布上下文' };
+      return { success: false, message: 'dashboardExport.noCanvas' };
     }
     ctx.scale(scale, scale);
 
@@ -119,7 +119,7 @@ export async function exportDashboardToPng(
     }
 
     if (chartDataList.length === 0) {
-      return { success: false, message: '未找到可导出的图表' };
+      return { success: false, message: 'dashboardExport.noChart' };
     }
 
     // 按顺序将每个图表绘制到输出 Canvas
@@ -160,7 +160,7 @@ export async function exportDashboardToPng(
     });
 
     if (!blob) {
-      return { success: false, message: '生成图片失败' };
+      return { success: false, message: 'dashboardExport.imageFailed' };
     }
 
     // 触发下载
@@ -173,10 +173,10 @@ export async function exportDashboardToPng(
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    return { success: true, message: '导出成功' };
+    return { success: true, message: 'dashboardExport.success' };
   } catch (e) {
     console.error('[exportDashboardToPng] 导出失败:', e);
-    return { success: false, message: `导出失败：${e}` };
+    return { success: false, message: 'dashboardExport.failed' };
   }
 }
 

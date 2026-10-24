@@ -1,4 +1,5 @@
 // Dashboard Types
+import type { VisualConfig } from './chart';
 
 // 保存的查询
 export interface SavedQuery {
@@ -42,6 +43,7 @@ export interface SavedChart {
   description: string;
   thumbnail: string | null;
   config: Record<string, unknown> | null;
+  visualConfig?: VisualConfig | null;
   // 授权范围: "all" = 所有仪表盘可用; "restricted" = 仅指定仪表盘可用
   visibility: 'all' | 'restricted';
   authorizedDashboardIds: string[]; // visibility = "restricted" 时生效
@@ -135,6 +137,7 @@ export interface CreateSavedChartParams {
   tags?: string[];
   description?: string;
   config?: Record<string, unknown>;
+  visualConfig?: Record<string, unknown>;
   visibility?: 'all' | 'restricted';
   authorizedDashboardIds?: string[];
 }

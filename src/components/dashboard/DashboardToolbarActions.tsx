@@ -45,7 +45,7 @@ export const DashboardToolbarActions: React.FC<DashboardToolbarActionsProps> = (
           <select style={styles.select} value={dashboard?.id || ''} onChange={(e) => onDashboardChange(e.target.value)}>
             {dashboards.map(d => (<option key={d.id} value={d.id}>{d.name}</option>))}
           </select>
-          <button style={styles.btn} onClick={onNewDashboard} title="新建仪表盘">➕ 新建</button>
+          <button style={styles.btn} onClick={onNewDashboard} title={t('dashboard.newDashboard')}>➕ {t('dashboard.newDashboard')}</button>
         </div>
         {onToggleLibrary && (
           <button style={{ ...styles.btn, ...(libraryOpen ? styles.btnActive : {}) }} onClick={onToggleLibrary} title={t('dashboard.openChartLibrary')}>
@@ -64,14 +64,14 @@ export const DashboardToolbarActions: React.FC<DashboardToolbarActionsProps> = (
             )}
             <button style={styles.btn} onClick={onOpenCanvasSettings} title={t('dashboard.canvasSettings')}>⚙️ 画布</button>
             {onSave && (
-              <button style={{ ...styles.btn, ...(busy ? styles.btnDisabled : {}) }} onClick={onSave} disabled={busy} title="保存仪表盘 (Ctrl+S)">
-                {isSaving ? '⏳ 保存中...' : '💾 保存'}
+              <button style={{ ...styles.btn, ...(busy ? styles.btnDisabled : {}) }} onClick={onSave} disabled={busy} title={t('dashboard.saveDashboard')}>
+                {isSaving ? t('dashboard.saving') : t('dashboard.save')}
               </button>
             )}
             <button style={{ ...styles.btn, ...(isEditing ? styles.btnActive : {}) }} onClick={onToggleEdit} disabled={savingLayout}>
-              {savingLayout ? '⏳ 保存中...' : (isEditing ? '✅ 保存布局' : '📝 编辑')}
+              {savingLayout ? t('dashboard.saving') : (isEditing ? t('dashboard.saveLayout') : t('dashboard.edit'))}
             </button>
-            <button style={styles.btn} onClick={onToggleFullscreen}>{isFullscreen ? '🗗 退出全屏' : '🗖 全屏'}</button>
+            <button style={styles.btn} onClick={onToggleFullscreen}>{isFullscreen ? t('dashboard.exitFullscreen') : t('dashboard.fullscreen')}</button>
             <button style={styles.btnDanger} onClick={onDelete} title={t('dashboard.deleteDashboard')}>🗑</button>
           </>
         )}

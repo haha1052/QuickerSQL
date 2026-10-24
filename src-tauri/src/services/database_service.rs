@@ -6,7 +6,7 @@
 //! 所有 SQL 操作均通过 [`crate::database::SqlIdentifier`] 做安全校验，
 //! 避免拼接标识符导致的 SQL 注入。
 
-use crate::database::{SqlIdentifier, MutexGuardConnection, DatabaseConnection};
+use crate::database::{SqlIdentifier, MutexGuardConnection};
 use crate::models::database::{ColumnInfo, CsvPreview, TableInfo, TableMetaInfo};
 
 /// 数据库表元信息服务
@@ -17,12 +17,14 @@ impl DatabaseService {
     ///
     /// 返回结果包含每张表的 `name / row_count / column_count / is_system_table`，
     /// 可直接序列化到前端渲染列表。
+    ///
+    /// 业务数据表在 DuckDB，使用 `information_schema.tables` 枚举表名。
     pub fn list_tables_with_meta(
         conn: &MutexGuardConnection,
     ) -> Result<Vec<TableInfo>, String> {
         let result = conn
             .query(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name",
                 &[],
             )
             .map_err(|e| format!("获取表列表失败: {}", e))?;
@@ -32,7 +34,7 @@ impl DatabaseService {
             .into_iter()
             .filter(|row| !row.is_empty())
             .map(|row| row[0].clone())
-            .filter(|name| !name.starts_with("__trash_") && !name.starts_with("sqlite_"))
+            .filter(|name| !name.starts_with("__trash_"))
             .collect();
 
         let mut tables = Vec::with_capacity(names.len());
@@ -139,9 +141,9 @@ impl DatabaseService {
     // A-3: 启动汇总辅助方法（Startup 聚合调用）
     // ============================================================
 
-    /// 获取数据库状态的精简版（仅 sqlite_master 表类型计数）
+    /// 获取数据库状态的精简版（仅表数量计数）
     ///
-    /// - 使用参数化查询（SQL 字面量 `'table'` 直接写入，无拼接）
+    /// - 业务数据表在 DuckDB，使用 `information_schema.tables` 计数
     /// - 返回 `(is_connected, path, table_count)`
     pub fn get_database_status_lite(
         conn: &MutexGuardConnection,
@@ -149,8 +151,8 @@ impl DatabaseService {
     ) -> Result<(bool, String, i64), String> {
         let table_count = conn
             .query(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = ?",
-                &[&"table"],
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'",
+                &[],
             )
             .map_err(|e| format!("查询数据库状态失败: {}", e))?
             .rows
@@ -238,8 +240,9 @@ impl DatabaseService {
 
     /// 查询表的扩展元信息（索引数量 + 估算存储大小）。
     ///
-    /// 大小估算逻辑：`page_size × (page_count − freelist_count) ÷ table_count`
-    /// （每张表平均占用的磁盘字节数，粗粒度估算）。
+    /// DuckDB 环境下：
+    /// - 索引数量：`PRAGMA index_list('table')`
+    /// - 大小估算：`duckdb_database_size()` 总大小按表数量平均分配（粗粒度估算）
     pub fn get_table_performance_info(
         conn: &MutexGuardConnection,
         table_name: &str,
@@ -253,34 +256,25 @@ impl DatabaseService {
             Err(_) => 0,
         };
 
-        // 2) 估算大小：数据库实际使用空间 / 表数量的粗略平均值
+        // 2) 估算大小：DuckDB 通过 duckdb_database_size() 获取总数据库大小
         let size_bytes = {
-            let page_size = conn
-                .query("PRAGMA page_size", &[])
-                .ok()
-                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-                .unwrap_or(4096);
-            let page_count = conn
-                .query("PRAGMA page_count", &[])
+            let total_size = conn
+                .query("SELECT duckdb_database_size()", &[])
                 .ok()
                 .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
                 .unwrap_or(0);
-            let freelist_count = conn
-                .query("PRAGMA freelist_count", &[])
-                .ok()
-                .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
-                .unwrap_or(0);
-
-            let used_pages = page_count.saturating_sub(freelist_count);
-            let total_used_size = page_size.saturating_mul(used_pages);
 
             let table_count = conn
-                .query("SELECT COUNT(*) FROM sqlite_master WHERE type='table'", &[])
+                .query(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main'",
+                    &[],
+                )
                 .ok()
                 .and_then(|r| r.rows.first().and_then(|row| row[0].parse::<i64>().ok()))
                 .unwrap_or(1);
+
             if table_count > 0 {
-                total_used_size / table_count.max(1)
+                total_size / table_count.max(1)
             } else {
                 0
             }
@@ -326,7 +320,7 @@ impl DatabaseService {
         let new_ident = SqlIdentifier::new(new_name)?;
 
         // 旧表必须存在
-        let exists_sql = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?".to_string();
+        let exists_sql = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'main' AND table_name = ?".to_string();
         let old_name_str = old_ident.as_str().to_string();
         let params_old: [&dyn crate::database::ToSql; 1] = [&old_name_str];
         let exists_result = conn
@@ -531,9 +525,11 @@ impl DatabaseService {
     /// P2-1 安全加固：使用 `read_csv_auto(?)` 参数化查询替代手工路径转义，
     /// 彻底消除 SQL 注入风险。文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
     ///
-    /// 实现方式：`CREATE TABLE <table> AS SELECT * FROM read_csv_auto(?, ...options)`
+    /// 实现方式：`INSERT INTO <table> SELECT * FROM read_csv_auto(?, ...options)`
+    /// - 调用方须先用 `create_table_from_schema` 建表（保留用户指定的列类型）
     /// - `?` 绑定文件路径，由 DuckDB 驱动安全处理
     /// - header / delimiter 是经验证的字面量（delimiter 已校验为单字符），直接拼入
+    /// - DuckDB 负责 CSV 自动类型推断 → 目标表类型的隐式转换
     pub fn fast_import_csv(
         conn: &MutexGuardConnection,
         table_name: &str,
@@ -543,42 +539,36 @@ impl DatabaseService {
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
 
-        // 使用指定的分隔符，默认逗号
         let delimiter = delimiter.unwrap_or(",");
 
-        // COPY DELIMITER 必须是单个字符
         if delimiter.chars().count() != 1 {
             return Err(format!("分隔符必须是单个字符，当前为 '{}'", delimiter));
         }
 
-        // P2-1: 构建 read_csv_auto 的选项子句
-        // delimiter 已校验为单字符，header 是布尔字面量，均安全拼接
         let header_str = if has_header { "true" } else { "false" };
         let options = if delimiter == "," {
             format!("header={}", header_str)
         } else if delimiter == "\t" {
             format!("header={}, delimiter='\\t'", header_str)
         } else {
-            // 单字符 delimiter，已通过 chars().count() 校验
             format!("header={}, delimiter='{}'", header_str, delimiter)
         };
 
-        // P2-1: 文件路径用 ? 参数绑定，杜绝 SQL 注入
         let sql = format!(
-            "CREATE TABLE {} AS SELECT * FROM read_csv_auto(?, {})",
+            "INSERT INTO {} SELECT * FROM read_csv_auto(?, {})",
             table_ident.quoted(), options
         );
 
         log::info!("执行 CSV 导入（参数化路径）: {}", sql);
 
         let params: [&dyn crate::database::ToSql; 1] = [&file_path];
-        conn.execute(&sql, &params)
+        let insert_start = std::time::Instant::now();
+        let affected = conn.execute(&sql, &params)
             .map_err(|e| format!("CSV 导入失败: {}", e))?;
+        log::info!("DuckDB read_csv_auto 插入完成，耗时: {}ms, 影响行数: {}",
+            insert_start.elapsed().as_millis(), affected);
 
-        // 获取插入的行数
-        Self::get_row_count(conn, table_name)
-            .map(|count| count as usize)
-            .map_err(|e| format!("获取行数失败: {}", e))
+        Ok(affected as usize)
     }
 
     /// 预览 Parquet 文件内容
@@ -586,7 +576,7 @@ impl DatabaseService {
     /// P2-1 安全加固：使用 `read_parquet(?)` 参数化查询替代手工路径转义。
     /// 文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
     pub fn preview_parquet_file(
-        conn: &dyn DatabaseConnection,
+        conn: &MutexGuardConnection<'_>,
         file_path: &str,
         max_rows: usize,
     ) -> Result<CsvPreview, String> {
@@ -611,6 +601,10 @@ impl DatabaseService {
     ///
     /// P2-1 安全加固：使用 `read_parquet(?)` 参数化查询替代手工路径转义。
     /// 文件路径通过 `?` 占位符绑定，不再拼入 SQL 文本。
+    ///
+    /// 实现方式：`INSERT INTO <table> SELECT * FROM read_parquet(?)`
+    /// - 调用方须先用 `create_table_from_schema` 建表（保留用户指定的列类型）
+    /// - DuckDB 负责 Parquet 类型 → 目标表类型的隐式转换
     pub fn fast_import_parquet(
         conn: &MutexGuardConnection,
         table_name: &str,
@@ -618,21 +612,21 @@ impl DatabaseService {
     ) -> Result<usize, String> {
         let table_ident = SqlIdentifier::new(table_name)?;
 
-        // P2-1: 文件路径用 ? 参数绑定，杜绝 SQL 注入
         let sql = format!(
-            "CREATE TABLE {} AS SELECT * FROM read_parquet(?)",
+            "INSERT INTO {} SELECT * FROM read_parquet(?)",
             table_ident.quoted()
         );
 
         log::info!("执行 Parquet 导入（参数化路径）: {}", sql);
 
         let params: [&dyn crate::database::ToSql; 1] = [&file_path];
-        conn.execute(&sql, &params)
+        let insert_start = std::time::Instant::now();
+        let affected = conn.execute(&sql, &params)
             .map_err(|e| format!("Parquet 导入失败: {}", e))?;
+        log::info!("DuckDB read_parquet 插入完成，耗时: {}ms, 影响行数: {}",
+            insert_start.elapsed().as_millis(), affected);
 
-        Self::get_row_count(conn, table_name)
-            .map(|count| count as usize)
-            .map_err(|e| format!("获取行数失败: {}", e))
+        Ok(affected as usize)
     }
 }
 

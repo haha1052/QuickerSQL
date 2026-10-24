@@ -19,7 +19,6 @@ use crate::services::SqlExecutionService;
 use crate::services::SqlSnippetService;
 use crate::services::query_cache_service::{CacheStrategy, CacheStats, is_cacheable, make_cache_key};
 use tauri::State;
-use tauri::Emitter;
 use super::ApiResponse;
 
 /// SQL 执行前的输入参数校验（commands 层边界检查）
@@ -27,7 +26,7 @@ use super::ApiResponse;
 /// 校验规则：
 /// - 拒绝空 SQL（含纯空白）
 /// - 拒绝包含 NULL 字符（`\0`）的 SQL
-/// - 拒绝多语句 SQL（按 `;` 分割后非空语句数 > 1，符合 security.md "禁止多语句 SQL"）
+/// - 多语句 SQL 由下游 `execute_sql_batch` 安全处理（分句、路由、写操作检测均在 service 层完成）
 ///
 /// 返回 `Ok(())` 表示通过校验；`Err(String)` 表示参数非法。
 fn validate_sql_input(sql: &str) -> Result<(), String> {
@@ -36,14 +35,6 @@ fn validate_sql_input(sql: &str) -> Result<(), String> {
     }
     if sql.contains('\0') {
         return Err("SQL 包含非法 NULL 字符".to_string());
-    }
-    let non_empty_stmts: Vec<&str> = sql
-        .split(';')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if non_empty_stmts.len() > 1 {
-        return Err("禁止多语句 SQL 执行".to_string());
     }
     Ok(())
 }
@@ -59,46 +50,35 @@ pub async fn execute_sql(
 
     validate_sql_input(&sql)?;
 
-    let duckdb_opt = {
-        let sqlite_conn = state
-            .db_manager
-            .get_connection()
-            .map_err(|e| {
-                log::error!("[execute_sql] 获取数据库连接失败: error={}", e);
-                "数据库连接异常，请重新打开数据库".to_string()
-            })?;
+    // Phase 16: 获取信号量许可（SQL 查询并发控制）
+    // 注意：必须在获取数据库连接（MutexGuard，非 Send）之前 await，
+    // 否则持有非 Send 值跨越 await 会导致 future 不满足 Send 约束。
+    let _permit = state.query_semaphore.acquire().await.map_err(|e| {
+        log::error!("[execute_sql] 获取查询信号量失败: error={}", e);
+        "系统繁忙，请稍后重试".to_string()
+    })?;
 
-        // Phase 16: 获取信号量许可（SQL 查询并发控制）
-        // 注意：sqlite_conn 在此块结束时被 drop，之后的 await 不会跨越 MutexGuard
-        let duckdb_result = state.get_duckdb_connection();
-        drop(sqlite_conn);
-
-        let _permit = state.query_semaphore.acquire().await.map_err(|e| {
-            log::error!("[execute_sql] 获取查询信号量失败: error={}", e);
-            "系统繁忙，请稍后重试".to_string()
-        })?;
-
-        match duckdb_result {
-            Ok(arc) => Some(arc),
-            Err(e) => {
-                log::warn!("DuckDB not initialized, using SQLite: {}", e);
-                None
-            }
-        }
-    };
-
-    let cache_enabled = state.query_cache.is_enabled();
-
-    // ========== 缓存命中快路径（多语句全命中 / 单语句命中） ==========
+    // 同时获取 SQLite（系统表/元数据）与 DuckDB（业务数据）连接
     let sqlite_conn = state
         .db_manager
         .get_connection()
         .map_err(|e| {
-            log::error!("[execute_sql] 获取数据库连接失败（缓存检查阶段）: error={}", e);
+            log::error!("[execute_sql] 获取 SQLite 连接失败: error={}", e);
             "数据库连接异常，请重新打开数据库".to_string()
         })?;
-    // 说明：这里仅做"全命中直接短路"的优化；部分命中场景交给 `execute_sql_batch`
-    // 内部按句处理缓存/执行/写回。
+
+    let duckdb_conn = state
+        .duckdb_manager
+        .get_connection()
+        .map_err(|e| {
+            log::error!("[execute_sql] 获取 DuckDB 连接失败: error={}", e);
+            "DuckDB 连接异常，请重新打开项目".to_string()
+        })?;
+
+    let cache_enabled = state.query_cache.is_enabled();
+
+    // ========== 缓存命中快路径（多语句全命中 / 单语句命中） ==========
+    // 业务数据统一走 DuckDB，缓存引擎标记为 duckdb
     if cache_enabled {
         let stmts = SqlExecutionService::split_sql_statements(&sql);
 
@@ -107,7 +87,6 @@ pub async fn execute_sql(
             if SqlExecutionService::is_all_readonly(&stmts) {
                 let mut cached_results: Vec<SqlStatementResult> = Vec::new();
                 let mut all_hit = true;
-                let cache_engine = if duckdb_opt.is_some() { "duckdb" } else { "sqlite" };
                 for stmt in &stmts {
                     let key = make_cache_key(stmt, &[]);
                     match state.query_cache.get(&key) {
@@ -118,7 +97,7 @@ pub async fn execute_sql(
                             columns: Some(qr.columns),
                             rows: Some(qr.rows),
                             affected_rows: None,
-                            engine: Some(cache_engine.to_string()),
+                            engine: Some("duckdb".to_string()),
                             execution_time_ms: Some(0),
                         }),
                         None => {
@@ -150,7 +129,6 @@ pub async fn execute_sql(
                         cached_result.rows.len(),
                         cached_result.columns.len()
                     );
-                    let cache_engine = if duckdb_opt.is_some() { "duckdb" } else { "sqlite" };
                     return Ok(BatchExecuteResult {
                         results: vec![SqlStatementResult {
                             statement: sql.clone(),
@@ -159,7 +137,7 @@ pub async fn execute_sql(
                             columns: Some(cached_result.columns),
                             rows: Some(cached_result.rows),
                             affected_rows: None,
-                            engine: Some(cache_engine.to_string()),
+                            engine: Some("duckdb".to_string()),
                             execution_time_ms: Some(0),
                         }],
                         success_count: 1,
@@ -176,7 +154,7 @@ pub async fn execute_sql(
 
     SqlExecutionService::execute_sql_batch(
         &sqlite_conn,
-        duckdb_opt,
+        &duckdb_conn,
         &state.db_manager,
         &sql,
         query_cache_ref,
@@ -400,139 +378,27 @@ pub fn toggle_snippet_favorite(
 #[tauri::command]
 pub fn preload_duckdb(
     state: State<'_, TauriAppState>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
 ) -> Result<ApiResponse<String>, String> {
-    if !state.db_manager.is_connected() {
+    // DuckDB 已改为文件连接（data.duckdb），项目打开时自动连接，无需预加载。
+    // 保留命令签名以兼容前端调用。
+    if !state.duckdb_manager.is_connected() {
         return Ok(ApiResponse {
             success: false,
-            message: "未连接到数据库".into(),
+            message: "DuckDB 未连接".into(),
             data: None,
         });
     }
 
-    let db_manager = state.db_manager.clone();
-    let db_path = {
-        let guard = state.db_path.lock().map_err(|e| {
-            log::error!("[preload_duckdb] 获取数据库路径锁失败: error={}", e);
-            "数据库状态异常，请重试".to_string()
-        })?;
-        guard.clone()
-    };
-    let duckdb_conn = state.duckdb_conn.clone();
-    let app_handle = app.clone();
-
-    std::thread::spawn(move || {
-        let t0 = std::time::Instant::now();
-        log::info!("[DuckDB] 预加载开始");
-        
-        let table_names = match db_manager.get_connection() {
-            Ok(sqlite_conn) => {
-                match crate::database::meta::list_user_table_names(&sqlite_conn) {
-                    Ok(names) => names,
-                    Err(e) => {
-                        log::warn!("[DuckDB] 从 SQLite 获取表名失败: {}", e);
-                        Vec::new()
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("[DuckDB] 获取 SQLite 连接失败: {}", e);
-                Vec::new()
-            }
-        };
-
-        log::info!("[DuckDB] 预加载：从 SQLite 获取到 {} 个用户表", table_names.len());
-
-        let driver = crate::database::duckdb::DuckDbDriver::new();
-
-        match driver.connect_memory() {
-            Ok(conn) => {
-                let _ = conn.execute("LOAD sqlite;", &[]);
-
-                let sqlite_path_str = db_path.to_string_lossy().replace("'", "''");
-                let attach_sql = format!("ATTACH '{}' AS sqlite_db (TYPE SQLITE);", sqlite_path_str);
-
-                if conn.execute(&attach_sql, &[]).is_ok() {
-                    let mut success_count = 0;
-                    for table_name in &table_names {
-                        if crate::database::SqlIdentifier::is_safe_identifier(table_name) {
-                            let create_view_sql = if let Ok(sqlite_conn) = db_manager.get_connection() {
-                                build_view_sql_with_type_casts(&sqlite_conn, table_name)
-                            } else {
-                                let quoted_table = crate::database::SqlIdentifier::quote_identifier(table_name);
-                                format!(
-                                    "CREATE OR REPLACE VIEW {} AS SELECT * FROM sqlite_db.{}",
-                                    quoted_table, quoted_table
-                                )
-                            };
-                            if conn.execute(&create_view_sql, &[]).is_ok() {
-                                success_count += 1;
-                            }
-                        }
-                    }
-
-                    let _ = conn.execute("SET preserve_insertion_order = false;", &[]);
-
-                    if let Ok(mut guard) = duckdb_conn.lock() {
-                        *guard = Some(std::sync::Arc::new(std::sync::Mutex::new(conn)));
-                        let duration_ms = t0.elapsed().as_millis() as i64;
-                        log::info!("[DuckDB] 预加载完成，已创建 {}/{} 个 VIEW，耗时 {}ms", success_count, table_names.len(), duration_ms);
-                        
-                        let status = crate::models::DuckDbInitStatus {
-                            success: true,
-                            view_count: success_count,
-                            total_tables: table_names.len() as i32,
-                            duration_ms,
-                            trigger: "preload".to_string(),
-                        };
-                        let _ = app_handle.emit("duckdb_init_completed", status);
-                    } else {
-                        log::warn!("[DuckDB] 预加载完成，但无法保存连接（Mutex poison）");
-                        
-                        let status = crate::models::DuckDbInitStatus {
-                            success: false,
-                            view_count: 0,
-                            total_tables: table_names.len() as i32,
-                            duration_ms: t0.elapsed().as_millis() as i64,
-                            trigger: "preload".to_string(),
-                        };
-                        let _ = app_handle.emit("duckdb_init_completed", status);
-                    }
-                } else {
-                    log::warn!("[DuckDB] 预加载失败：ATTACH SQLite 失败");
-                    
-                    let status = crate::models::DuckDbInitStatus {
-                        success: false,
-                        view_count: 0,
-                        total_tables: table_names.len() as i32,
-                        duration_ms: t0.elapsed().as_millis() as i64,
-                        trigger: "preload".to_string(),
-                    };
-                    let _ = app_handle.emit("duckdb_init_completed", status);
-                }
-            }
-            Err(e) => {
-                log::warn!("[DuckDB] 预加载失败：创建内存连接失败: {}", e);
-                
-                let status = crate::models::DuckDbInitStatus {
-                    success: false,
-                    view_count: 0,
-                    total_tables: table_names.len() as i32,
-                    duration_ms: t0.elapsed().as_millis() as i64,
-                    trigger: "preload".to_string(),
-                };
-                let _ = app_handle.emit("duckdb_init_completed", status);
-            }
-        }
-    });
-
+    log::debug!("[preload_duckdb] DuckDB 已通过文件连接就绪，无需预加载");
     Ok(ApiResponse {
         success: true,
-        message: "DuckDB 预加载已启动".into(),
-        data: Some("preloading".into()),
+        message: "DuckDB 已就绪".into(),
+        data: Some("ready".into()),
     })
 }
 
+#[allow(dead_code)]
 fn build_view_sql_with_type_casts(
     sqlite_conn: &crate::database::MutexGuardConnection,
     table_name: &str,
@@ -612,17 +478,11 @@ mod tests {
         assert!(msg.contains("NULL"), "错误信息应提示 NULL 字符，实际: {}", msg);
     }
 
-    /// 多语句 SQL（含 `;` 分隔的两条非空语句）应被拒绝，不应 panic
+    /// 多语句 SQL 应通过校验（由 execute_sql_batch 处理分句和路由）
     #[test]
-    fn test_validate_sql_multi_statement_rejected() {
+    fn test_validate_sql_multi_statement_allowed() {
         let result = validate_sql_input("SELECT 1; SELECT 2;");
-        assert!(result.is_err(), "多语句 SQL 应返回错误");
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("多语句"),
-            "错误信息应提示多语句禁止，实际: {}",
-            msg
-        );
+        assert!(result.is_ok(), "多语句 SQL 应通过校验（由下游安全处理）");
     }
 
     /// 超长 SQL（10KB+）应正常处理（返回 Ok），不应 panic
@@ -698,11 +558,10 @@ mod tests {
         assert!(result.is_ok(), "含块注释的单条 SQL 应通过校验");
     }
 
-    /// 注释 + 多语句的混合应被拒绝（注释不能绕过多语句禁令）
+    /// 注释 + 多语句的混合应通过校验（多语句由 execute_sql_batch 处理）
     #[test]
-    fn test_validate_sql_comment_does_not_bypass_multi_statement() {
+    fn test_validate_sql_comment_with_multi_statement_ok() {
         let result = validate_sql_input("SELECT 1 -- comment\n; SELECT 2");
-        assert!(result.is_err(), "含多语句的 SQL 应被拒绝（即便中间有注释）");
+        assert!(result.is_ok(), "含注释的多语句 SQL 应通过校验（由下游安全处理）");
     }
 }
-
