@@ -95,3 +95,17 @@ $RECYCLE.BIN/
 .vscode/
 docs/
 AGENTS.md
+
+# ===== Playwright / 测试产物 =====
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ===== Rust 临时文件 =====
+src-tauri/clippy_*.txt
+src-tauri/*.log
+
+# ===== 临时文件 / 杂项 =====
+test_write.txt
+@*/
+mcp-ollama/
