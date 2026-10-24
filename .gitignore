@@ -88,3 +88,10 @@ $RECYCLE.BIN/
 # AI/Trae 临时文件
 .workbuddy/
 .trae/specs/
+
+# AI / IDE / 内部规则文件
+.codebuddy/
+.trae/rules/
+.vscode/
+docs/
+AGENTS.md
