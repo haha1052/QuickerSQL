@@ -1,7 +1,0 @@
-- [x] Checkpoint 1: ProjectService::get_last_opened_project 正确返回最近打开的项目
-- [x] Checkpoint 2: get_default_db_path 优先返回上次打开的项目（有 last_opened_at 时）
-- [x] Checkpoint 3: get_default_db_path 找不到上次打开的项目时 fallback 到 "default" 项目
-- [x] Checkpoint 4: get_default_db_path 没有任何项目时创建 "default" 项目（与现有行为一致）
-- [x] Checkpoint 5: switch_project 仍然正确更新 last_opened_at 字段
-- [x] Checkpoint 6: `cargo check --quiet` 编译通过（0 errors）
-- [x] Checkpoint 7: `npx tsc --noEmit --pretty` 类型检查通过（前端无改动）

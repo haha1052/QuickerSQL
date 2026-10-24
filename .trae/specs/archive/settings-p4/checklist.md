@@ -1,9 +1,0 @@
-- [x] 报告数据与代码实际状态一致（修正 v27.0 中的数据矛盾）
-- [x] security.enableAuditLog 审计日志开关功能实现
-- [x] advanced.logLevel 日志级别控制功能实现
-- [x] editor.insertSpaces 空格替代 Tab 功能实现
-- [x] sql.defaultSelectLimit 默认 SELECT 限制功能实现
-- [x] implemented_settings() 包含所有新增/升级的设置项
-- [x] cargo check --quiet 无错误
-- [x] npx tsc --noEmit --pretty 无错误
-- [x] 设置系统现状分析报告更新到 v28.0

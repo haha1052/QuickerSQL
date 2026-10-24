@@ -1,9 +1,0 @@
-- [x] QueryResultItem container 为 flex column 且 maxHeight: 800，无 minHeight
-- [x] QueryResultItem tableWrapper 无 flex:1，高度由内容决定
-- [x] QueryResultItem tableContainer 无 flex:1，maxHeight: 680 + overflow: auto
-- [x] AgGridLazy 使用 domLayout="autoHeight" 并设置 rowBuffer={5}
-- [x] QueryResult resultsContainer 无 flex:1 且无 overflowY: auto
-- [x] 小结果集（<10 行）结果项高度由内容决定（紧凑显示）
-- [x] 大结果集（>50 行）结果项最大 800px，表格内部滚动
-- [x] 多结果集整体可滚动（panelContent 为唯一滚动层）
-- [x] TypeScript 编译通过

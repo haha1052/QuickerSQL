@@ -1,6 +1,0 @@
-- [x] Checkpoint 1: tauri.conf.json、package.json、Cargo.toml 版本号一致（均为 2.0.0）
-- [x] Checkpoint 2: bundle.targets 配置正确，支持生成可打包的发布目录（"app"，生成了 QuickerSQL.exe）
-- [x] Checkpoint 3: 添加了必要的 Windows 打包配置项（bundle.windows）
-- [x] Checkpoint 4: `npm run tauri build` 构建成功（exit code 0）
-- [x] Checkpoint 5: 发布目录包含完整的应用文件和依赖库（QuickerSQL.exe 约 45MB）
-- [ ] Checkpoint 6: 应用可从发布目录正常启动，无缺失依赖错误（需要人工验证）

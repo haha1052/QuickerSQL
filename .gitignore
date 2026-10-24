@@ -85,3 +85,6 @@ $RECYCLE.BIN/
 *.AppImage
 *.deb
 *.rpm
+# AI/Trae аый╠нд╪Ч
+.workbuddy/
+.trae/specs/

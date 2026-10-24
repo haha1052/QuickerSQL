@@ -1,7 +1,0 @@
-- [x] Checkpoint 1: AppWrapper 中 DuckDB 事件监听正确清理（不会因异步赋值导致清理失效）
-- [x] Checkpoint 2: 启动过渡动画 rAF 回调有清理机制
-- [x] Checkpoint 3: 项目切换时 dashboardStore 的 activeDashboardId 被正确重置
-- [x] Checkpoint 4: DashboardPage 加载逻辑无竞态条件（两个 useEffect 合并为统一逻辑）
-- [x] Checkpoint 5: TypeScript 类型检查通过（npx tsc --noEmit --pretty）
-- [ ] Checkpoint 6: 应用关闭不卡死（需要人工验证）
-- [ ] Checkpoint 7: 切换到仪表盘页面显示一致（需要人工验证）
